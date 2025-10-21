@@ -9,14 +9,14 @@ mne.viz.set_browser_backend("matplotlib")
 import os
 import pandas as pd
 from utils import *
+from tqdm import tqdm
 
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
 git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata")
-subj_id = 670
-raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
+subj_id_array = [670, 671, 673, 695]
 
 #%% parameter setting
 is_bpfilter = True
@@ -31,38 +31,45 @@ epoch_reject_crit = dict(
                         )
 is_detrend = 1 # 0:constant, 1:linear, None
 
-#%% Load and preprocessing
-# load run 1 as testing
-run_id = 1
-run1_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
-EEG = fix_and_load_brainvision(run1_path,subj_id)
-EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-                      is_reref=is_reref, reref_ch=reref_ch,
-                      is_ica_rmEye=is_ica_rmEye)
+#%% epoch each subject
+subj_epoch_array = []
+exclude_run_array = []
+for subj_id in tqdm(subj_id_array):
+    raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
+    tmp_epoch_array = []
+    for run_id in np.arange(1,4):
+        # load run 1 as testing
+        run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
+        EEG = fix_and_load_brainvision(run_path,subj_id)
+        EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                            is_reref=is_reref, reref_ch=reref_ch,
+                            is_ica_rmEye=is_ica_rmEye)
 
-# %% Epoching
-# load corresponding event file
-event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
-                          f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
-                                                epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
+        # Epoching
+        # load corresponding event file
+        event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
+                                f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        try:    
+            epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
+                                                            epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
+        except:
+            print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
+            continue
+        # save epochs
+        tmp_epoch_array.append(epochs)
+    # merge epochs together
+    subj_epoch = mne.concatenate_epochs(tmp_epoch_array)
+    # save subject epochs
+    subj_epoch_array.append(subj_epoch)
 
 #%% Visualizing
-vis_ch = 'fz'
-epoch_data = epochs.get_data()[:,epochs.info["ch_names"].index(vis_ch),:]
-plt_center = np.mean(epoch_data,axis=0)
-plt_shade = np.std(epoch_data,axis=0)/ np.sqrt(epoch_data.shape[0])
-plt_time = epochs.times
-plt.figure()
-plt.plot(plt_time, plt_center, color='b')
-plt.fill_between(plt_time, plt_center - 2*plt_shade, plt_center + 2*plt_shade, color='b', alpha=0.3)
-plt.axvline(0,color='k',linestyle='--')
-plt.xlabel("Time (s)")
-plt.ylabel("Amplitude (V)")
-plt.legend()
-plt.grid()
-plt.tight_layout()
-plt.show()
+# sanity check with one subject
+vis_ch = 'cz'
+plt_center, plt_shade, plt_time = plot_ch_erp(epochs, vis_ch, is_return_data=True)
+
+# visualize cross-subjects results
+
+
 
 #%%
 

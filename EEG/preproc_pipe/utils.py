@@ -17,32 +17,37 @@ def fix_and_load_brainvision(vhdr_path,
     Load EEG into mne Raw object using vhdr.
     This function correct subject ID in vhdr by creating a temparary vhdr file.
     """
-    # assign correct eeg and vmrk filename
-    correct_eeg_filename = f'sub-{subj_id}_gradCPT1.eeg'
-    correct_vmrk_filename = f'sub-{subj_id}_gradCPT1.vmrk'
-    # read textvmrk
-    with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
-        text = f.read()
-    # Replace DataFile= and MarkerFile= (case-insensitive)
-    text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
-                        f"DataFile={correct_eeg_filename}",
-                        text)
-    text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
-                        f"MarkerFile={correct_vmrk_filename}",
-                        text_fixed)
-    # write to a temp file in same directory (so relative paths inside vhdr still work)
-    tmp = tempfile.NamedTemporaryFile(delete=False,
-                                        suffix='.vhdr',
-                                        dir=os.path.dirname(vhdr_path))
-    tmp_path = os.path.abspath(tmp.name)
-    tmp.close()
-    with open(tmp_path, "w", encoding="utf-8", errors="ignore") as f:
-        f.write(text_fixed)
-    # now load with MNE
-    raw = mne.io.read_raw_brainvision(tmp_path, preload=preload)
-    # remove tmp file
-    os.remove(tmp_path)
-
+    # check if subj_id == 695
+    if subj_id==695:
+        vhdr_path = os.path.join(os.path.dirname(vhdr_path),'G'+os.path.basename(vhdr_path).split('_')[-1][1:])
+        # load with MNE
+        raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload)
+    else:
+        # assign correct eeg and vmrk filename
+        correct_eeg_filename = f'sub-{subj_id}_gradCPT1.eeg'
+        correct_vmrk_filename = f'sub-{subj_id}_gradCPT1.vmrk'
+        # read textvmrk
+        with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+        # Replace DataFile= and MarkerFile= (case-insensitive)
+        text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
+                            f"DataFile={correct_eeg_filename}",
+                            text)
+        text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
+                            f"MarkerFile={correct_vmrk_filename}",
+                            text_fixed)
+        # write to a temp file in same directory (so relative paths inside vhdr still work)
+        tmp = tempfile.NamedTemporaryFile(delete=False,
+                                            suffix='.vhdr',
+                                            dir=os.path.dirname(vhdr_path))
+        tmp_path = os.path.abspath(tmp.name)
+        tmp.close()
+        with open(tmp_path, "w", encoding="utf-8", errors="ignore") as f:
+            f.write(text_fixed)
+        # now load with MNE
+        raw = mne.io.read_raw_brainvision(tmp_path, preload=preload)
+        # remove tmp file
+        os.remove(tmp_path)
     return raw
 
 def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
@@ -68,6 +73,11 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
 
 
 def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1):
+    #check if event_file exists
+    if not os.path.exists(event_file):
+        event_file = event_file.replace("run-0", "run-")
+        if not os.path.exists(event_file):
+            raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
     event_duration = float(events_df["duration"].values[0])
     is_event_correct = (events_df["value"].values).astype(int)
@@ -92,3 +102,27 @@ def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_l
     print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
 
     return epochs
+
+def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: np.std(x,axis=0)/np.sqrt(x.shape[0]), is_return_data=False, is_plot=True):
+    epoch_data = epochs.get_data()[:,epochs.info["ch_names"].index(vis_ch),:]
+    plt_center = center_method(epoch_data,axis=0)
+    center_label = f'Mean (# of trial = {(epoch_data.shape[0])})'
+    shade_method = np.std(epoch_data,axis=0)/ np.sqrt(epoch_data.shape[0])
+    plt_shade = [plt_center-2*shade_method, plt_center+2*shade_method]
+    shaded_label = '+/- 2 SEM'
+    # plt_shade = np.quantile(epoch_data, q=[0.25,0.75], axis=0)
+    # shaded_label = f'Quantile (25/75)'
+    plt_time = epochs.times
+    if is_plot:
+        fig = plt.figure()
+        plt.plot(plt_time, plt_center, color='b', label=center_label)
+        plt.fill_between(plt_time, plt_shade[0], plt_shade[1], color='b', alpha=0.3, label=shaded_label)
+        plt.axvline(0,color='k',linestyle='--')
+        plt.xlabel("Time (s)")
+        plt.ylabel("Amplitude (V)")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.show()
+    if is_return_data:
+        return plt_center, plt_shade, plt_time
