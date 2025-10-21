@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
+from mne import events_from_annotations
 import os
 import re
 import tempfile
@@ -44,7 +45,7 @@ def fix_and_load_brainvision(vhdr_path,
 
     return raw
 
-def eeg_preproc_basic(is_bpfilter=True, bp_f_range=[0.1, 45],
+def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_reref=True, reref_ch=['tp9h','tp10h'],
                       is_ica_rmEye=True):
     if is_bpfilter:
@@ -62,5 +63,5 @@ def eeg_preproc_basic(is_bpfilter=True, bp_f_range=[0.1, 45],
         eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['hEOG','vEOG'], measure='correlation')
         ica.exclude = eog_inds
         EEG = ica.apply(EEG)
-        
+
     return EEG
