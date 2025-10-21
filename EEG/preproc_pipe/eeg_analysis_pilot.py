@@ -54,6 +54,7 @@ for subj_id in tqdm(subj_id_array):
                                                             epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
         except:
             print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
+            exclude_run_array.append(f"sub-{subj_id}_gradCPT{run_id}")
             continue
         # save epochs
         tmp_epoch_array.append(epochs)
