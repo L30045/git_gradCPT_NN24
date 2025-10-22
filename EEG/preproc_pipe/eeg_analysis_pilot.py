@@ -16,6 +16,7 @@ from tqdm import tqdm
 git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata")
 subj_id_array = [670, 671, 673, 695]
+fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
 
 #%% parameter setting
 is_bpfilter = True
@@ -61,55 +62,66 @@ for subj_id in tqdm(subj_id_array):
                                                             epoch_reject_crit=None, is_detrend=1)
         # save epochs
         subj_epoch_dict[f"sub-{subj_id}"].append(epochs)
-    
+
+#%% Combine epochs for each subject
+# Concatenate the list of epochs into one epoch object for each subject
+subj_epoch_array = []
+for subj_key in subj_epoch_dict.keys():
+    if len(subj_epoch_dict[subj_key]) > 0:
+        # Concatenate all epochs for this subject into a single Epochs object
+        combined_epochs = mne.concatenate_epochs(subj_epoch_dict[subj_key])
+        subj_epoch_array.append(combined_epochs)
+
 #%% Visualizing
 # sanity check with one subject
-plt_epoch = subj_epoch_array[0]
-vis_ch = 'cz'
-plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
+# plt_epoch = subj_epoch_array[3]
+# vis_ch = 'cz'
+# plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
 
-#%% Visualize mean and std of each element in subj_epoch_array
-means = []
-stds = []
-for i, epoch in enumerate(subj_epoch_array):
-    epoch_data = epoch.get_data()  # shape: (n_epochs, n_channels, n_times)
-    means.append(np.mean(epoch_data))
-    stds.append(np.std(epoch_data))
+#%% cross-subjects results
+# Plot mean and +/- 2 SEM across subjects
+vis_ch = ['fz','cz','pz','oz']
+# Extract data for the selected channel from all subjects
+n_subjects = len(subj_epoch_array)
+xSubj_erps = []
+for epoch in subj_epoch_array:
+    # Get average ERP for this subject
+    evoked = epoch.average()
+    subject_erps = []
+    for ch_i in vis_ch:
+        ch_idx = evoked.ch_names.index(ch_i)
+        subject_erps.append(evoked.data[ch_idx, :])
+    subject_erps = np.vstack(subject_erps)
+    xSubj_erps.append(subject_erps)
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-x_pos = np.arange(len(subj_epoch_array))
+for ch_i in range(len(vis_ch)):
+    plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
+    # Calculate mean and SEM across subjects
+    mean_erp = np.mean(plt_erps, axis=0)
+    sem_erp = np.std(plt_erps, axis=0) / np.sqrt(n_subjects)
+    upper_bound = mean_erp + 2 * sem_erp
+    lower_bound = mean_erp - 2 * sem_erp
 
-# Plot means
-ax1.bar(x_pos, means, color='steelblue', alpha=0.7)
-ax1.set_xlabel('Subject/Run Index')
-ax1.set_ylabel('Mean Amplitude')
-ax1.set_title('Mean of Each Epoch Element')
-ax1.set_xticks(x_pos)
-ax1.grid(axis='y', alpha=0.3)
+    # Get time vector
+    time_vector = subj_epoch_array[0].times
 
-# Plot stds
-ax2.bar(x_pos, stds, color='coral', alpha=0.7)
-ax2.set_xlabel('Subject/Run Index')
-ax2.set_ylabel('Standard Deviation')
-ax2.set_title('Std of Each Epoch Element')
-ax2.set_xticks(x_pos)
-ax2.grid(axis='y', alpha=0.3)
-
-plt.tight_layout()
-plt.show()
-
-#%% check excluded EEG
-# run_path = os.path.join(raw_EEG_path, f'{exclude_run_array[0]}.vhdr')
-# EEG = fix_and_load_brainvision(run_path,subj_id)
-# EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-#                     is_reref=is_reref, reref_ch=reref_ch,
-#                     is_ica_rmEye=is_ica_rmEye)
-event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
-                                f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,is_detrend=1)
-
-# visualize cross-subjects results
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(time_vector, mean_erp, 'b-', linewidth=2, label='Mean')
+    plt.fill_between(time_vector, lower_bound, upper_bound, alpha=0.3, color='b', label='±2 SEM')
+    plt.axhline(0, color='k', linestyle='--', linewidth=1)
+    plt.axvline(0, color='k', linestyle='--', linewidth=1)
+    plt.xlabel('Time (s)')
+    plt.ylabel('Amplitude (V)')
+    plt.title(f'Cross-Subject ERP at {vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    # save figure to fig_save_path
+    save_filename = f'cross_subject_ERP_{vis_ch[ch_i]}_mean_2SEM.png'
+    plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
+    plt.show()
 
 
 
-#%%
+
