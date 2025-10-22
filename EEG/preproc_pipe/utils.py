@@ -22,7 +22,7 @@ def fix_and_load_brainvision(vhdr_path,
     if subj_id==695:
         vhdr_path = os.path.join(os.path.dirname(vhdr_path),'G'+os.path.basename(vhdr_path).split('_')[-1][1:])
         # load with MNE
-        raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload)
+        raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload, verbose=False)
     else:
         # assign correct eeg and vmrk filename
         correct_eeg_filename = f'sub-{subj_id}_gradCPT1.eeg'
@@ -46,7 +46,7 @@ def fix_and_load_brainvision(vhdr_path,
         with open(tmp_path, "w", encoding="utf-8", errors="ignore") as f:
             f.write(text_fixed)
         # now load with MNE
-        raw = mne.io.read_raw_brainvision(tmp_path, preload=preload)
+        raw = mne.io.read_raw_brainvision(tmp_path, preload=preload, verbose=False)
         # remove tmp file
         os.remove(tmp_path)
     return raw
@@ -56,31 +56,37 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_ica_rmEye=True):
     if is_bpfilter:
         # band-pass filtering (all channels)
-        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all')
+        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
-        EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg')
+        EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
     if is_ica_rmEye:
         # ICA on EEG channels only
         ica = mne.preprocessing.ICA(n_components=EEG.info.get_channel_types().count('eeg'),
-                method='infomax', random_state=42)
-        ica.fit(EEG, picks=['eeg'])
+                method='infomax', random_state=42,verbose=False)
+        ica.fit(EEG, picks=['eeg'],verbose=False)
         #  remove potential eye components (if any) using EOG channles
-        eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['hEOG','vEOG'], measure='correlation')
+        eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['hEOG','vEOG'], measure='correlation', verbose=False)
         ica.exclude = eog_inds
-        EEG = ica.apply(EEG)
+        EEG = ica.apply(EEG,verbose=False)
 
     return EEG
 
 
-def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1):
+def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
     #check if event_file exists
     if not os.path.exists(event_file):
         event_file = event_file.replace("run-0", "run-")
         if not os.path.exists(event_file):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
-    event_duration = float(events_df["duration"].values[0])
+    """
+    The event duration varies for each trial. For convenience, I fixed it as 0.8 second.
+    (Chi 10/22/2025)
+    """
+    # event_duration = float(events_df["duration"].values[0])
+    """
+    """
     is_event_correct = (events_df["value"].values).astype(int)
     is_event_mnt = ((events_df["trial_type"]=="mnt").values).astype(int)
     event_ids = is_event_mnt*2+is_event_correct
@@ -122,9 +128,9 @@ def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_l
     # epoch by event
     epochs = mne.Epochs(EEG, events=events_filtered,event_id={select_event:event_labels_lookup[select_event]},preload=True,
                         tmin=baseline_length, tmax=tmax,
-                        reject=epoch_reject_crit, detrend=is_detrend
+                        reject=epoch_reject_crit, detrend=is_detrend, verbose=False
                         )
-    epochs.drop_bad()
+    epochs.drop_bad(verbose=False)
 
     if epoch_reject_crit is not None:
         print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")

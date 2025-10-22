@@ -122,6 +122,38 @@ for ch_i in range(len(vis_ch)):
     plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
 
+#%% visual check EEG
+subj_id = 670
+run_id = 2
+raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
+run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
+EEG = fix_and_load_brainvision(run_path,subj_id)
 
+# Plot 6 channels with 1000 sample points
+channels_to_plot = [0, 1, 2, 3, 5, 6]
+n_samples = 1000
+start_sample = 0
+
+# Get data and time vector
+data, times = EEG.get_data(return_times=True)
+time_vector = times[start_sample:start_sample + n_samples]
+
+# Create figure with 6 subplots (2 rows, 3 columns)
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+axes = axes.flatten()
+
+for idx, ch_idx in enumerate(channels_to_plot):
+    ch_name = EEG.ch_names[ch_idx]
+    ch_data = data[ch_idx, start_sample:start_sample + n_samples]
+    ch_data_uV = ch_data * 1e6  # Convert from V to µV
+
+    axes[idx].plot(time_vector, ch_data_uV, linewidth=0.5)
+    axes[idx].set_title(f'Channel {ch_idx}: {ch_name}')
+    axes[idx].set_xlabel('Time (s)')
+    axes[idx].set_ylabel('Amplitude (µV)')
+    axes[idx].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
 
 
