@@ -56,7 +56,7 @@ for subj_id in tqdm(subj_id_array):
             print("="*20)
             print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
             print("="*20)
-            exclude_run_dict[subj_id].append(run_id)
+            exclude_run_dict[f"sub-{subj_id}"].append(run_id)
             epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
                                                             epoch_reject_crit=None, is_detrend=1)
         # save epochs
@@ -67,6 +67,36 @@ for subj_id in tqdm(subj_id_array):
 plt_epoch = subj_epoch_array[0]
 vis_ch = 'cz'
 plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
+
+#%% Visualize mean and std of each element in subj_epoch_array
+means = []
+stds = []
+for i, epoch in enumerate(subj_epoch_array):
+    epoch_data = epoch.get_data()  # shape: (n_epochs, n_channels, n_times)
+    means.append(np.mean(epoch_data))
+    stds.append(np.std(epoch_data))
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+x_pos = np.arange(len(subj_epoch_array))
+
+# Plot means
+ax1.bar(x_pos, means, color='steelblue', alpha=0.7)
+ax1.set_xlabel('Subject/Run Index')
+ax1.set_ylabel('Mean Amplitude')
+ax1.set_title('Mean of Each Epoch Element')
+ax1.set_xticks(x_pos)
+ax1.grid(axis='y', alpha=0.3)
+
+# Plot stds
+ax2.bar(x_pos, stds, color='coral', alpha=0.7)
+ax2.set_xlabel('Subject/Run Index')
+ax2.set_ylabel('Standard Deviation')
+ax2.set_title('Std of Each Epoch Element')
+ax2.set_xticks(x_pos)
+ax2.grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.show()
 
 #%% check excluded EEG
 # run_path = os.path.join(raw_EEG_path, f'{exclude_run_array[0]}.vhdr')
@@ -83,6 +113,3 @@ epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseli
 
 
 #%%
-
-
-

@@ -94,15 +94,42 @@ def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_l
     print(f"# {select_event}/ # total = {n_select_ev}/{events.shape[0]} ({n_select_ev/events.shape[0]*100:.1f}%)")
     # pick only selected event
     events = events[events[:,-1]==event_labels_lookup[select_event]]
+    
+    # Check if we have any events
+    if len(events) == 0:
+        raise ValueError(f"No events found for {select_event}")
+    
+    # Filter out events that fall outside valid data range
+    sfreq = EEG.info["sfreq"]
+    n_samples = len(EEG.times)
+    tmax = event_duration + baseline_length
+    
+    # Calculate required samples before and after event
+    samples_before = int(np.abs(baseline_length) * sfreq)
+    samples_after = int(tmax * sfreq)
+    
+    # Filter events that have enough data on both sides
+    valid_mask = (events[:, 0] >= samples_before) & (events[:, 0] <= n_samples - samples_after)
+    events_filtered = events[valid_mask]
+    
+    n_excluded = len(events) - len(events_filtered)
+    if n_excluded > 0:
+        print(f"Warning: {n_excluded} events excluded (outside valid data range)")
+    
+    if len(events_filtered) == 0:
+        raise ValueError(f"No valid events remain after filtering (all {len(events)} events are outside the valid data range)")
+    
     # epoch by event
-    epochs = mne.Epochs(EEG, events=events,event_id={select_event:event_labels_lookup[select_event]},preload=True,
-                        tmin=baseline_length, tmax=event_duration+baseline_length,
-                        reject=epoch_reject_crit
+    epochs = mne.Epochs(EEG, events=events_filtered,event_id={select_event:event_labels_lookup[select_event]},preload=True,
+                        tmin=baseline_length, tmax=tmax,
+                        reject=epoch_reject_crit, detrend=is_detrend
                         )
     epochs.drop_bad()
-    if is_detrend:
-        epochs = epochs.detrend(1)
-    print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
+
+    if epoch_reject_crit is not None:
+        print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
+    else:
+        print(f"# Epochs (no rejection applied) = {len(epochs.selection)}")
 
     return epochs
 
