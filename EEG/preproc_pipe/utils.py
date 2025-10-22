@@ -7,6 +7,7 @@ from mne import events_from_annotations
 import os
 import re
 import tempfile
+import pandas as pd
 
 
 #%% utils function
@@ -96,9 +97,11 @@ def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_l
     # epoch by event
     epochs = mne.Epochs(EEG, events=events,event_id={select_event:event_labels_lookup[select_event]},preload=True,
                         tmin=baseline_length, tmax=event_duration+baseline_length,
-                        reject=epoch_reject_crit,
-                        detrend=is_detrend, 
+                        reject=epoch_reject_crit
                         )
+    epochs.drop_bad()
+    if is_detrend:
+        epochs = epochs.detrend(1)
     print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
 
     return epochs
