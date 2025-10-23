@@ -10,17 +10,20 @@ import os
 from utils import *
 from tqdm import tqdm
 import pickle
+import glob
 
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
 git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata")
+data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw")
+project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
 subj_id_array = [670, 671, 673, 695]
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
 data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data")
 
-#%% parameter setting
+
+#%% preprocessing parameter setting
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -44,12 +47,35 @@ preproc_params = dict(
     epoch_reject_crit = epoch_reject_crit
 )
 
-#%% epoch each subject
+#%% Check if preprocessed EEG exist. If not, preprocess.
+subj_EEG_dict = dict()
+for subj_id in subj_id_array:
+    subj_EEG_dict[f"sub-{subj_id}"] = dict()
+    # get all the vdhr files in raw folder
+    raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
+    preproc_save_path = os.path.join(project_path,f"sub-{subj_id}",'eeg')
+    filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
+    # check if subject's EEG has been preprocessed.
+    for fname in filename_list:
+        preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc.fif')
+        if not os.path.exists(preproc_fname):
+            EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                                is_reref=is_reref, reref_ch=reref_ch,
+                                is_ica_rmEye=is_ica_rmEye)
+            EEG.save(preproc_fname)
+        else:
+            # load existed EEG
+            EEG = mne.io.read_raw(preproc_fname,preload=True)
+        subj_EEG_dict[f"sub-{subj_id}"][fname.split('.')[0].split('_')[-1]] = EEG
+
+
+#%% Check if epoched data exist. If not, epoch.
 if not os.path.exists(os.path.join(data_save_path, f'epochs_{select_event}.pkl')):
     subj_epoch_dict = dict()
     exclude_run_dict = dict()
     for subj_id in tqdm(subj_id_array):
-        raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
+        raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
         subj_epoch_dict[f"sub-{subj_id}"] = []
         exclude_run_dict[f"sub-{subj_id}"] = []
         for run_id in np.arange(1,4):

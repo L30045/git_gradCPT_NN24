@@ -24,19 +24,30 @@ def fix_and_load_brainvision(vhdr_path,
         # load with MNE
         raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload, verbose=False)
     else:
-        # assign correct eeg and vmrk filename
-        correct_eeg_filename = f'sub-{subj_id}_gradCPT1.eeg'
-        correct_vmrk_filename = f'sub-{subj_id}_gradCPT1.vmrk'
         # read textvmrk
         with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
             text = f.read()
-        # Replace DataFile= and MarkerFile= (case-insensitive)
-        text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
-                            f"DataFile={correct_eeg_filename}",
+        # Capture the old filename from the text
+        match = re.search(r'(?im)^\s*DataFile\s*=\s*(.*)$', text)
+        if match:
+            old_filename = match.group(1)
+            # Replace only the subject ID part
+            new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+            
+            text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
+                            f"DataFile={new_filename}",
                             text)
-        text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
-                            f"MarkerFile={correct_vmrk_filename}",
+        # Capture the old filename from the text
+        match = re.search(r'(?im)^\s*MarkerFile\s*=\s*(.*)$', text)
+        if match:
+            old_filename = match.group(1)
+            # Replace only the subject ID part
+            new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+            
+            text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
+                            f"MarkerFile={new_filename}",
                             text_fixed)
+
         # write to a temp file in same directory (so relative paths inside vhdr still work)
         tmp = tempfile.NamedTemporaryFile(delete=False,
                                             suffix='.vhdr',
