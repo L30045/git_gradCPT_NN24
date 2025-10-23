@@ -9,6 +9,7 @@ mne.viz.set_browser_backend("matplotlib")
 import os
 from utils import *
 from tqdm import tqdm
+import pickle
 
 
 #%% path setting
@@ -17,6 +18,7 @@ git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata")
 subj_id_array = [670, 671, 673, 695]
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
+data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data")
 
 #%% parameter setting
 is_bpfilter = True
@@ -31,39 +33,76 @@ epoch_reject_crit = dict(
                         )
 is_detrend = 1 # 0:constant, 1:linear, None
 
-#%% epoch each subject
-subj_epoch_dict = dict()
-exclude_run_dict = dict()
-for subj_id in tqdm(subj_id_array):
-    raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
-    subj_epoch_dict[f"sub-{subj_id}"] = []
-    exclude_run_dict[f"sub-{subj_id}"] = []
-    for run_id in np.arange(1,4):
-        # load run 1 as testing
-        run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
-        EEG = fix_and_load_brainvision(run_path,subj_id)
-        EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-                            is_reref=is_reref, reref_ch=reref_ch,
-                            is_ica_rmEye=is_ica_rmEye)
+preproc_params = dict(
+    is_bpfilter = is_bpfilter,
+    bp_f_range = bp_f_range,
+    is_reref = is_reref,
+    reref_ch = reref_ch,
+    is_ica_rmEye = is_ica_rmEye,
+    select_event = select_event,
+    baseline_length = baseline_length,
+    epoch_reject_crit = epoch_reject_crit
+)
 
-        # Epoching
-        # load corresponding event file
-        event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
-                                f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-        try:    
-            epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
-                                                            epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
-        except:
-            print("="*20)
-            print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
-            print("="*20)
-            exclude_run_dict[f"sub-{subj_id}"].append(run_id)
-            epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
-                                                            epoch_reject_crit=None, is_detrend=1)
-        # save epochs
-        subj_epoch_dict[f"sub-{subj_id}"].append(epochs)
+#%% epoch each subject
+if not os.path.exists(os.path.join(data_save_path, f'epochs_{select_event}.pkl')):
+    subj_epoch_dict = dict()
+    exclude_run_dict = dict()
+    for subj_id in tqdm(subj_id_array):
+        raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
+        subj_epoch_dict[f"sub-{subj_id}"] = []
+        exclude_run_dict[f"sub-{subj_id}"] = []
+        for run_id in np.arange(1,4):
+            # load run 1 as testing
+            run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
+            EEG = fix_and_load_brainvision(run_path,subj_id)
+            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                                is_reref=is_reref, reref_ch=reref_ch,
+                                is_ica_rmEye=is_ica_rmEye)
+
+            # Epoching
+            # load corresponding event file
+            event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
+                                    f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+            try:    
+                epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
+                                                                epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
+            except:
+                print("="*20)
+                print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
+                print("="*20)
+                exclude_run_dict[f"sub-{subj_id}"].append(run_id)
+                epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
+                                                                epoch_reject_crit=None, is_detrend=1)
+            # save epochs
+            subj_epoch_dict[f"sub-{subj_id}"].append(epochs)
+
+    # save processed data for future use
+    save_data = dict(
+        subj_epoch_dict=subj_epoch_dict,
+        exclude_run_dict=exclude_run_dict,
+        preproc_params=preproc_params
+    )
+    with open(os.path.join(data_save_path, f'epochs_{select_event}.pkl'), 'wb') as f:
+        pickle.dump(save_data, f)
+else:
+    with open(os.path.join(data_save_path, f'epochs_{select_event}.pkl'), 'rb') as f:
+        tmp_data = pickle.load(f)
+        subj_epoch_dict = tmp_data['subj_epoch_dict']
+        exclude_run_dict = tmp_data['exclude_run_dict']
+        preproc_params = tmp_data['preproc_params']
 
 #%% Combine epochs for each subject
+# Unpack preprocessing parameters
+is_bpfilter = preproc_params['is_bpfilter']
+bp_f_range = preproc_params['bp_f_range']
+is_reref = preproc_params['is_reref']
+reref_ch = preproc_params['reref_ch']
+is_ica_rmEye = preproc_params['is_ica_rmEye']
+select_event = preproc_params['select_event']
+baseline_length = preproc_params['baseline_length']
+epoch_reject_crit = preproc_params['epoch_reject_crit']
+
 # Concatenate the list of epochs into one epoch object for each subject
 subj_epoch_array = []
 for subj_key in subj_epoch_dict.keys():

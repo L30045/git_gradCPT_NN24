@@ -81,7 +81,7 @@ def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_l
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
     """
-    The event duration varies for each trial. For convenience, I fixed it as 0.8 second.
+    The event duration varies for each trial. For convenience, I fixed it as 0.8 second for mnt_correct trials and 1.6 for city_correct trials.
     (Chi 10/22/2025)
     """
     # event_duration = float(events_df["duration"].values[0])
