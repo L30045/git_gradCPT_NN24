@@ -20,7 +20,6 @@ def fix_and_load_brainvision(vhdr_path,
     """
     # check if subj_id == 695
     if subj_id==695:
-        vhdr_path = os.path.join(os.path.dirname(vhdr_path),'G'+os.path.basename(vhdr_path).split('_')[-1][1:])
         # load with MNE
         raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload, verbose=False)
     else:

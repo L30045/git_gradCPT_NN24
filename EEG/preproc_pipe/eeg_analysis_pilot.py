@@ -49,11 +49,13 @@ preproc_params = dict(
 
 #%% Check if preprocessed EEG exist. If not, preprocess.
 subj_EEG_dict = dict()
-for subj_id in subj_id_array:
+for subj_id in tqdm(subj_id_array):
     subj_EEG_dict[f"sub-{subj_id}"] = dict()
     # get all the vdhr files in raw folder
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-    preproc_save_path = os.path.join(project_path,f"sub-{subj_id}",'eeg')
+    preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}",'eeg')
+    if not os.path.exists(preproc_save_path):
+        os.makedirs(preproc_save_path, exist_ok=True)
     filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
     # check if subject's EEG has been preprocessed.
     for fname in filename_list:
@@ -67,75 +69,72 @@ for subj_id in subj_id_array:
         else:
             # load existed EEG
             EEG = mne.io.read_raw(preproc_fname,preload=True)
-        subj_EEG_dict[f"sub-{subj_id}"][fname.split('.')[0].split('_')[-1]] = EEG
+        subj_EEG_dict[f"sub-{subj_id}"][fname.split('.')[0].split('_')[-1].lower()] = EEG
 
 
-#%% Check if epoched data exist. If not, epoch.
-if not os.path.exists(os.path.join(data_save_path, f'epochs_{select_event}.pkl')):
-    subj_epoch_dict = dict()
-    exclude_run_dict = dict()
-    for subj_id in tqdm(subj_id_array):
-        raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-        subj_epoch_dict[f"sub-{subj_id}"] = []
-        exclude_run_dict[f"sub-{subj_id}"] = []
-        for run_id in np.arange(1,4):
-            # load run 1 as testing
-            run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
-            EEG = fix_and_load_brainvision(run_path,subj_id)
-            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-                                is_reref=is_reref, reref_ch=reref_ch,
-                                is_ica_rmEye=is_ica_rmEye)
-
-            # Epoching
-            # load corresponding event file
-            event_file = os.path.join(data_path,os.pardir,f"sub-{subj_id}","nirs",
-                                    f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-            try:    
-                epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
-                                                                epoch_reject_crit=dict(eeg=100e-6), is_detrend=1)
-            except:
-                print("="*20)
-                print(f"No clean trial found in sub-{subj_id}_gradCPT{run_id}.")    
-                print("="*20)
-                exclude_run_dict[f"sub-{subj_id}"].append(run_id)
-                epochs = epoch_by_select_event(EEG, event_file, select_event=select_event,baseline_length=baseline_length,
-                                                                epoch_reject_crit=None, is_detrend=1)
+#%% Epoch data
+subj_epoch_dict = dict()
+include_2_analysis = []
+# for each subject
+for subj_id in tqdm(subj_EEG_dict.keys()):
+    subj_epoch_dict[subj_id] = dict()
+    # for each run
+    for run_id in np.arange(1,4):
+        subj_epoch_dict[subj_id][f"run{run_id:02d}"] = dict()
+        EEG = subj_EEG_dict[subj_id][f"gradcpt{run_id}"]
+        # load corresponding event file
+        event_file = os.path.join(project_path,f"{subj_id}","nirs",
+                                f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        events, event_labels_lookup = tsv_to_events(event_file)
+        # for each condition
+        for select_event in event_labels_lookup.keys():
+            if np.any(events[:,-1]==event_labels_lookup[select_event]):
+                event_duration = 1 if select_event.split('_')[-1]=='response' else 0.8
+                baseline_length = -0.5 if select_event.split('_')[-1]=='response' else -0.2
+                try:    
+                    epochs = epoch_by_select_event(EEG, events, select_event=select_event,
+                                                                baseline_length=baseline_length,
+                                                                epoch_reject_crit=dict(eeg=100e-6),
+                                                                is_detrend=1,
+                                                                event_duration=event_duration,
+                                                                verbose=False)
+                    include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
+                except:
+                    print("="*20)
+                    print(f"No clean trial found in {subj_id}_gradCPT{run_id}.")    
+                    print("="*20)
+                    epochs = epoch_by_select_event(EEG, events, select_event=select_event,
+                                                                baseline_length=baseline_length,
+                                                                epoch_reject_crit=None,
+                                                                is_detrend=1,
+                                                                event_duration=event_duration,
+                                                                verbose=False)
+            else:
+                epochs=[]                                                                    
             # save epochs
-            subj_epoch_dict[f"sub-{subj_id}"].append(epochs)
+            subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event] = epochs
 
-    # save processed data for future use
-    save_data = dict(
-        subj_epoch_dict=subj_epoch_dict,
-        exclude_run_dict=exclude_run_dict,
-        preproc_params=preproc_params
-    )
-    with open(os.path.join(data_save_path, f'epochs_{select_event}.pkl'), 'wb') as f:
-        pickle.dump(save_data, f)
-else:
-    with open(os.path.join(data_save_path, f'epochs_{select_event}.pkl'), 'rb') as f:
-        tmp_data = pickle.load(f)
-        subj_epoch_dict = tmp_data['subj_epoch_dict']
-        exclude_run_dict = tmp_data['exclude_run_dict']
-        preproc_params = tmp_data['preproc_params']
+# save processed data for future use
+save_data = dict(
+    subj_epoch_dict=subj_epoch_dict,
+    include_2_analysis=include_2_analysis
+)
+with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
+    pickle.dump(save_data, f)
 
-#%% Combine epochs for each subject
-# Unpack preprocessing parameters
-is_bpfilter = preproc_params['is_bpfilter']
-bp_f_range = preproc_params['bp_f_range']
-is_reref = preproc_params['is_reref']
-reref_ch = preproc_params['reref_ch']
-is_ica_rmEye = preproc_params['is_ica_rmEye']
-select_event = preproc_params['select_event']
-baseline_length = preproc_params['baseline_length']
-epoch_reject_crit = preproc_params['epoch_reject_crit']
-
-# Concatenate the list of epochs into one epoch object for each subject
-subj_epoch_array = []
-for subj_key in subj_epoch_dict.keys():
-    if len(subj_epoch_dict[subj_key]) > 0:
-        # Concatenate all epochs for this subject into a single Epochs object
-        combined_epochs = mne.concatenate_epochs(subj_epoch_dict[subj_key])
-        subj_epoch_array.append(combined_epochs)
+#%% combine runs for each subject
+combine_epoch_dict = dict()
+for select_event in event_labels_lookup.keys():
+    epoch_list = []
+    for subj_id in subj_epoch_dict.keys():
+        tmp_epoch_list = []
+        for run_id in np.arange(1,4):
+            loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
+            if len(loc_e)>0:
+                tmp_epoch_list.append(loc_e)
+        if len(tmp_epoch_list)>0:
+            epoch_list.append(mne.concatenate_epochs(tmp_epoch_list,verbose=False))
+    combine_epoch_dict[select_event] = epoch_list
 
 #%% Visualizing
 # sanity check with one subject
@@ -144,6 +143,8 @@ for subj_key in subj_epoch_dict.keys():
 # plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
 
 #%% cross-subjects results
+select_event = 'mnt_incorrect_response'
+subj_epoch_array = combine_epoch_dict[select_event]
 # Plot mean and +/- 2 SEM across subjects
 vis_ch = ['fz','cz','pz','oz']
 # Extract data for the selected channel from all subjects
@@ -183,7 +184,7 @@ for ch_i in range(len(vis_ch)):
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     # save figure to fig_save_path
-    save_filename = f'cross_subject_ERP_{vis_ch[ch_i]}_mean_2SEM.png'
+    save_filename = f'xSubject_ERP_{select_event}_{vis_ch[ch_i]}_mean_2SEM.png'
     plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
 
