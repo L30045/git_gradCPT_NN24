@@ -72,30 +72,40 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
 
     return EEG
 
-
-def epoch_by_select_event(EEG, event_file, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
+def tsv_to_events(event_file):
     #check if event_file exists
     if not os.path.exists(event_file):
         event_file = event_file.replace("run-0", "run-")
         if not os.path.exists(event_file):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
+    event_ids = events_df["response_code"]
+    event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
+                            mnt_incorrect=-2, mnt_correct=0,
+                            city_incorrect_response=-11, city_correct_response=11,
+                            mnt_incorrect_response=-12, mnt_correct_response=10)
+    
+    # create events array (onset, stim_channel_voltage, event_id)
+    events_stim_onset = np.column_stack(((events_df["onset"]*EEG.info["sfreq"]).astype(int),
+                        np.zeros(len(events_df), dtype=int),
+                        event_ids))
+    events_response = np.column_stack((((events_df["onset"]+events_df["reaction_time"])*EEG.info["sfreq"]).astype(int),
+                        np.zeros(len(events_df), dtype=int),
+                        event_ids+10*((event_ids>=0).astype(int)*2-1)))
+    # stack together
+    events = np.vstack([events_stim_onset,events_response])
+    return events, event_labels_lookup
+
+def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
+    
     """
     The event duration varies for each trial. For convenience, I fixed it as 0.8 second for mnt_correct trials and 1.6 for city_correct trials.
     (Chi 10/22/2025)
     """
-    # event_duration = float(events_df["duration"].values[0])
-    """
-    """
-    is_event_correct = (events_df["value"].values).astype(int)
-    is_event_mnt = ((events_df["trial_type"]=="mnt").values).astype(int)
-    event_ids = is_event_mnt*2+is_event_correct
-    event_labels_lookup = dict(city_incorrect=0, city_correct=1,
-                            mnt_incorrect=2, mnt_correct=3)
-    # create events array (onset, stim_channel_voltage, event_id)
-    events = np.column_stack(((events_df["onset"]*EEG.info["sfreq"]).astype(int),
-                        np.zeros(len(events_df), dtype=int),
-                        event_ids))
+    event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
+                            mnt_incorrect=-2, mnt_correct=0,
+                            city_incorrect_response=-11, city_correct_response=11,
+                            mnt_incorrect_response=-12, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
     print(f"# {select_event}/ # total = {n_select_ev}/{events.shape[0]} ({n_select_ev/events.shape[0]*100:.1f}%)")
     # pick only selected event
