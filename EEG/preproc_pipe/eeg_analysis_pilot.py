@@ -85,7 +85,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
         # load corresponding event file
         event_file = os.path.join(project_path,f"{subj_id}","nirs",
                                 f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-        events, event_labels_lookup = tsv_to_events(event_file)
+        events, event_labels_lookup = tsv_to_events(event_file, EEG.info["sfreq"])
         # for each condition
         for select_event in event_labels_lookup.keys():
             if np.any(events[:,-1]==event_labels_lookup[select_event]):
@@ -96,8 +96,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                                                                 baseline_length=baseline_length,
                                                                 epoch_reject_crit=dict(eeg=100e-6),
                                                                 is_detrend=1,
-                                                                event_duration=event_duration,
-                                                                verbose=False)
+                                                                event_duration=event_duration)
                     include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
                 except:
                     print("="*20)
@@ -107,8 +106,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                                                                 baseline_length=baseline_length,
                                                                 epoch_reject_crit=None,
                                                                 is_detrend=1,
-                                                                event_duration=event_duration,
-                                                                verbose=False)
+                                                                event_duration=event_duration)
             else:
                 epochs=[]                                                                    
             # save epochs
@@ -143,7 +141,8 @@ for select_event in event_labels_lookup.keys():
 # plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
 
 #%% cross-subjects results
-select_event = 'mnt_incorrect_response'
+is_save_fig = False
+select_event = 'city_correct'
 subj_epoch_array = combine_epoch_dict[select_event]
 # Plot mean and +/- 2 SEM across subjects
 vis_ch = ['fz','cz','pz','oz']
@@ -184,9 +183,72 @@ for ch_i in range(len(vis_ch)):
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     # save figure to fig_save_path
-    save_filename = f'xSubject_ERP_{select_event}_{vis_ch[ch_i]}_mean_2SEM.png'
-    plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
+    if is_save_fig:
+        save_filename = f'xSubject_ERP_{select_event}_{vis_ch[ch_i]}_mean_2SEM.png'
+        plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
+
+#%% compare city and mountain ERP
+is_save_fig = True
+select_events = ['city_correct', 'mnt_correct']
+vis_ch = ['fz','cz','pz','oz']
+
+# Extract cross-subject ERPs for both conditions
+condition_data = {}
+for select_event in select_events:
+    subj_epoch_array = combine_epoch_dict[select_event]
+    n_subjects = len(subj_epoch_array)
+    xSubj_erps = []
+    for epoch in subj_epoch_array:
+        # Get average ERP for this subject
+        evoked = epoch.average()
+        subject_erps = []
+        for ch_i in vis_ch:
+            ch_idx = evoked.ch_names.index(ch_i)
+            subject_erps.append(evoked.data[ch_idx, :])
+        subject_erps = np.vstack(subject_erps)
+        xSubj_erps.append(subject_erps)
+    condition_data[select_event] = {'erps': xSubj_erps, 'n_subjects': n_subjects}
+
+# Plot comparison for each channel
+for ch_i in range(len(vis_ch)):
+    plt.figure(figsize=(10, 6))
+
+    colors = ['b', 'r']
+    for idx, select_event in enumerate(select_events):
+        xSubj_erps = condition_data[select_event]['erps']
+        n_subjects = condition_data[select_event]['n_subjects']
+
+        plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
+        # Calculate mean and SEM across subjects
+        mean_erp = np.mean(plt_erps, axis=0)
+        sem_erp = np.std(plt_erps, axis=0) / np.sqrt(n_subjects)
+        upper_bound = mean_erp + 2 * sem_erp
+        lower_bound = mean_erp - 2 * sem_erp
+
+        # Get time vector and convert to milliseconds
+        time_vector = combine_epoch_dict[select_event][0].times * 1000
+
+        # Plot
+        label = select_event.replace('_', ' ').title()
+        plt.plot(time_vector, mean_erp, color=colors[idx], linewidth=2, label=f'{label} Mean')
+        plt.fill_between(time_vector, lower_bound, upper_bound, alpha=0.3, color=colors[idx])
+
+    plt.axhline(0, color='k', linestyle='--', linewidth=1)
+    plt.axvline(0, color='k', linestyle='--', linewidth=1)
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Amplitude (V)')
+    plt.title(f'City vs Mountain ERP Comparison at {vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    # save figure to fig_save_path
+    if is_save_fig:
+        save_filename = f'xSubject_ERP_cityC_vs_mntC_{vis_ch[ch_i]}_mean_2SEM.png'
+        plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
+    plt.show()
+
+
 
 #%% visual check EEG
 subj_id = 670

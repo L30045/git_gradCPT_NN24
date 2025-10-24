@@ -82,7 +82,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
 
     return EEG
 
-def tsv_to_events(event_file):
+def tsv_to_events(event_file, sfreq):
     #check if event_file exists
     if not os.path.exists(event_file):
         event_file = event_file.replace("run-0", "run-")
@@ -96,10 +96,10 @@ def tsv_to_events(event_file):
                             mnt_incorrect_response=-12, mnt_correct_response=10)
     
     # create events array (onset, stim_channel_voltage, event_id)
-    events_stim_onset = np.column_stack(((events_df["onset"]*EEG.info["sfreq"]).astype(int),
+    events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
                         event_ids))
-    events_response = np.column_stack((((events_df["onset"]+events_df["reaction_time"])*EEG.info["sfreq"]).astype(int),
+    events_response = np.column_stack((((events_df["onset"]+events_df["reaction_time"])*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
                         event_ids+10*((event_ids>=0).astype(int)*2-1)))
     # stack together
