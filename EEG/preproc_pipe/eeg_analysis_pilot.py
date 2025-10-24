@@ -74,21 +74,25 @@ for subj_id in tqdm(subj_id_array):
 
 #%% Epoch data
 subj_epoch_dict = dict()
+subj_vtc_dict = dict()
 include_2_analysis = []
 # for each subject
 for subj_id in tqdm(subj_EEG_dict.keys()):
     subj_epoch_dict[subj_id] = dict()
+    subj_vtc_dict[subj_id] = dict()
     # for each run
     for run_id in np.arange(1,4):
         subj_epoch_dict[subj_id][f"run{run_id:02d}"] = dict()
+        subj_vtc_dict[subj_id][f"run{run_id:02d}"] = dict()
         EEG = subj_EEG_dict[subj_id][f"gradcpt{run_id}"]
         # load corresponding event file
         event_file = os.path.join(project_path,f"{subj_id}","nirs",
                                 f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-        events, event_labels_lookup = tsv_to_events(event_file, EEG.info["sfreq"])
+        events, event_labels_lookup, vtc_list = tsv_to_events(event_file, EEG.info["sfreq"])
         # for each condition
         for select_event in event_labels_lookup.keys():
             if np.any(events[:,-1]==event_labels_lookup[select_event]):
+                ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
                 event_duration = 1 if select_event.split('_')[-1]=='response' else 0.8
                 baseline_length = -0.5 if select_event.split('_')[-1]=='response' else -0.2
                 try:    
@@ -98,23 +102,29 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                                                                 is_detrend=1,
                                                                 event_duration=event_duration)
                     include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
+                    # remove vtc that is dropped
+                    ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
                 except:
                     print("="*20)
                     print(f"No clean trial found in {subj_id}_gradCPT{run_id}.")    
                     print("="*20)
-                    epochs = epoch_by_select_event(EEG, events, select_event=select_event,
-                                                                baseline_length=baseline_length,
-                                                                epoch_reject_crit=None,
-                                                                is_detrend=1,
-                                                                event_duration=event_duration)
+                    # epochs = epoch_by_select_event(EEG, events, select_event=select_event,
+                    #                                             baseline_length=baseline_length,
+                    #                                             epoch_reject_crit=None,
+                    #                                             is_detrend=1,
+                    #                                             event_duration=event_duration)
+                    epochs = []
             else:
-                epochs=[]                                                                    
+                epochs=[]         
+                ev_vtc = []                                                           
             # save epochs
             subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event] = epochs
+            subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event] = ev_vtc
 
 # save processed data for future use
 save_data = dict(
     subj_epoch_dict=subj_epoch_dict,
+    subj_vtc_dict=subj_vtc_dict,
     include_2_analysis=include_2_analysis
 )
 with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
@@ -122,17 +132,24 @@ with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
 
 #%% combine runs for each subject
 combine_epoch_dict = dict()
+combine_vtc_dict = dict()
 for select_event in event_labels_lookup.keys():
     epoch_list = []
+    vtc_list = []
     for subj_id in subj_epoch_dict.keys():
         tmp_epoch_list = []
+        tmp_vtc_list = []
         for run_id in np.arange(1,4):
             loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
+            loc_v = subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event]
             if len(loc_e)>0:
                 tmp_epoch_list.append(loc_e)
+                tmp_vtc_list.append(loc_v)
         if len(tmp_epoch_list)>0:
             epoch_list.append(mne.concatenate_epochs(tmp_epoch_list,verbose=False))
+            vtc_list.append(np.concatenate(tmp_vtc_list))
     combine_epoch_dict[select_event] = epoch_list
+    combine_vtc_dict[select_event] = vtc_list
 
 #%% Visualizing
 # sanity check with one subject
@@ -142,7 +159,7 @@ for select_event in event_labels_lookup.keys():
 
 #%% cross-subjects results
 is_save_fig = False
-select_event = 'city_correct'
+select_event = 'city_correct_response'
 subj_epoch_array = combine_epoch_dict[select_event]
 # Plot mean and +/- 2 SEM across subjects
 vis_ch = ['fz','cz','pz','oz']
@@ -189,7 +206,7 @@ for ch_i in range(len(vis_ch)):
     plt.show()
 
 #%% compare city and mountain ERP
-is_save_fig = True
+is_save_fig = False
 select_events = ['city_correct', 'mnt_correct']
 vis_ch = ['fz','cz','pz','oz']
 
@@ -238,13 +255,13 @@ for ch_i in range(len(vis_ch)):
     plt.axvline(0, color='k', linestyle='--', linewidth=1)
     plt.xlabel('Time (ms)')
     plt.ylabel('Amplitude (V)')
-    plt.title(f'City vs Mountain ERP Comparison at {vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.title(f'{vis_ch[ch_i].upper()} (n={n_subjects})')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     # save figure to fig_save_path
     if is_save_fig:
-        save_filename = f'xSubject_ERP_cityC_vs_mntC_{vis_ch[ch_i]}_mean_2SEM.png'
+        save_filename = f'mntC_vs_mntIC_{vis_ch[ch_i]}_mean_2SEM.png'
         plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
 
@@ -285,3 +302,36 @@ plt.tight_layout()
 plt.show()
 
 
+#%% ERP Image
+"""
+Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
+"""
+select_event = "city_correct"
+ch_i = 'fz'
+window_size = 50  # Number of trials to average
+clim = [-10*1e-6, 10*1e-6]
+plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
+time_vector = plt_epoch.times
+plt_epoch.pick(ch_i)
+plt_epoch = np.squeeze(plt_epoch.get_data())
+plt_vtc = np.concatenate(combine_vtc_dict[select_event])
+sort_idx = np.argsort(plt_vtc)
+plt_epoch = plt_epoch[sort_idx]
+plt_vtc = plt_vtc[sort_idx]
+
+# Smooth along y-axis (trials) using sliding window
+plt_epoch_smooth = uniform_filter1d(plt_epoch, size=window_size, axis=0, mode='nearest')
+plt_vtc_smooth = uniform_filter1d(plt_vtc, size=window_size, mode='nearest')
+plt.figure(figsize=(10, 8))
+plt.imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
+           extent=[time_vector[0], time_vector[-1], plt_vtc_smooth[0], plt_vtc_smooth[-1]],
+           vmin=clim[0], vmax=clim[1]
+           )
+plt.axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Stimulus onset')
+plt.colorbar(label='Amplitude (µV)')
+plt.xlabel('Time (s)')
+plt.ylabel('VTC')
+plt.title(f'ERP Image - {select_event} - Channel: {ch_i}')
+plt.legend(loc='upper right')
+plt.tight_layout()
+plt.show()

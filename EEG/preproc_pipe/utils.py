@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import pandas as pd
+from scipy.ndimage import uniform_filter1d
 
 
 #%% utils function
@@ -104,7 +105,9 @@ def tsv_to_events(event_file, sfreq):
                         event_ids+10*((event_ids>=0).astype(int)*2-1)))
     # stack together
     events = np.vstack([events_stim_onset,events_response])
-    return events, event_labels_lookup
+    # extract VTC
+    vtc_list = np.tile(events_df["VTC"],2)
+    return events, event_labels_lookup, vtc_list
 
 def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
     
