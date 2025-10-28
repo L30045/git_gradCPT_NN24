@@ -107,7 +107,10 @@ def tsv_to_events(event_file, sfreq):
     events = np.vstack([events_stim_onset,events_response])
     # extract VTC
     vtc_list = np.tile(events_df["VTC"],2)
-    return events, event_labels_lookup, vtc_list
+    # extract reaction time
+    reaction_time = np.concatenate([events_df["reaction_time"].values, -1*events_df["reaction_time"].values])
+    
+    return events, event_labels_lookup, vtc_list, reaction_time
 
 def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
     
@@ -186,7 +189,7 @@ def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: n
     if is_return_data:
         return plt_center, plt_shade, plt_time
 
-def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None):
+def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None, ref_onset=None):
     """
     Plot ERPImage for a 2D matrix (trial, times) and the average ERP across all trials.
 
@@ -197,15 +200,27 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
         smooth_window_size: smooth out the ERPImage along trials. ONLY FOR VISUALIZATION.
         clim: color limit in ERPImage.
         title_txt: title.
+        ref_onset: 1d array. The time series relative to the onset (e.g. stim vs response)
     
     Return:
         fig: fig object.
     """
+    # sort along y-axis according to sort_idx
+    if sort_idx is not None:
+        s_idx = np.argsort(sort_idx)
+        plt_epoch = plt_epoch[s_idx]
+        sort_idx = sort_idx[s_idx]
+        plt_vtc_smooth = uniform_filter1d(sort_idx, size=smooth_window_size, mode='nearest')
+        if ref_onset is not None:
+            ref_onset = ref_onset[s_idx]
+            ref_onset_smooth = uniform_filter1d(ref_onset, size=smooth_window_size, mode='nearest')
+    elif ref_onset is not None:
+        ref_onset_smooth = ref_onset
+
     # Smooth along y-axis (trials) using sliding window
     plt_epoch_smooth = uniform_filter1d(plt_epoch, size=smooth_window_size, axis=0, mode='nearest')
-    if sort_idx is not None:
-        plt_vtc_smooth = uniform_filter1d(sort_idx, size=smooth_window_size, mode='nearest')
-    fig, axes = plt.subplots(2, 1, figsize=(10, 10), height_ratios=[2, 1])
+        
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10), height_ratios=[2, 1], sharex=True, constrained_layout=True)
 
     # Top subplot: ERP Image
     if sort_idx is not None:
@@ -218,7 +233,16 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
                             extent=[time_vector[0], time_vector[-1], 0, plt_epoch_smooth.shape[0]],
                             vmin=clim[0], vmax=clim[1]
                             )
-    axes[0].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Stimulus onset')
+    axes[0].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Onset')
+
+    # Plot reference onset line if provided
+    if ref_onset is not None:
+        if sort_idx is not None:
+            axes[0].plot(ref_onset_smooth, plt_vtc_smooth, color='black', linewidth=2, label='Ref Onset')
+        else:
+            y_coords = np.arange(len(ref_onset_smooth))
+            axes[0].plot(ref_onset_smooth, y_coords, color='black', linewidth=2, label='Ref Onset')
+
     plt.colorbar(im, ax=axes[0], label='Amplitude (µV)')
     axes[0].set_xlabel('Time (s)')
     axes[0].set_ylabel('VTC')
@@ -239,7 +263,6 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     axes[1].legend(loc='upper right')
     axes[1].grid(True, alpha=0.3)
 
-    plt.tight_layout()
     plt.show()
     return fig
 
