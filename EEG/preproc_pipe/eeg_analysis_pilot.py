@@ -318,37 +318,7 @@ plt_vtc = np.concatenate(combine_vtc_dict[select_event])
 sort_idx = np.argsort(plt_vtc)
 plt_epoch = plt_epoch[sort_idx]
 plt_vtc = plt_vtc[sort_idx]
+title_txt = f'{select_event} - Channel: {ch_i}'
 
-# Smooth along y-axis (trials) using sliding window
-plt_epoch_smooth = uniform_filter1d(plt_epoch, size=window_size, axis=0, mode='nearest')
-plt_vtc_smooth = uniform_filter1d(plt_vtc, size=window_size, mode='nearest')
-fig, axes = plt.subplots(2, 1, figsize=(10, 10), height_ratios=[2, 1])
+plt_ERPImage(time_vector, plt_epoch, sort_idx=plt_vtc, smooth_window_size=window_size, clim=[-10*1e-6, 10*1e-6], title_txt=title_txt)
 
-# Top subplot: ERP Image
-im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
-                    extent=[time_vector[0], time_vector[-1], plt_vtc_smooth[0], plt_vtc_smooth[-1]],
-                    vmin=clim[0], vmax=clim[1]
-                    )
-axes[0].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Stimulus onset')
-plt.colorbar(im, ax=axes[0], label='Amplitude (µV)')
-axes[0].set_xlabel('Time (s)')
-axes[0].set_ylabel('VTC')
-axes[0].set_title(f'ERP Image - {select_event} - Channel: {ch_i}')
-axes[0].legend(loc='upper right')
-
-# Bottom subplot: Average of all trials
-avg_erp = np.mean(plt_epoch, axis=0)
-sem_erp = np.std(plt_epoch, axis=0) / np.sqrt(plt_epoch.shape[0])
-axes[1].plot(time_vector, avg_erp, linewidth=2, color='blue', label='Mean')
-axes[1].fill_between(time_vector, avg_erp - 2*sem_erp, avg_erp + 2*sem_erp,
-                      alpha=0.3, color='blue', label='±2 SEM')
-axes[1].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Stimulus onset')
-axes[1].axhline(y=0, color='gray', linestyle='-', linewidth=0.5)
-axes[1].set_xlabel('Time (s)')
-axes[1].set_ylabel('Amplitude (V)')
-axes[1].set_title(f'Average ERP - {select_event} - Channel: {ch_i}')
-axes[1].legend(loc='upper right')
-axes[1].grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
