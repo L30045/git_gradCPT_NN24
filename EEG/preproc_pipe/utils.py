@@ -10,6 +10,15 @@ import tempfile
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
 
+#%% path setting
+# Add the parent directory and src directory to sys.path
+git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw")
+project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
+subj_id_array = [670, 671, 673, 695]
+fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
+data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data")
+
 
 #%% utils function
 def fix_and_load_brainvision(vhdr_path,
@@ -67,7 +76,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_ica_rmEye=True):
     if is_bpfilter:
         # band-pass filtering (all channels)
-        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
+        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='eeg',verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
         EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
@@ -82,6 +91,24 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         EEG = ica.apply(EEG,verbose=False)
 
     return EEG
+
+def gen_EEG_event_tsv(subj_id, savepath=None):
+    # setup savepath
+    if savepath is None:
+        savepath = os.path.abspath(f'/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data/sub-{subj_id}/eeg')
+    gradcpt_path = os.path.abspath(f'/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw/sub-{subj_id}/gradCPT')
+    # get all files with .mat ext in gradcpt_path
+    files = [f for f in os.listdir(gradcpt_path) 
+             if os.path.isfile(os.path.join(gradcpt_path, f)) 
+             and f.endswith('.mat')]
+    # for each run, create an event tsv
+    raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
+    EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+
+    
+
+
+
 
 def tsv_to_events(event_file, sfreq):
     #check if event_file exists
