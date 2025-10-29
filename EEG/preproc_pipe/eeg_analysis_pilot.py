@@ -318,7 +318,7 @@ plt.show()
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_incorrect"
+select_event = "city_correct"
 ch_i = 'fz'
 window_size = 10  # Number of trials to average
 clim = [-10*1e-6, 10*1e-6]

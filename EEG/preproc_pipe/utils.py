@@ -203,6 +203,7 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
                             city_incorrect_response=-11, city_correct_response=11,
                             mnt_incorrect_response=-12, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
+    print("="*20)
     print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")
     # pick only selected event
     events = events[events[:,-1]==event_labels_lookup[select_event]]
@@ -242,7 +243,7 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
         print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
     else:
         print(f"# Epochs (no rejection applied) = {len(epochs.selection)}")
-
+    print("="*20)
     return epochs
 
 def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: np.std(x,axis=0)/np.sqrt(x.shape[0]), is_return_data=False, is_plot=True):
