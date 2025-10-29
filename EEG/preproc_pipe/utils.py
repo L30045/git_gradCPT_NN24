@@ -18,7 +18,6 @@ import copy
 git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw")
 project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
-subj_id_array = [670, 671, 673, 695]
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
 data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data")
 
