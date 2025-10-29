@@ -78,7 +78,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_ica_rmEye=True):
     if is_bpfilter:
         # band-pass filtering (all channels)
-        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='eeg',verbose=False)
+        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks=['eeg', 'tp9h', 'tp10h'],verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
         EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
@@ -153,11 +153,11 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         ])
         ev_df['onset'] = t_onset
         ev_df['duration'] = np.diff(data_cpt['ttt'][:,0])
-        ev_df['value'] = np.ones(t_onset.shape) # fix amplitude
+        ev_df['value'] = np.ones(t_onset.shape).astype(int) # fix amplitude
         ev_df['trial_type'] = ['city' if x==32 else 'mnt' for x in data_cpt['response'][:-1,1]]
-        ev_df['exemplar'] = np.zeros(t_onset.shape) # missing stimulus figure id
+        ev_df['exemplar'] = np.zeros(t_onset.shape).astype(int) # missing stimulus figure id
         ev_df['reaction_time'] = react_time
-        ev_df['response_code'] = data_cpt['response'][:-1,6] # press or not
+        ev_df['response_code'] = data_cpt['response'][:-1,6].astype(int) # press or not
         ev_df['VTC'] = vtc
         # save dataframe
         save_filename = os.path.join(savepath, f'sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv')
@@ -170,12 +170,12 @@ def tsv_to_events(event_file, sfreq):
         if not os.path.exists(event_file):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
-    event_ids = events_df["response_code"]
+    event_ids = events_df["response_code"].astype(int)
     event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
                             mnt_incorrect=-2, mnt_correct=0,
                             city_incorrect_response=-11, city_correct_response=11,
                             mnt_incorrect_response=-12, mnt_correct_response=10)
-    
+
     # create events array (onset, stim_channel_voltage, event_id)
     events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
@@ -203,7 +203,7 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
                             city_incorrect_response=-11, city_correct_response=11,
                             mnt_incorrect_response=-12, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
-    print(f"# {select_event}/ # total = {n_select_ev}/{events.shape[0]} ({n_select_ev/events.shape[0]*100:.1f}%)")
+    print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")
     # pick only selected event
     events = events[events[:,-1]==event_labels_lookup[select_event]]
     

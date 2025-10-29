@@ -56,7 +56,7 @@ for subj_id in tqdm(subj_id_array):
             EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
                                 is_reref=is_reref, reref_ch=reref_ch,
                                 is_ica_rmEye=is_ica_rmEye)
-            EEG.save(preproc_fname)
+            EEG.save(preproc_fname, overwrite=True)
         else:
             # load existed EEG
             EEG = mne.io.read_raw(preproc_fname,preload=True)
@@ -93,7 +93,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
             if np.any(events[:,-1]==event_labels_lookup[select_event]):
                 ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
                 ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
-                event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
+                event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.6
                 baseline_length = -1 if select_event.split('_')[-1]=='response' else -0.2
                 try:    
                     epochs = epoch_by_select_event(EEG, events, select_event=select_event,
