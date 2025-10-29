@@ -50,16 +50,16 @@ for subj_id in tqdm(subj_id_array):
     filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
     # check if subject's EEG has been preprocessed.
     for fname in filename_list:
-        preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc.fif')
-        if not os.path.exists(preproc_fname):
-            EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
-            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-                                is_reref=is_reref, reref_ch=reref_ch,
-                                is_ica_rmEye=is_ica_rmEye)
-            EEG.save(preproc_fname, overwrite=True)
-        else:
-            # load existed EEG
-            EEG = mne.io.read_raw(preproc_fname,preload=True)
+        preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
+        # if not os.path.exists(preproc_fname):
+        EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+        EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                            is_reref=is_reref, reref_ch=reref_ch,
+                            is_ica_rmEye=is_ica_rmEye)
+        EEG.save(preproc_fname, overwrite=True)
+        # else:
+        #     # load existed EEG
+        #     EEG = mne.io.read_raw(preproc_fname,preload=True)
         subj_EEG_dict[f"sub-{subj_id}"][fname.split('.')[0].split('_')[-1].lower()] = EEG
 
 
@@ -171,7 +171,7 @@ for select_event in event_labels_lookup.keys():
 
 #%% cross-subjects results
 is_save_fig = False
-select_event = 'city_correct'
+select_event = 'mnt_correct'
 subj_epoch_array = combine_epoch_dict[select_event]
 # Plot mean and +/- 2 SEM across subjects
 vis_ch = ['fz','cz','pz','oz']
@@ -318,8 +318,8 @@ plt.show()
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "city_correct"
-ch_i = 'fz'
+select_event = "mnt_correct"
+ch_i = 'pz'
 window_size = 10  # Number of trials to average
 clim = [-10*1e-6, 10*1e-6]
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])

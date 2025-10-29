@@ -76,9 +76,10 @@ def fix_and_load_brainvision(vhdr_path,
 def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_reref=True, reref_ch=['tp9h','tp10h'],
                       is_ica_rmEye=True):
+    eeg_trigger = EEG.get_data()[4]
     if is_bpfilter:
         # band-pass filtering (all channels)
-        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks=['eeg', 'tp9h', 'tp10h'],verbose=False)
+        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
         EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
@@ -91,6 +92,8 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['hEOG','vEOG'], measure='correlation', verbose=False)
         ica.exclude = eog_inds
         EEG = ica.apply(EEG,verbose=False)
+    # Restore original Trigger channel data
+    EEG._data[4] = eeg_trigger
 
     return EEG
 
