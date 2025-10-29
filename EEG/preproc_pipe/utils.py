@@ -1,14 +1,17 @@
 #%% load library
 import numpy as np
+import scipy as sp
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
 from mne import events_from_annotations
 import os
+import glob
 import re
 import tempfile
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
+import copy
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
@@ -95,20 +98,71 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
 def gen_EEG_event_tsv(subj_id, savepath=None):
     # setup savepath
     if savepath is None:
-        savepath = os.path.abspath(f'/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data/sub-{subj_id}/eeg')
-    gradcpt_path = os.path.abspath(f'/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw/sub-{subj_id}/gradCPT')
+        savepath = os.path.join(data_save_path,f'sub-{subj_id}/eeg')
+    gradcpt_path = os.path.join(data_path, f'sub-{subj_id}/gradCPT')
     # get all files with .mat ext in gradcpt_path
     files = [f for f in os.listdir(gradcpt_path) 
              if os.path.isfile(os.path.join(gradcpt_path, f)) 
              and f.endswith('.mat')]
-    # for each run, create an event tsv
+    # get EEG path
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-    EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
-
-    
-
-
-
+    filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
+    for fname in filename_list:
+        # check if fname is a run session
+        if "cpt" not in fname.lower():
+            continue
+        # get run id
+        run_id = fname.lower().split("cpt")[-1][0]
+        # get EEG trigger
+        EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+        eeg_trigger = EEG.get_data()[4]
+        # load corresponding gradCPT
+        f_cpt = files[[i for i, x in enumerate(files) if x.split('-0')[1][0]==run_id][0]]
+        data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
+        # gradcpt starttime
+        starttime_cpt = data_cpt['starttime'][0][0]
+        # find when EEG trigger is on (to 0)
+        t_eeg_offset_sessions = EEG.times[np.where(eeg_trigger < np.min(eeg_trigger)+(np.max(eeg_trigger)-np.min(eeg_trigger))/2)[0][0]] # sec
+        # event onset time
+        t_onset = data_cpt['ttt'][:-1,0] - starttime_cpt + t_eeg_offset_sessions # exclude last event since it is a fade-out-only event.
+        # check if event onset time exceed EEG recording time
+        if t_onset[-1]>EEG.times[-1]:
+            raise ValueError("Event onset time exceed EEG recording time.")
+        # VTC
+        react_time = data_cpt['response'][:-1,4] # sec
+        meanRT = np.nanmean(react_time)
+        stdRT = np.nanstd(react_time)
+        vtc = copy.deepcopy(react_time)
+        # fill in no reaction time trial with previous trial's reaction time
+        non_zero_idx = np.where(vtc>0)[0]
+        for rt_i in range(len(react_time)):
+            if vtc[rt_i]==0:
+                # assign previous reaction time
+                vtc[rt_i] = vtc[non_zero_idx[np.where(non_zero_idx<rt_i)[0][-1]]]
+        # calculate VTC
+        vtc = np.abs((vtc-meanRT)/stdRT)
+        # create DataFrame
+        ev_df = pd.DataFrame(columns=[
+            'onset',
+            'duration', 
+            'value',
+            'trial_type',
+            'exemplar',
+            'reaction_time',
+            'response_code',
+            'VTC'
+        ])
+        ev_df['onset'] = t_onset
+        ev_df['duration'] = np.diff(data_cpt['ttt'][:,0])
+        ev_df['value'] = np.ones(t_onset.shape) # fix amplitude
+        ev_df['trial_type'] = ['city' if x==32 else 'mnt' for x in data_cpt['response'][:-1,1]]
+        ev_df['exemplar'] = np.zeros(t_onset.shape) # missing stimulus figure id
+        ev_df['reaction_time'] = react_time
+        ev_df['response_code'] = data_cpt['response'][:-1,6] # press or not
+        ev_df['VTC'] = vtc
+        # save dataframe
+        save_filename = os.path.join(savepath, f'sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv')
+        ev_df.to_csv(save_filename, sep='\t', index=False)
 
 def tsv_to_events(event_file, sfreq):
     #check if event_file exists
