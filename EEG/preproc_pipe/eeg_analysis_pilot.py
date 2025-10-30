@@ -319,7 +319,7 @@ plt.show()
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
 select_event = "mnt_correct"
-ch_i = 'pz'
+ch_i = 'cz'
 window_size = 10  # Number of trials to average
 clim = [-10*1e-6, 10*1e-6]
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])

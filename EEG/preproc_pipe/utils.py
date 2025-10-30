@@ -157,7 +157,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         ev_df['onset'] = t_onset
         ev_df['duration'] = np.diff(data_cpt['ttt'][:,0])
         ev_df['value'] = np.ones(t_onset.shape).astype(int) # fix amplitude
-        ev_df['trial_type'] = ['city' if x==32 else 'mnt' for x in data_cpt['response'][:-1,1]]
+        ev_df['trial_type'] = ['city' if x==2 else 'mnt' for x in data_cpt['response'][:-1,0]]
         ev_df['exemplar'] = np.zeros(t_onset.shape).astype(int) # missing stimulus figure id
         ev_df['reaction_time'] = react_time
         ev_df['response_code'] = data_cpt['response'][:-1,6].astype(int) # press or not
