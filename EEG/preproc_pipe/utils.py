@@ -174,10 +174,10 @@ def tsv_to_events(event_file, sfreq):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
     event_ids = events_df["response_code"].astype(int)
-    event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
-                            mnt_incorrect=-2, mnt_correct=0,
-                            city_incorrect_response=-11, city_correct_response=11,
-                            mnt_incorrect_response=-12, mnt_correct_response=10)
+    event_labels_lookup = dict(city_incorrect=-2, city_correct=1,
+                            mnt_incorrect=-1, mnt_correct=0,
+                            city_incorrect_response=-12, city_correct_response=11,
+                            mnt_incorrect_response=-11, mnt_correct_response=10)
 
     # create events array (onset, stim_channel_voltage, event_id)
     events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
@@ -201,10 +201,10 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
     The event duration varies for each trial. For convenience, I fixed it as 0.8 second for mnt_correct trials and 1.6 for city_correct trials.
     (Chi 10/22/2025)
     """
-    event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
-                            mnt_incorrect=-2, mnt_correct=0,
-                            city_incorrect_response=-11, city_correct_response=11,
-                            mnt_incorrect_response=-12, mnt_correct_response=10)
+    event_labels_lookup = dict(city_incorrect=-2, city_correct=1,
+                            mnt_incorrect=-1, mnt_correct=0,
+                            city_incorrect_response=-12, city_correct_response=11,
+                            mnt_incorrect_response=-11, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
     print("="*20)
     print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")

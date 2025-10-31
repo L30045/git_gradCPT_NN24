@@ -93,7 +93,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
             if np.any(events[:,-1]==event_labels_lookup[select_event]):
                 ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
                 ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
-                event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.6
+                event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
                 baseline_length = -1 if select_event.split('_')[-1]=='response' else -0.2
                 try:    
                     epochs = epoch_by_select_event(EEG, events, select_event=select_event,
@@ -135,7 +135,7 @@ save_data = dict(
 with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
     pickle.dump(save_data, f)
 
-#%% combine runs for each subject
+# combine runs for each subject
 combine_epoch_dict = dict()
 combine_vtc_dict = dict()
 combine_react_dict = dict()
@@ -318,9 +318,9 @@ plt.show()
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "city_correct"
+select_event = "mnt_incorrect_response"
 ch_i = 'cz'
-window_size = 10  # Number of trials to average
+window_size = 5  # Number of trials to average
 clim = [-10*1e-6, 10*1e-6]
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
 time_vector = plt_epoch.times
