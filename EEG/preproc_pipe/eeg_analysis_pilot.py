@@ -94,7 +94,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                 ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
                 ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
                 event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
-                baseline_length = -1 if select_event.split('_')[-1]=='response' else -0.2
+                baseline_length = -1.2 if select_event.split('_')[-1]=='response' else -0.2
                 try:    
                     epochs = epoch_by_select_event(EEG, events, select_event=select_event,
                                                                 baseline_length=baseline_length,
@@ -219,7 +219,7 @@ for ch_i in range(len(vis_ch)):
 
 #%% compare city and mountain ERP
 is_save_fig = False
-select_events = ['city_correct', 'mnt_correct']
+select_events = ['city_correct_response', 'mnt_incorrect_response']
 vis_ch = ['fz','cz','pz','oz']
 
 # Extract cross-subject ERPs for both conditions
@@ -277,48 +277,11 @@ for ch_i in range(len(vis_ch)):
         plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
 
-
-
-#%% visual check EEG
-subj_id = 670
-run_id = 2
-raw_EEG_path = os.path.join(data_path, 'raw', f'sub-{subj_id}', 'eeg')
-run_path = os.path.join(raw_EEG_path, f'sub-{subj_id}_gradCPT{run_id}.vhdr')
-EEG = fix_and_load_brainvision(run_path,subj_id)
-
-# Plot 6 channels with 1000 sample points
-channels_to_plot = [0, 1, 2, 3, 5, 6]
-n_samples = 1000
-start_sample = 0
-
-# Get data and time vector
-data, times = EEG.get_data(return_times=True)
-time_vector = times[start_sample:start_sample + n_samples]
-
-# Create figure with 6 subplots (2 rows, 3 columns)
-fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-axes = axes.flatten()
-
-for idx, ch_idx in enumerate(channels_to_plot):
-    ch_name = EEG.ch_names[ch_idx]
-    ch_data = data[ch_idx, start_sample:start_sample + n_samples]
-    ch_data_uV = ch_data * 1e6  # Convert from V to µV
-
-    axes[idx].plot(time_vector, ch_data_uV, linewidth=0.5)
-    axes[idx].set_title(f'Channel {ch_idx}: {ch_name}')
-    axes[idx].set_xlabel('Time (s)')
-    axes[idx].set_ylabel('Amplitude (µV)')
-    axes[idx].grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
-
-
 #%% ERP Image
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_incorrect_response"
+select_event = "mnt_correct"
 ch_i = 'cz'
 window_size = 5  # Number of trials to average
 clim = [-10*1e-6, 10*1e-6]
