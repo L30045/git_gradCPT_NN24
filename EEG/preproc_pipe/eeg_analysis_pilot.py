@@ -11,6 +11,7 @@ from utils import *
 from tqdm import tqdm
 import pickle
 import glob
+import time
 
 
 #%% preprocessing parameter setting
@@ -163,12 +164,6 @@ for select_event in event_labels_lookup.keys():
     combine_vtc_dict[select_event] = vtc_list
     combine_react_dict[select_event] = react_list
 
-#%% Visualizing
-# sanity check with one subject
-# plt_epoch = subj_epoch_array[3]
-# vis_ch = 'cz'
-# plt_center, plt_shade, plt_time = plot_ch_erp(plt_epoch, vis_ch, is_return_data=True)
-
 #%% cross-subjects results
 is_save_fig = False
 select_event = 'mnt_correct'
@@ -220,6 +215,7 @@ for ch_i in range(len(vis_ch)):
 #%% compare city and mountain ERP
 is_save_fig = False
 select_events = ['city_correct_response', 'mnt_incorrect_response']
+colors = ['b', 'g']
 vis_ch = ['fz','cz','pz','oz']
 
 # Extract cross-subject ERPs for both conditions
@@ -243,7 +239,6 @@ for select_event in select_events:
 for ch_i in range(len(vis_ch)):
     plt.figure(figsize=(10, 6))
 
-    colors = ['b', 'r']
     for idx, select_event in enumerate(select_events):
         xSubj_erps = condition_data[select_event]['erps']
         n_subjects = condition_data[select_event]['n_subjects']
@@ -281,14 +276,16 @@ for ch_i in range(len(vis_ch)):
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_correct"
-ch_i = 'cz'
-window_size = 5  # Number of trials to average
+select_event = "city_correct"
+ch_i = 'fz'
+window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
 time_vector = plt_epoch.times
 plt_epoch.pick(ch_i)
 plt_epoch = np.squeeze(plt_epoch.get_data())
+if window_size is None:
+    window_size = np.max([4,np.floor(plt_epoch.shape[0]*0.01).astype(int)])
 plt_vtc = np.concatenate(combine_vtc_dict[select_event])
 plt_react = np.concatenate(combine_react_dict[select_event])
 title_txt = f'{select_event} - Channel: {ch_i}'
@@ -300,3 +297,117 @@ _ = plt_ERPImage(time_vector, plt_epoch,
                  title_txt=title_txt,
                  ref_onset=plt_react)
 
+#%% ERSP analysis using multi-taper
+start_time = time.time()
+select_event = "mnt_correct"
+ch_i = 'cz'
+freqs = np.arange(1.25, 20, 1)
+n_cycles = freqs # temporal window length = n_cycles/freqs
+# n_cycles = freqs*0.2 # 0.2 second windows
+# n_cycles = np.floor(freqs)
+time_bandwidth = 4 # # of tapers = time_bandwith -1 tapers. Also, frequency bandwith = time_bandwith/temporal window
+plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
+time_vector = plt_epoch.times
+plt_epoch.pick(ch_i)
+plt_power, itc = plt_epoch.compute_tfr(
+    method="multitaper",
+    freqs=freqs,
+    n_cycles=n_cycles,
+    time_bandwidth=time_bandwidth,
+    return_itc=True,
+    average=True
+)
+# plt_power = plt_epoch.compute_tfr(
+#     method="multitaper",
+#     freqs=freqs,
+#     n_cycles=n_cycles,
+#     time_bandwidth=time_bandwidth,
+#     return_itc=False,
+#     average=False,
+#     output="complex"
+# )
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+plt_data, plt_time, plt_freq, tapers = plt_power.get_data(return_times=True, return_freqs=True, return_tapers=True)
+
+#%%
+vmin, vmax = -2e-9, 2e-9  # Define our color limits.
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+plt_power.plot(
+    [0],
+        baseline=(0.0, 0.2),
+        mode="mean",
+        vlim=(vmin, vmax),
+        axes=ax1,
+        show=False,
+        colorbar=True,
+)
+ax1.axvline(0,color='k')
+itc.plot(
+    [0],
+        axes=ax2,
+        show=False,
+        colorbar=True,
+)
+ax2.axvline(0,color='k')
+plt.tight_layout()
+
+#%% zone-in vs zone-out
+select_event = "mnt_correct"
+vis_ch = ["fz","cz","pz","oz"]
+
+# Extract cross-subject ERPs for both conditions
+subj_epoch_array = combine_epoch_dict[select_event]
+subj_vtc_array = combine_vtc_dict[select_event]
+thres_vtc_array = [np.median(x) for x in subj_vtc_array] 
+n_subjects = len(subj_epoch_array)
+in_zone_erp = []
+out_zone_erp = []
+for subj_i, epoch in enumerate(subj_epoch_array):
+    subj_in_zone_erp = []
+    subj_out_zone_erp = []
+    for ch_i in vis_ch:
+        # get channel data
+        ch_erp = np.squeeze(epoch.get_data(picks=ch_i))
+        # get in-zone/ out-of-zone data
+        subj_in_zone_erp.append(np.mean(ch_erp[subj_vtc_array[subj_i]<thres_vtc_array[subj_i]],axis=0))
+        subj_out_zone_erp.append(np.mean(ch_erp[subj_vtc_array[subj_i]>=thres_vtc_array[subj_i]],axis=0))
+    in_zone_erp.append(np.vstack(subj_in_zone_erp))
+    out_zone_erp.append(np.vstack(subj_out_zone_erp))
+
+# Plot comparison for each channel
+for ch_i in range(len(vis_ch)):
+    plt_in_zone = np.vstack([x[ch_i] for x in in_zone_erp])
+    plt_out_zone = np.vstack([x[ch_i] for x in out_zone_erp])
+
+    plt.figure(figsize=(10, 6))
+    # Calculate mean and SEM across subjects
+    mean_in = np.mean(plt_in_zone, axis=0)
+    sem_in = np.std(plt_in_zone, axis=0) / np.sqrt(n_subjects)
+    upper_in = mean_in + 2 * sem_in
+    lower_in = mean_in - 2 * sem_in
+    mean_out = np.mean(plt_out_zone, axis=0)
+    sem_out = np.std(plt_out_zone, axis=0) / np.sqrt(n_subjects)
+    upper_out = mean_out + 2 * sem_out
+    lower_out = mean_out - 2 * sem_out
+
+    # Get time vector and convert to milliseconds
+    time_vector = combine_epoch_dict[select_event][0].times * 1000
+
+    # Plot
+    plt.plot(time_vector, mean_in, color='b', linewidth=2, label='Mean (in-zone)')
+    plt.fill_between(time_vector, lower_in, upper_in, alpha=0.3, color='b')
+    plt.plot(time_vector, mean_out, color='r', linewidth=2, label='Mean (out-of-zone)')
+    plt.fill_between(time_vector, lower_out, upper_out, alpha=0.3, color='r')
+    plt.axhline(0, color='k', linestyle='--', linewidth=1)
+    plt.axvline(0, color='k', linestyle='--', linewidth=1)
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Amplitude (V)')
+    plt.title(f'{vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+
+# %%
