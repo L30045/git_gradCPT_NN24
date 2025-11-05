@@ -3,6 +3,7 @@ General EEG preprocessing pipeline
 """
 #%% load library
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
@@ -140,14 +141,23 @@ with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
 combine_epoch_dict = dict()
 combine_vtc_dict = dict()
 combine_react_dict = dict()
+# get median of the vtc for each subject
+subj_thres_vtc = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]
+                                           for run_id in range(1, 4)
+                                           for event in event_labels_lookup.keys()
+                                           if len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                  for subj_id in subj_vtc_dict.keys()}
+in_out_zone_dict = dict()
 for select_event in event_labels_lookup.keys():
     epoch_list = []
     vtc_list = []
     react_list = []
+    in_out_zone_list = []
     for subj_id in subj_epoch_dict.keys():
         tmp_epoch_list = []
         tmp_vtc_list = []
         tmp_react_list = []
+        tmp_in_out_zone_list = []
         for run_id in np.arange(1,4):
             loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
             loc_v = subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event]
@@ -156,66 +166,21 @@ for select_event in event_labels_lookup.keys():
                 tmp_epoch_list.append(loc_e)
                 tmp_vtc_list.append(loc_v)
                 tmp_react_list.append(loc_r)
+                tmp_in_out_zone_list.append(loc_v<subj_thres_vtc[subj_id])
         if len(tmp_epoch_list)>0:
             epoch_list.append(mne.concatenate_epochs(tmp_epoch_list,verbose=False))
             vtc_list.append(np.concatenate(tmp_vtc_list))
             react_list.append(np.concatenate(tmp_react_list))
+            in_out_zone_list.append(np.concatenate(tmp_in_out_zone_list))
     combine_epoch_dict[select_event] = epoch_list
     combine_vtc_dict[select_event] = vtc_list
     combine_react_dict[select_event] = react_list
-
-#%% cross-subjects results
-is_save_fig = False
-select_event = 'mnt_correct'
-subj_epoch_array = combine_epoch_dict[select_event]
-# Plot mean and +/- 2 SEM across subjects
-vis_ch = ['fz','cz','pz','oz']
-# Extract data for the selected channel from all subjects
-n_subjects = len(subj_epoch_array)
-xSubj_erps = []
-for epoch in subj_epoch_array:
-    # Get average ERP for this subject
-    evoked = epoch.average()
-    subject_erps = []
-    for ch_i in vis_ch:
-        ch_idx = evoked.ch_names.index(ch_i)
-        subject_erps.append(evoked.data[ch_idx, :])
-    subject_erps = np.vstack(subject_erps)
-    xSubj_erps.append(subject_erps)
-
-for ch_i in range(len(vis_ch)):
-    plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
-    # Calculate mean and SEM across subjects
-    mean_erp = np.mean(plt_erps, axis=0)
-    sem_erp = np.std(plt_erps, axis=0) / np.sqrt(n_subjects)
-    upper_bound = mean_erp + 2 * sem_erp
-    lower_bound = mean_erp - 2 * sem_erp
-
-    # Get time vector
-    time_vector = subj_epoch_array[0].times
-
-    # Plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(time_vector, mean_erp, 'b-', linewidth=2, label='Mean')
-    plt.fill_between(time_vector, lower_bound, upper_bound, alpha=0.3, color='b', label='±2 SEM')
-    plt.axhline(0, color='k', linestyle='--', linewidth=1)
-    plt.axvline(0, color='k', linestyle='--', linewidth=1)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude (V)')
-    plt.title(f'Cross-Subject ERP at {vis_ch[ch_i].upper()} (n={n_subjects})')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    # save figure to fig_save_path
-    if is_save_fig:
-        save_filename = f'xSubject_ERP_{select_event}_{vis_ch[ch_i]}_mean_2SEM.png'
-        plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
-    plt.show()
+    in_out_zone_dict[select_event] = in_out_zone_list
 
 #%% compare city and mountain ERP
 is_save_fig = False
-select_events = ['city_correct_response', 'mnt_incorrect_response']
-colors = ['b', 'g']
+select_events = ['city_correct', 'mnt_correct']
+colors = ['b', 'r']
 vis_ch = ['fz','cz','pz','oz']
 
 # Extract cross-subject ERPs for both conditions
@@ -332,7 +297,8 @@ print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:
 plt_data, plt_time, plt_freq, tapers = plt_power.get_data(return_times=True, return_freqs=True, return_tapers=True)
 
 #%%
-vmin, vmax = -2e-9, 2e-9  # Define our color limits.
+vmin, vmax = -1.5e-8, 1.5e-8  # Define our color limits.
+# vmin, vmax = None, None  # Define our color limits.
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
 plt_power.plot(
     [0],
@@ -344,14 +310,37 @@ plt_power.plot(
         colorbar=True,
 )
 ax1.axvline(0,color='k')
-itc.plot(
+fig_itc = itc.plot(
     [0],
         axes=ax2,
         show=False,
+        vlim= (0,1),
         colorbar=True,
+        # cmap='RdBu_r',
 )
+# # Set color center at 0.5
+# for im in ax2.get_images():
+#     im.set_norm(matplotlib.colors.TwoSlopeNorm(vmin=0, vcenter=0.5, vmax=1))
 ax2.axvline(0,color='k')
 plt.tight_layout()
+
+#%% check in-zone vs out-of-zone ratio
+for select_event in in_out_zone_dict.keys():
+    if "_response" not in select_event:
+        total_in_zone = 0
+        total_out_zone = 0
+        print(f"\n{select_event}:")
+        for subj_i, in_out_zone in enumerate(in_out_zone_dict[select_event]):
+            n_in_zone = np.sum(in_out_zone)
+            n_out_zone = np.sum(~in_out_zone)
+            total_in_zone += n_in_zone
+            total_out_zone += n_out_zone
+            print(f"  Subject {subj_i}: {n_in_zone} in-zone, {n_out_zone} out-of-zone")
+        total_trials = total_in_zone + total_out_zone
+        if total_trials > 0:
+            print(f"  Total: {total_in_zone} in-zone ({total_in_zone/total_trials*100:.1f}%), {total_out_zone} out-of-zone ({total_out_zone/total_trials*100:.1f}%)")
+        else:
+            print(f"  Total: No trials found")
 
 #%% zone-in vs zone-out
 select_event = "mnt_correct"
@@ -359,8 +348,6 @@ vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions
 subj_epoch_array = combine_epoch_dict[select_event]
-subj_vtc_array = combine_vtc_dict[select_event]
-thres_vtc_array = [np.median(x) for x in subj_vtc_array] 
 n_subjects = len(subj_epoch_array)
 in_zone_erp = []
 out_zone_erp = []
@@ -371,8 +358,8 @@ for subj_i, epoch in enumerate(subj_epoch_array):
         # get channel data
         ch_erp = np.squeeze(epoch.get_data(picks=ch_i))
         # get in-zone/ out-of-zone data
-        subj_in_zone_erp.append(np.mean(ch_erp[subj_vtc_array[subj_i]<thres_vtc_array[subj_i]],axis=0))
-        subj_out_zone_erp.append(np.mean(ch_erp[subj_vtc_array[subj_i]>=thres_vtc_array[subj_i]],axis=0))
+        subj_in_zone_erp.append(np.mean(ch_erp[in_out_zone_dict[select_event][subj_i]],axis=0))
+        subj_out_zone_erp.append(np.mean(ch_erp[~in_out_zone_dict[select_event][subj_i]],axis=0))
     in_zone_erp.append(np.vstack(subj_in_zone_erp))
     out_zone_erp.append(np.vstack(subj_out_zone_erp))
 
@@ -410,4 +397,30 @@ for ch_i in range(len(vis_ch)):
     plt.tight_layout()
 
 
-# %%
+# %% In-zone/ out-of-zone ERSP
+start_time = time.time()
+select_event = "mnt_correct"
+ch_i = 'cz'
+freqs = np.arange(1.25, 20, 1)
+n_cycles = freqs # temporal window length = n_cycles/freqs
+# n_cycles = freqs*0.2 # 0.2 second windows
+# n_cycles = np.floor(freqs)
+time_bandwidth = 4 # # of tapers = time_bandwith -1 tapers. Also, frequency bandwith = time_bandwith/temporal window
+
+plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
+plt_vtc = np.concatenate(combine_vtc_dict[select_event])
+time_vector = plt_epoch.times
+plt_epoch.pick(ch_i)
+# split plt_epoch into in-zone and out-of-zone
+plt_power, itc = plt_epoch.compute_tfr(
+    method="multitaper",
+    freqs=freqs,
+    n_cycles=n_cycles,
+    time_bandwidth=time_bandwidth,
+    return_itc=True,
+    average=True
+)
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+plt_data, plt_time, plt_freq, tapers = plt_power.get_data(return_times=True, return_freqs=True, return_tapers=True)
