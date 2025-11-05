@@ -399,7 +399,7 @@ for ch_i in range(len(vis_ch)):
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "mnt_correct"
+select_event = "city_correct"
 ch_i = 'cz'
 freqs = np.arange(1.25, 20, 1)
 n_cycles = freqs # temporal window length = n_cycles/freqs
@@ -407,12 +407,39 @@ n_cycles = freqs # temporal window length = n_cycles/freqs
 # n_cycles = np.floor(freqs)
 time_bandwidth = 4 # # of tapers = time_bandwith -1 tapers. Also, frequency bandwith = time_bandwith/temporal window
 
-plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
-plt_vtc = np.concatenate(combine_vtc_dict[select_event])
-time_vector = plt_epoch.times
-plt_epoch.pick(ch_i)
+# Extract cross-subject ERPs for both conditions
+subj_epoch_array = combine_epoch_dict[select_event]
+time_vector = subj_epoch_array[0].times
+n_subjects = len(subj_epoch_array)
+in_zone_erp = []
+out_zone_erp = []
+for subj_i, epoch in enumerate(subj_epoch_array):
+    # select trials based on in-zone/out-of-zone condition
+    in_zone_mask = in_out_zone_dict[select_event][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
+
+    # get in-zone and out-of-zone epochs for specific channel
+    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
+    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
+
+    in_zone_erp.append(in_zone_epochs)
+    out_zone_erp.append(out_zone_epochs)
+
+in_zone_erp = mne.concatenate_epochs(in_zone_erp)
+out_zone_erp = mne.concatenate_epochs(out_zone_erp)
+
 # split plt_epoch into in-zone and out-of-zone
-plt_power, itc = plt_epoch.compute_tfr(
+print("Calculate ERSP for in-zone event")
+plt_power_in, itc_in = in_zone_erp.compute_tfr(
+    method="multitaper",
+    freqs=freqs,
+    n_cycles=n_cycles,
+    time_bandwidth=time_bandwidth,
+    return_itc=True,
+    average=True
+)
+print("Calculate ERSP for out-of-zone event")
+plt_power_out, itc_out = out_zone_erp.compute_tfr(
     method="multitaper",
     freqs=freqs,
     n_cycles=n_cycles,
@@ -423,4 +450,63 @@ plt_power, itc = plt_epoch.compute_tfr(
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
-plt_data, plt_time, plt_freq, tapers = plt_power.get_data(return_times=True, return_freqs=True, return_tapers=True)
+
+#%% Plot in-zone and out-of-zone ERSP (2x2 layout)
+# vmin, vmax = -1.5e-8, 1.5e-8  # Define our color limits.
+vmin, vmax = -5e-9, 5e-9  # Define our color limits.
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+# In-zone Power (top-left)
+plt_power_in.plot(
+    [0],
+        baseline=(0.0, 0.2),
+        mode="mean",
+        vlim=(vmin, vmax),
+        axes=axes[0, 0],
+        show=False,
+        colorbar=True,
+)
+axes[0, 0].set_title(f'In-Zone Power - {select_event} - {ch_i.upper()}')
+axes[0, 0].axvline(0, color='k')
+
+# Out-of-zone Power (top-right)
+plt_power_out.plot(
+    [0],
+        baseline=(0.0, 0.2),
+        mode="mean",
+        vlim=(vmin, vmax),
+        axes=axes[0, 1],
+        show=False,
+        colorbar=True,
+)
+axes[0, 1].set_title(f'Out-of-Zone Power - {select_event} - {ch_i.upper()}')
+axes[0, 1].axvline(0, color='k')
+
+# In-zone ITC (bottom-left)
+itc_in.plot(
+    [0],
+        axes=axes[1, 0],
+        show=False,
+        vlim=(0, 1),
+        colorbar=True,
+        # cmap='RdBu_r',
+)
+axes[1, 0].set_title(f'In-Zone ITC - {select_event} - {ch_i.upper()}')
+axes[1, 0].axvline(0, color='k')
+
+# Out-of-zone ITC (bottom-right)
+itc_out.plot(
+    [0],
+        axes=axes[1, 1],
+        show=False,
+        vlim=(0, 1),
+        colorbar=True,
+        # cmap='RdBu_r',
+)
+axes[1, 1].set_title(f'Out-of-Zone ITC - {select_event} - {ch_i.upper()}')
+axes[1, 1].axvline(0, color='k')
+
+plt.tight_layout()
+plt.show()
+
+#%%
