@@ -16,7 +16,7 @@ import time
 
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695]
+subj_id_array = [670, 671, 673, 695, 719, 721]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -79,7 +79,7 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
     event_file = os.path.join(data_save_path,f"{subj_id}","eeg",
                             f"{subj_id}_task-gradCPT_run-01_events.tsv")
     if not os.path.exists(event_file):
-        gen_EEG_event_tsv(subj_id)
+        gen_EEG_event_tsv(int(subj_id.split('-')[-1]))
     # for each run
     for run_id in np.arange(1,4):
         subj_epoch_dict[subj_id][f"run{run_id:02d}"] = dict()
@@ -137,7 +137,7 @@ save_data = dict(
 with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
     pickle.dump(save_data, f)
 
-# combine runs for each subject
+#%% combine runs for each subject
 combine_epoch_dict = dict()
 combine_vtc_dict = dict()
 combine_react_dict = dict()

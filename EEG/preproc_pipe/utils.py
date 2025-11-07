@@ -38,12 +38,15 @@ def fix_and_load_brainvision(vhdr_path,
         # read textvmrk
         with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
             text = f.read()
+        # filename
+        filename = os.path.basename(vhdr_path).split('.')[0]
         # Capture the old filename from the text
         match = re.search(r'(?im)^\s*DataFile\s*=\s*(.*)$', text)
         if match:
-            old_filename = match.group(1)
+            # old_filename = match.group(1)
             # Replace only the subject ID part
-            new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+            # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+            new_filename = f"{filename}.eeg"
             
             text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
                             f"DataFile={new_filename}",
@@ -51,10 +54,11 @@ def fix_and_load_brainvision(vhdr_path,
         # Capture the old filename from the text
         match = re.search(r'(?im)^\s*MarkerFile\s*=\s*(.*)$', text)
         if match:
-            old_filename = match.group(1)
+            # old_filename = match.group(1)
             # Replace only the subject ID part
-            new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
-            
+            # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+            new_filename = f"{filename}.vmrk"
+
             text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
                             f"MarkerFile={new_filename}",
                             text_fixed)
@@ -119,7 +123,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
         eeg_trigger = EEG.get_data()[4]
         # load corresponding gradCPT
-        f_cpt = files[[i for i, x in enumerate(files) if x.split('-0')[1][0]==run_id][0]]
+        f_cpt = files[[i for i, x in enumerate(files) if int(x.split('-0')[1][0])==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
