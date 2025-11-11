@@ -354,3 +354,77 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     plt.show()
     return fig
 
+#%% visualize multitaper result
+def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration=1, expectation_type="trials_tapers", ratio_to=None, is_plot=True):
+    time_vector = plt_epoch.times
+    # reshpae epoch data for multitaper
+    plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
+    # create multitaper
+    multitaper = Multitaper(
+        plt_epoch_data,
+        sampling_frequency=plt_epoch.info["sfreq"],
+        time_halfbandwidth_product=time_halfbandwidth_product,
+        time_window_duration=time_window_duration,
+    )
+
+    # using connectivity
+    connectivity = Connectivity.from_multitaper(multitaper, expectation_type=expectation_type)
+    # calculate log power
+    log_power = np.log10(np.squeeze(connectivity.power()))
+    plt_power = copy.deepcopy(log_power)
+    # get time vector from multitaper and shift it by onset time
+    multitaper_time = multitaper.time + time_vector[0]
+
+    # transform log power to ratio. (power over ratio_to)
+    avg_ref = None
+    if ratio_to is not None:
+        if isinstance(ratio_to, str) and ratio_to=='baseline':
+            # find onset time (time=0)
+            onset_idx = np.where(multitaper_time>=0)[0][0]
+            log_power_baseline = np.mean(log_power[:onset_idx,:],axis=0)
+            plt_power = log_power - log_power_baseline
+        elif isinstance(ratio_to, np.ndarray):
+            plt_power = log_power - ratio_to
+        elif isinstance(ratio_to, mne.EpochsArray):
+            log_power_ref = plt_multitaper(ratio_to,
+                                            time_halfbandwidth_product=time_halfbandwidth_product,
+                                            time_window_duration=time_window_duration,
+                                            is_plot=False)
+            plt_power = log_power - log_power_ref
+            avg_ref = np.mean(ratio_to.get_data(), axis=0).squeeze()
+            
+
+    # visualization
+    if is_plot:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [2, 1]}, sharex=True, constrained_layout=True)
+
+        # Plot log power spectrogram
+        extent = [multitaper_time[0], multitaper_time[-1], 0, plt_power.shape[1]]
+        vmax = np.abs(plt_power).max()
+        im = ax1.imshow(plt_power.T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
+        plt.colorbar(im, ax=ax1, label='Log Power')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title(f'ERSP - {select_event} - {ch_i.upper()}')
+        ax1.axvline(0, color='white', linestyle='--', linewidth=1)
+
+        # Plot average trial - trim to match multitaper time range
+        avg_trial_full = np.mean(plt_epoch.get_data(), axis=0).squeeze()
+        # Find indices in time_vector that match multitaper_time range
+        time_mask = (time_vector >= multitaper_time[0]) & (time_vector <= multitaper_time[-1])
+        avg_trial = avg_trial_full[time_mask]
+        trimmed_time_vector = time_vector[time_mask]
+        ax2.plot(trimmed_time_vector, avg_trial, 'k', linewidth=1.5, label="Target")
+        ax2.axhline(0, color='gray', linestyle='--', linewidth=1)
+        ax2.axvline(0, color='gray', linestyle='--', linewidth=1)
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('Amplitude (V)')
+        ax2.set_title('Average Trial')
+        ax2.grid(True, alpha=0.3)
+        if avg_ref is not None:
+            # Find indices in time_vector that match multitaper_time range
+            avg_ref = avg_ref[time_mask]
+            ax2.plot(trimmed_time_vector, avg_ref, 'r', linewidth=1.5, label="Ref")
+        ax2.legend()
+        plt.show()
+
+    return log_power
