@@ -13,10 +13,12 @@ from tqdm import tqdm
 import pickle
 import glob
 import time
-
+import sys
+from spectral_connectivity import Multitaper, Connectivity
+from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695, 719, 721]
+subj_id_array = [670, 671, 673, 695]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -266,63 +268,94 @@ _ = plt_ERPImage(time_vector, plt_epoch,
 start_time = time.time()
 select_event = "mnt_correct"
 ch_i = 'cz'
-freqs = np.arange(1.25, 20, 1)
-n_cycles = freqs # temporal window length = n_cycles/freqs
-# n_cycles = freqs*0.2 # 0.2 second windows
-# n_cycles = np.floor(freqs)
-time_bandwidth = 4 # # of tapers = time_bandwith -1 tapers. Also, frequency bandwith = time_bandwith/temporal window
+time_halfbandwidth_product = 1 
+time_window_duration = 0.2 # sec
+print(f"Time resolution={time_window_duration} seconds,\n\
+Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
 time_vector = plt_epoch.times
 plt_epoch.pick(ch_i)
-plt_power, itc = plt_epoch.compute_tfr(
-    method="multitaper",
-    freqs=freqs,
-    n_cycles=n_cycles,
-    time_bandwidth=time_bandwidth,
-    return_itc=True,
-    average=True
+# reshpae epoch data for multitaper
+plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
+# create multitaper
+multitaper = Multitaper(
+    plt_epoch_data,
+    sampling_frequency=plt_epoch.info["sfreq"],
+    time_halfbandwidth_product=time_halfbandwidth_product,
+    time_window_duration=time_window_duration,
 )
-# plt_power = plt_epoch.compute_tfr(
-#     method="multitaper",
-#     freqs=freqs,
-#     n_cycles=n_cycles,
-#     time_bandwidth=time_bandwidth,
-#     return_itc=False,
-#     average=False,
-#     output="complex"
-# )
+# run fft 
+fourier_coefficients = multitaper.fft()
+# using connectivity
+expectation_type = "trials_tapers"
+connectivity = Connectivity.from_multitaper(multitaper, expectation_type=expectation_type)
+# calculate log power
+log_power = np.log10(np.squeeze(connectivity.power()))
+# get time vector from multitaper and shift it by onset time
+multitaper_time = multitaper.time + time_vector[0]
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
-plt_data, plt_time, plt_freq, tapers = plt_power.get_data(return_times=True, return_freqs=True, return_tapers=True)
 
-#%%
-vmin, vmax = -1.5e-8, 1.5e-8  # Define our color limits.
-# vmin, vmax = None, None  # Define our color limits.
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-plt_power.plot(
-    [0],
-        baseline=(0.0, 0.2),
-        mode="mean",
-        vlim=(vmin, vmax),
-        axes=ax1,
-        show=False,
-        colorbar=True,
-)
-ax1.axvline(0,color='k')
-fig_itc = itc.plot(
-    [0],
-        axes=ax2,
-        show=False,
-        vlim= (0,1),
-        colorbar=True,
-        # cmap='RdBu_r',
-)
-# # Set color center at 0.5
-# for im in ax2.get_images():
-#     im.set_norm(matplotlib.colors.TwoSlopeNorm(vmin=0, vcenter=0.5, vmax=1))
-ax2.axvline(0,color='k')
-plt.tight_layout()
+#%% visualize power
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [2, 1]}, sharex=True, constrained_layout=True)
+
+# Plot log power spectrogram
+extent = [multitaper_time[0], multitaper_time[-1], 0, log_power.shape[1]]
+vmax = np.abs(log_power).max()
+im = ax1.imshow(log_power.T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
+plt.colorbar(im, ax=ax1, label='Log Power')
+ax1.set_ylabel('Frequency')
+ax1.set_title(f'ERSP - {select_event} - {ch_i.upper()}')
+ax1.axvline(0, color='white', linestyle='--', linewidth=1)
+
+# Plot average trial - trim to match multitaper time range
+avg_trial_full = np.mean(plt_epoch.get_data(), axis=0).squeeze()
+# Find indices in time_vector that match multitaper_time range
+time_mask = (time_vector >= multitaper_time[0]) & (time_vector <= multitaper_time[-1])
+avg_trial = avg_trial_full[time_mask]
+trimmed_time_vector = time_vector[time_mask]
+ax2.plot(trimmed_time_vector, avg_trial, 'k', linewidth=1.5)
+ax2.axhline(0, color='gray', linestyle='--', linewidth=1)
+ax2.axvline(0, color='gray', linestyle='--', linewidth=1)
+ax2.set_xlabel('Time (s)')
+ax2.set_ylabel('Amplitude (V)')
+ax2.set_title('Average Trial')
+ax2.grid(True, alpha=0.3)
+
+plt.show()
+
+#%% plot ratio of power to baseline
+# find onset time (time=0)
+onset_idx = np.where(multitaper_time>=0)[0][0]
+log_power_baseline = np.mean(log_power[:onset_idx,:],axis=0)
+ratio_trial_2_baseline = log_power - log_power_baseline
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [2, 1]}, sharex=True, constrained_layout=True)
+
+# Plot log power spectrogram
+vmax = np.abs(ratio_trial_2_baseline).max()
+extent = [multitaper_time[0], multitaper_time[-1], 0, log_power.shape[1]]
+im = ax1.imshow(ratio_trial_2_baseline.T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
+plt.colorbar(im, ax=ax1, label='Log Power')
+ax1.set_ylabel('Frequency')
+ax1.set_title(f'ERSP - {select_event} - {ch_i.upper()}')
+ax1.axvline(0, color='white', linestyle='--', linewidth=1)
+
+# Plot average trial - trim to match multitaper time range
+avg_trial_full = np.mean(plt_epoch.get_data(), axis=0).squeeze()
+# Find indices in time_vector that match multitaper_time range
+time_mask = (time_vector >= multitaper_time[0]) & (time_vector <= multitaper_time[-1])
+avg_trial = avg_trial_full[time_mask]
+trimmed_time_vector = time_vector[time_mask]
+ax2.plot(trimmed_time_vector, avg_trial, 'k', linewidth=1.5)
+ax2.axhline(0, color='gray', linestyle='--', linewidth=1)
+ax2.axvline(0, color='gray', linestyle='--', linewidth=1)
+ax2.set_xlabel('Time (s)')
+ax2.set_ylabel('Amplitude (V)')
+ax2.set_title('Average Trial')
+ax2.grid(True, alpha=0.3)
+
+plt.show()
 
 #%% check in-zone vs out-of-zone ratio
 for select_event in in_out_zone_dict.keys():
