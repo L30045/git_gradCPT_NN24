@@ -399,7 +399,8 @@ def plt_multitaper(plt_epoch,
         sampling_frequency=plt_epoch.info["sfreq"],
         time_halfbandwidth_product=time_halfbandwidth_product,
         time_window_duration=time_window_duration,
-        time_window_step=time_window_step
+        time_window_step=time_window_step,
+        detrend_type='linear'
     )
 
     # using connectivity
@@ -446,7 +447,7 @@ def plt_multitaper(plt_epoch,
         ax1.set_ylabel('Frequency')
         ax1.set_yticks(np.arange(np.sum(vis_mask)))
         ax1.set_yticklabels(connectivity.frequencies[vis_mask])
-        ax1.set_title(f'ERSP - {ch_i.upper()}')
+        ax1.set_title(f'ERSP')
         ax1.axvline(0, color='white', linestyle='--', linewidth=1)
 
         # Plot average trial - trim to match multitaper time range
