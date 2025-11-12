@@ -99,7 +99,13 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         EEG = ica.apply(EEG,verbose=False)
     # Restore original Trigger channel data
     EEG._data[4] = eeg_trigger
-
+    # Check if Trigger is pressed before and after the experiment. (The duration of two triggers should be longer than 6 mins as experiment design.)
+    thres_trigger = (np.max(eeg_trigger)-np.min(eeg_trigger))/2+np.min(eeg_trigger)
+    eeg_duration = np.max(np.diff(np.where(eeg_trigger<thres_trigger)[0]))/EEG.info["sfreq"]/60 # mins
+    if eeg_duration < 6:
+        print("="*20)
+        print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
+        print("="*20)
     return EEG
 
 def gen_EEG_event_tsv(subj_id, savepath=None):
