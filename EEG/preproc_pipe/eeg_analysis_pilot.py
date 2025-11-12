@@ -266,7 +266,7 @@ _ = plt_ERPImage(time_vector, plt_epoch,
 
 #%% ERSP analysis using multi-taper
 start_time = time.time()
-select_event = "mnt_correct"
+select_event = "city_correct"
 ch_i = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
@@ -275,13 +275,16 @@ Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
 time_vector = plt_epoch.times
 plt_epoch.pick(ch_i)
-plt_multitaper(plt_epoch, time_halfbandwidth_product=time_halfbandwidth_product,
-                          time_window_duration=time_window_duration)
+_ = plt_multitaper(plt_epoch,
+                    time_halfbandwidth_product=time_halfbandwidth_product,
+                    time_window_duration=time_window_duration)
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
 
 #%% plot ratio of power to baseline
+print(f"Time resolution={time_window_duration} seconds,\n\
+Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 _ = plt_multitaper(plt_epoch, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
@@ -381,13 +384,10 @@ for ch_i in range(len(vis_ch)):
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "city_correct"
+select_event = "mnt_correct"
 ch_i = 'cz'
-freqs = np.arange(1.25, 20, 1)
-n_cycles = freqs # temporal window length = n_cycles/freqs
-# n_cycles = freqs*0.2 # 0.2 second windows
-# n_cycles = np.floor(freqs)
-time_bandwidth = 4 # # of tapers = time_bandwith -1 tapers. Also, frequency bandwith = time_bandwith/temporal window
+time_halfbandwidth_product = 1
+time_window_duration = 0.2
 
 # Extract cross-subject ERPs for both conditions
 subj_epoch_array = combine_epoch_dict[select_event]
@@ -410,85 +410,98 @@ for subj_i, epoch in enumerate(subj_epoch_array):
 in_zone_erp = mne.concatenate_epochs(in_zone_erp)
 out_zone_erp = mne.concatenate_epochs(out_zone_erp)
 
-# split plt_epoch into in-zone and out-of-zone
-print("Calculate ERSP for in-zone event")
-plt_power_in, itc_in = in_zone_erp.compute_tfr(
-    method="multitaper",
-    freqs=freqs,
-    n_cycles=n_cycles,
-    time_bandwidth=time_bandwidth,
-    return_itc=True,
-    average=True
-)
-print("Calculate ERSP for out-of-zone event")
-plt_power_out, itc_out = out_zone_erp.compute_tfr(
-    method="multitaper",
-    freqs=freqs,
-    n_cycles=n_cycles,
-    time_bandwidth=time_bandwidth,
-    return_itc=True,
-    average=True
-)
+# multitaper
+print("In Zone")
+_ = plt_multitaper(in_zone_erp, 
+                   time_halfbandwidth_product=time_halfbandwidth_product,
+                   time_window_duration=time_window_duration,
+                   ratio_to="baseline")
+print("Out of Zone")
+_ = plt_multitaper(out_zone_erp, 
+                   time_halfbandwidth_product=time_halfbandwidth_product,
+                   time_window_duration=time_window_duration,
+                   ratio_to="baseline")
+print("In Zone / Out of Zone")
+_ = plt_multitaper(in_zone_erp, 
+                   time_halfbandwidth_product=time_halfbandwidth_product,
+                   time_window_duration=time_window_duration,
+                   ratio_to=out_zone_erp)
+
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
 
-#%% Plot in-zone and out-of-zone ERSP (2x2 layout)
-# vmin, vmax = -1.5e-8, 1.5e-8  # Define our color limits.
-vmin, vmax = -5e-9, 5e-9  # Define our color limits.
-fig, axes = plt.subplots(2, 2, figsize=(16, 10))
 
-# In-zone Power (top-left)
-plt_power_in.plot(
-    [0],
-        baseline=(0.0, 0.2),
-        mode="mean",
-        vlim=(vmin, vmax),
-        axes=axes[0, 0],
-        show=False,
-        colorbar=True,
-)
-axes[0, 0].set_title(f'In-Zone Power - {select_event} - {ch_i.upper()}')
-axes[0, 0].axvline(0, color='k')
+#%% Compare PSD
+select_event = "city_correct"
+ch_i = 'cz'
+time_halfbandwidth_product = 1
 
-# Out-of-zone Power (top-right)
-plt_power_out.plot(
-    [0],
-        baseline=(0.0, 0.2),
-        mode="mean",
-        vlim=(vmin, vmax),
-        axes=axes[0, 1],
-        show=False,
-        colorbar=True,
-)
-axes[0, 1].set_title(f'Out-of-Zone Power - {select_event} - {ch_i.upper()}')
-axes[0, 1].axvline(0, color='k')
+# Extract cross-subject ERPs for both conditions
+subj_epoch_array = combine_epoch_dict[select_event]
+time_vector = subj_epoch_array[0].times
+n_subjects = len(subj_epoch_array)
+in_zone_erp = []
+out_zone_erp = []
+for subj_i, epoch in enumerate(subj_epoch_array):
+    # select trials based on in-zone/out-of-zone condition
+    in_zone_mask = in_out_zone_dict[select_event][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
 
-# In-zone ITC (bottom-left)
-itc_in.plot(
-    [0],
-        axes=axes[1, 0],
-        show=False,
-        vlim=(0, 1),
-        colorbar=True,
-        # cmap='RdBu_r',
-)
-axes[1, 0].set_title(f'In-Zone ITC - {select_event} - {ch_i.upper()}')
-axes[1, 0].axvline(0, color='k')
+    # get in-zone and out-of-zone epochs for specific channel
+    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
+    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
 
-# Out-of-zone ITC (bottom-right)
-itc_out.plot(
-    [0],
-        axes=axes[1, 1],
-        show=False,
-        vlim=(0, 1),
-        colorbar=True,
-        # cmap='RdBu_r',
-)
-axes[1, 1].set_title(f'Out-of-Zone ITC - {select_event} - {ch_i.upper()}')
-axes[1, 1].axvline(0, color='k')
+    in_zone_erp.append(in_zone_epochs)
+    out_zone_erp.append(out_zone_epochs)
 
-plt.tight_layout()
-plt.show()
+in_zone_erp = mne.concatenate_epochs(in_zone_erp)
+out_zone_erp = mne.concatenate_epochs(out_zone_erp)
+(log_power_in_city,_,connectivity) = plt_multitaper(in_zone_erp,
+                            time_halfbandwidth_product=time_halfbandwidth_product,
+                            is_plot=False)
+(log_power_out_city,_,connectivity) = plt_multitaper(out_zone_erp,
+                            time_halfbandwidth_product=time_halfbandwidth_product,
+                            is_plot=False)
 
-#%%
+select_event = "mnt_correct"
+
+# Extract cross-subject ERPs for both conditions
+subj_epoch_array = combine_epoch_dict[select_event]
+time_vector = subj_epoch_array[0].times
+n_subjects = len(subj_epoch_array)
+in_zone_erp = []
+out_zone_erp = []
+for subj_i, epoch in enumerate(subj_epoch_array):
+    # select trials based on in-zone/out-of-zone condition
+    in_zone_mask = in_out_zone_dict[select_event][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
+
+    # get in-zone and out-of-zone epochs for specific channel
+    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
+    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
+
+    in_zone_erp.append(in_zone_epochs)
+    out_zone_erp.append(out_zone_epochs)
+
+in_zone_erp = mne.concatenate_epochs(in_zone_erp)
+out_zone_erp = mne.concatenate_epochs(out_zone_erp)
+(log_power_in_mnt,_,connectivity) = plt_multitaper(in_zone_erp,
+                            time_halfbandwidth_product=time_halfbandwidth_product,
+                            is_plot=False)
+(log_power_out_mnt,_,connectivity) = plt_multitaper(out_zone_erp,
+                            time_halfbandwidth_product=time_halfbandwidth_product,
+                            is_plot=False)
+vis_f_range = [0, 50] # Hz
+vis_mask = (connectivity.frequencies>=vis_f_range[0])&(connectivity.frequencies<=vis_f_range[1])
+plt.figure()
+plt.plot(connectivity.frequencies[vis_mask], log_power_in_city[vis_mask], 'b-', label='City (in zone)')
+plt.plot(connectivity.frequencies[vis_mask], log_power_out_city[vis_mask], 'b--', label='City (out of zone)')
+plt.plot(connectivity.frequencies[vis_mask], log_power_in_mnt[vis_mask], 'r-', label='Mnt (in zone)')
+plt.plot(connectivity.frequencies[vis_mask], log_power_out_mnt[vis_mask], 'r--', label='Mnt (out of zone)')
+plt.xlabel("Frequency (Hz)")
+plt.ylabel(r"Power ($log\,V^2$)")
+plt.grid()
+plt.legend()
+
+

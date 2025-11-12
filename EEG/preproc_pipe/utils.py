@@ -12,6 +12,7 @@ import tempfile
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
 import copy
+from spectral_connectivity import Multitaper, Connectivity
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
@@ -404,7 +405,7 @@ def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration
         im = ax1.imshow(plt_power.T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
         plt.colorbar(im, ax=ax1, label='Log Power')
         ax1.set_ylabel('Frequency')
-        ax1.set_title(f'ERSP - {select_event} - {ch_i.upper()}')
+        ax1.set_title(f'ERSP - {ch_i.upper()}')
         ax1.axvline(0, color='white', linestyle='--', linewidth=1)
 
         # Plot average trial - trim to match multitaper time range
@@ -427,4 +428,4 @@ def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration
         ax2.legend()
         plt.show()
 
-    return log_power
+    return (log_power,multitaper,connectivity)
