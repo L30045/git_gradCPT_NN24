@@ -150,15 +150,15 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
             raise ValueError("Event onset time exceed EEG recording time.")
         # VTC
         react_time = data_cpt['response'][:-1,4] # sec
-        meanRT = np.nanmean(react_time)
-        stdRT = np.nanstd(react_time)
+        meanRT = np.nanmean(react_time[react_time > 0])
+        stdRT = np.nanstd(react_time[react_time > 0])
         vtc = copy.deepcopy(react_time)
-        # fill in no reaction time trial with previous trial's reaction time
+        # fill in no reaction time trial with linear interpolation
         non_zero_idx = np.where(vtc>0)[0]
-        for rt_i in range(len(react_time)):
-            if vtc[rt_i]==0:
-                # assign previous reaction time
-                vtc[rt_i] = vtc[non_zero_idx[np.where(non_zero_idx<rt_i)[0][-1]]]
+        zero_idx = np.where(vtc==0)[0]
+        if len(zero_idx) > 0 and len(non_zero_idx) > 0:
+            # use linear interpolation to fill missing values
+            vtc[zero_idx] = np.interp(zero_idx, non_zero_idx, vtc[non_zero_idx])
         # calculate VTC
         vtc = np.abs((vtc-meanRT)/stdRT)
         # create DataFrame
@@ -407,11 +407,12 @@ def plt_multitaper(plt_epoch,
     connectivity = Connectivity.from_multitaper(multitaper, expectation_type=expectation_type)
     # get time vector from multitaper and shift it by onset time
     multitaper_time = multitaper.time + time_vector[0]
-    # find onset time (time=0)
-    onset_idx = np.where(multitaper_time>=0)[0][0]
-    # calculate baseline power
-    power_baseline = np.mean(np.squeeze(connectivity.power())[:onset_idx,:],axis=0)
-    log_power_baseline = np.log10(power_baseline)
+    if isinstance(ratio_to, str) and ratio_to=='baseline':
+        # find onset time (time=0)
+        onset_idx = np.where(multitaper_time>=0)[0][0]
+        # calculate baseline power
+        power_baseline = np.mean(np.squeeze(connectivity.power())[:onset_idx,:],axis=0)
+        log_power_baseline = np.log10(power_baseline)
     # calculate log power
     log_power = np.log10(np.squeeze(connectivity.power()))
     plt_power = copy.deepcopy(log_power)

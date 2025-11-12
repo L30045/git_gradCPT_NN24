@@ -466,11 +466,13 @@ for subj_i, epoch in enumerate(subj_epoch_array):
 
 in_zone_erp = mne.concatenate_epochs(in_zone_erp)
 out_zone_erp = mne.concatenate_epochs(out_zone_erp)
-(log_power_in_city,_,connectivity) = plt_multitaper(in_zone_erp,
+(log_power_in_city,_,_) = plt_multitaper(in_zone_erp,
                             time_halfbandwidth_product=time_halfbandwidth_product,
+                            time_window_duration=None,
                             is_plot=False)
-(log_power_out_city,_,connectivity) = plt_multitaper(out_zone_erp,
+(log_power_out_city,multitaper,_) = plt_multitaper(out_zone_erp,
                             time_halfbandwidth_product=time_halfbandwidth_product,
+                            time_window_duration=None,
                             is_plot=False)
 
 select_event = "mnt_correct"
@@ -495,17 +497,20 @@ for subj_i, epoch in enumerate(subj_epoch_array):
 
 in_zone_erp = mne.concatenate_epochs(in_zone_erp)
 out_zone_erp = mne.concatenate_epochs(out_zone_erp)
-(log_power_in_mnt,_,connectivity) = plt_multitaper(in_zone_erp,
+(log_power_in_mnt,_,_) = plt_multitaper(in_zone_erp,
                             time_halfbandwidth_product=time_halfbandwidth_product,
+                            time_window_duration=None,
                             is_plot=False)
 (log_power_out_mnt,_,connectivity) = plt_multitaper(out_zone_erp,
                             time_halfbandwidth_product=time_halfbandwidth_product,
+                            time_window_duration=None,
                             is_plot=False)
+print(f"Freq. resolution = {multitaper.frequency_resolution:.2F} Hz")
 vis_f_range = [0, 50] # Hz
 vis_mask = (connectivity.frequencies>=vis_f_range[0])&(connectivity.frequencies<=vis_f_range[1])
 plt.figure()
-plt.plot(connectivity.frequencies[vis_mask], log_power_in_city[vis_mask], 'b-', label='City (in zone)')
-plt.plot(connectivity.frequencies[vis_mask], log_power_out_city[vis_mask], 'b--', label='City (out of zone)')
+# plt.plot(connectivity.frequencies[vis_mask], log_power_in_city[vis_mask], 'b-', label='City (in zone)')
+# plt.plot(connectivity.frequencies[vis_mask], log_power_out_city[vis_mask], 'b--', label='City (out of zone)')
 plt.plot(connectivity.frequencies[vis_mask], log_power_in_mnt[vis_mask], 'r-', label='Mnt (in zone)')
 plt.plot(connectivity.frequencies[vis_mask], log_power_out_mnt[vis_mask], 'r--', label='Mnt (out of zone)')
 plt.xlabel("Frequency (Hz)")
