@@ -254,7 +254,7 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
     
     #TODO: Check for flat channel. Current epoch rejection method only remove epochs with large amplitude.
     # =========================
-    
+
 
     # =========================
 
@@ -263,14 +263,17 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
                         tmin=baseline_length, tmax=tmax,
                         reject=epoch_reject_crit, detrend=is_detrend, verbose=False
                         )
+    len_ori_epoch = len(epochs)
     epochs.drop_bad(verbose=False)
+    len_after_drop_epoch = len(epochs)
+
     if verbose:
         print("="*20)
         print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")
         if epoch_reject_crit is not None:
-            print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
+            print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}/{len(epochs.drop_log)}")
         else:
-            print(f"# Epochs (no rejection applied) = {len(epochs.selection)}")
+            print(f"# Epochs (no rejection applied) = {len(epochs.selection)}/{len(epochs.drop_log)}")
         print("="*20)
 
     return epochs
@@ -383,7 +386,8 @@ def plt_multitaper(plt_epoch,
                     time_window_step=None,
                     expectation_type="trials_tapers",
                     ratio_to=None,
-                    is_plot=True):
+                    is_plot=True,
+                    vis_f_range=[0, 50]):
     if not time_window_step:
         time_window_step = time_window_duration
     time_vector = plt_epoch.times
@@ -400,22 +404,25 @@ def plt_multitaper(plt_epoch,
 
     # using connectivity
     connectivity = Connectivity.from_multitaper(multitaper, expectation_type=expectation_type)
+    # get time vector from multitaper and shift it by onset time
+    multitaper_time = multitaper.time + time_vector[0]
+    # find onset time (time=0)
+    onset_idx = np.where(multitaper_time>=0)[0][0]
+    # calculate baseline power
+    power_baseline = np.mean(np.squeeze(connectivity.power())[:onset_idx,:],axis=0)
+    log_power_baseline = np.log10(power_baseline)
     # calculate log power
     log_power = np.log10(np.squeeze(connectivity.power()))
     plt_power = copy.deepcopy(log_power)
-    # get time vector from multitaper and shift it by onset time
-    multitaper_time = multitaper.time + time_vector[0]
-
+    
     # transform log power to ratio. (power over ratio_to)
     avg_ref = None
     if ratio_to is not None:
         if isinstance(ratio_to, str) and ratio_to=='baseline':
-            # find onset time (time=0)
-            onset_idx = np.where(multitaper_time>=0)[0][0]
-            log_power_baseline = np.mean(log_power[:onset_idx,:],axis=0)
             plt_power = log_power - log_power_baseline
         elif isinstance(ratio_to, np.ndarray):
-            plt_power = log_power - ratio_to
+            log_ratio_to = np.log10(ratio_to)
+            plt_power = log_power - log_ratio_to
         elif isinstance(ratio_to, mne.EpochsArray):
             (log_power_ref,_,_) = plt_multitaper(ratio_to,
                                             time_halfbandwidth_product=time_halfbandwidth_product,
@@ -428,14 +435,17 @@ def plt_multitaper(plt_epoch,
 
     # visualization
     if is_plot:
+        vis_mask = (connectivity.frequencies>=vis_f_range[0])&(connectivity.frequencies<=vis_f_range[1])
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [2, 1]}, sharex=True, constrained_layout=True)
 
         # Plot log power spectrogram
-        extent = [multitaper_time[0], multitaper_time[-1], 0, plt_power.shape[1]]
+        extent = [multitaper_time[0], multitaper_time[-1], 0, np.sum(vis_mask)]
         vmax = np.abs(plt_power).max()
-        im = ax1.imshow(plt_power.T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
+        im = ax1.imshow(plt_power[:,vis_mask].T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
         plt.colorbar(im, ax=ax1, label='Log Power')
         ax1.set_ylabel('Frequency')
+        ax1.set_yticks(np.arange(np.sum(vis_mask)))
+        ax1.set_yticklabels(connectivity.frequencies[vis_mask])
         ax1.set_title(f'ERSP - {ch_i.upper()}')
         ax1.axvline(0, color='white', linestyle='--', linewidth=1)
 

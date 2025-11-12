@@ -112,7 +112,8 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                                                                 baseline_length=baseline_length,
                                                                 epoch_reject_crit=dict(eeg=100e-6),
                                                                 is_detrend=1,
-                                                                event_duration=event_duration)
+                                                                event_duration=event_duration,
+                                                                verbose=False)
                     include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
                     # remove vtc that is dropped
                     ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
@@ -122,11 +123,6 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                     print("="*20)
                     print(f"No clean trial found in {subj_id}_gradCPT{run_id} ({select_event}).")    
                     print("="*20)
-                    # epochs = epoch_by_select_event(EEG, events, select_event=select_event,
-                    #                                             baseline_length=baseline_length,
-                    #                                             epoch_reject_crit=None,
-                    #                                             is_detrend=1,
-                    #                                             event_duration=event_duration)
                     epochs = []
             else:
                 epochs=[]         
@@ -251,8 +247,8 @@ for ch_i in range(len(vis_ch)):
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "city_correct"
-ch_i = 'fz'
+select_event = "mnt_correct"
+ch_i = 'cz'
 window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
@@ -274,7 +270,7 @@ _ = plt_ERPImage(time_vector, plt_epoch,
 
 #%% ERSP analysis using multi-taper
 start_time = time.time()
-select_event = "city_correct"
+select_event = "mnt_correct"
 ch_i = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
