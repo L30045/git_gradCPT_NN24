@@ -18,8 +18,9 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695]
-# subj_id_array = [670, 671, 673, 695, 719, 721, 723]
+# subj_id_array = [670, 671, 673, 695]
+subj_id_array = [670, 671, 673, 695, 719, 721, 723]
+# subj_id_array = [719]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -65,7 +66,13 @@ for subj_id in tqdm(subj_id_array):
         else:
             # load existed EEG
             EEG = mne.io.read_raw(preproc_fname,preload=True)
-        subj_EEG_dict[f"sub-{subj_id}"][fname.split('.')[0].split('_')[-1].lower()] = EEG
+        # store into dict
+        run_id = fname.split('.')[0][-1]
+        if "cpt" in fname.lower():
+            key_name = "gradcpt"+run_id
+        else:
+            key_name = "rest"+run_id
+        subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG
 
 
 #%% Epoch data

@@ -24,6 +24,7 @@ data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/pr
 
 
 #%% utils function
+#%% Loading and generating events
 def fix_and_load_brainvision(vhdr_path,
                              subj_id,
                              preload=True):
@@ -125,12 +126,18 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         if "cpt" not in fname.lower():
             continue
         # get run id
-        run_id = fname.lower().split("cpt")[-1][0]
+        """
+        The naming methods are different before and after Subject 695.
+        """
+        if subj_id<=695:
+            run_id = fname.lower().split("cpt")[-1][0]
+        else:
+            run_id = fname.lower().split("run-0")[-1][0]
         # get EEG trigger
         EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
         eeg_trigger = EEG.get_data()[4]
         # load corresponding gradCPT
-        f_cpt = files[[i for i, x in enumerate(files) if int(x.split('-0')[1][0])==run_id][0]]
+        f_cpt = files[[i for i, x in enumerate(files) if x.split('-0')[1][0]==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
@@ -206,7 +213,9 @@ def tsv_to_events(event_file, sfreq):
     
     return events, event_labels_lookup, vtc_list, reaction_time
 
-def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8):
+
+#%% epoching, ERPImage, and ERSP using multitaper
+def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8, verbose=True):
     
     """
     The event duration varies for each trial. For convenience, I fixed it as 0.8 second for mnt_correct trials and 1.6 for city_correct trials.
@@ -217,8 +226,6 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
                             city_incorrect_response=-12, city_correct_response=11,
                             mnt_incorrect_response=-11, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
-    print("="*20)
-    print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")
     # pick only selected event
     events = events[events[:,-1]==event_labels_lookup[select_event]]
     
@@ -242,22 +249,30 @@ def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_lengt
     n_excluded = len(events) - len(events_filtered)
     if n_excluded > 0:
         print(f"Warning: {n_excluded} events excluded (outside valid data range)")
-    
     if len(events_filtered) == 0:
         raise ValueError(f"No valid events remain after filtering (all {len(events)} events are outside the valid data range)")
     
+    #TODO: Check for flat channel. Current epoch rejection method only remove epochs with large amplitude.
+    # =========================
+    
+
+    # =========================
+
     # epoch by event
     epochs = mne.Epochs(EEG, events=events_filtered,event_id={select_event:event_labels_lookup[select_event]},preload=True,
                         tmin=baseline_length, tmax=tmax,
                         reject=epoch_reject_crit, detrend=is_detrend, verbose=False
                         )
     epochs.drop_bad(verbose=False)
+    if verbose:
+        print("="*20)
+        print(f"# {select_event}/ # total = {n_select_ev}/{int((events.shape[0]/2))} ({n_select_ev/(events.shape[0]/2)*100:.1f}%)")
+        if epoch_reject_crit is not None:
+            print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
+        else:
+            print(f"# Epochs (no rejection applied) = {len(epochs.selection)}")
+        print("="*20)
 
-    if epoch_reject_crit is not None:
-        print(f"# Epochs below PTP threshold ({epoch_reject_crit['eeg']*1e6} uV) = {len(epochs.selection)}")
-    else:
-        print(f"# Epochs (no rejection applied) = {len(epochs.selection)}")
-    print("="*20)
     return epochs
 
 def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: np.std(x,axis=0)/np.sqrt(x.shape[0]), is_return_data=False, is_plot=True):
@@ -361,7 +376,7 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     plt.show()
     return fig
 
-#%% visualize multitaper result
+# visualize multitaper result
 def plt_multitaper(plt_epoch,
                     time_halfbandwidth_product=3,
                     time_window_duration=1,
