@@ -362,7 +362,15 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     return fig
 
 #%% visualize multitaper result
-def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration=1, expectation_type="trials_tapers", ratio_to=None, is_plot=True):
+def plt_multitaper(plt_epoch,
+                    time_halfbandwidth_product=3,
+                    time_window_duration=1,
+                    time_window_step=None,
+                    expectation_type="trials_tapers",
+                    ratio_to=None,
+                    is_plot=True):
+    if not time_window_step:
+        time_window_step = time_window_duration
     time_vector = plt_epoch.times
     # reshpae epoch data for multitaper
     plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
@@ -372,6 +380,7 @@ def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration
         sampling_frequency=plt_epoch.info["sfreq"],
         time_halfbandwidth_product=time_halfbandwidth_product,
         time_window_duration=time_window_duration,
+        time_window_step=time_window_step
     )
 
     # using connectivity
@@ -393,9 +402,10 @@ def plt_multitaper(plt_epoch, time_halfbandwidth_product=3, time_window_duration
         elif isinstance(ratio_to, np.ndarray):
             plt_power = log_power - ratio_to
         elif isinstance(ratio_to, mne.EpochsArray):
-            log_power_ref = plt_multitaper(ratio_to,
+            (log_power_ref,_,_) = plt_multitaper(ratio_to,
                                             time_halfbandwidth_product=time_halfbandwidth_product,
                                             time_window_duration=time_window_duration,
+                                            time_window_step=time_window_step,
                                             is_plot=False)
             plt_power = log_power - log_power_ref
             avg_ref = np.mean(ratio_to.get_data(), axis=0).squeeze()

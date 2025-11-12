@@ -18,7 +18,8 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695, 719, 721, 723]
+subj_id_array = [670, 671, 673, 695]
+# subj_id_array = [670, 671, 673, 695, 719, 721, 723]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -270,6 +271,7 @@ select_event = "city_correct"
 ch_i = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
+time_window_step = 0.2
 print(f"Time resolution={time_window_duration} seconds,\n\
 Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
@@ -277,7 +279,8 @@ time_vector = plt_epoch.times
 plt_epoch.pick(ch_i)
 _ = plt_multitaper(plt_epoch,
                     time_halfbandwidth_product=time_halfbandwidth_product,
-                    time_window_duration=time_window_duration)
+                    time_window_duration=time_window_duration,
+                    time_window_step=time_window_step)
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
@@ -288,6 +291,7 @@ Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 _ = plt_multitaper(plt_epoch, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
                    ratio_to="baseline")
 
 #%% compare trials
@@ -296,6 +300,7 @@ ref_event = "city_correct"
 ch_i = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
+time_window_step = 0.2
 print(f"Time resolution={time_window_duration} seconds,\n\
 Freq. resolution={time_halfbandwidth_product/time_window_duration:.2F} Hz")
 plt_epoch_target = mne.concatenate_epochs(combine_epoch_dict[target_event])
@@ -306,6 +311,7 @@ plt_epoch_ref.pick(ch_i)
 _ = plt_multitaper(plt_epoch_target, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
                    ratio_to=plt_epoch_ref)
 
 
@@ -388,6 +394,7 @@ select_event = "mnt_correct"
 ch_i = 'cz'
 time_halfbandwidth_product = 1
 time_window_duration = 0.2
+time_window_step = 0.2
 
 # Extract cross-subject ERPs for both conditions
 subj_epoch_array = combine_epoch_dict[select_event]
@@ -415,16 +422,19 @@ print("In Zone")
 _ = plt_multitaper(in_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
                    ratio_to="baseline")
 print("Out of Zone")
 _ = plt_multitaper(out_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
                    ratio_to="baseline")
 print("In Zone / Out of Zone")
 _ = plt_multitaper(in_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
                    ratio_to=out_zone_erp)
 
 end_time = time.time()
