@@ -18,9 +18,9 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695]
+# subj_id_array = [670, 671, 673, 695]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723]
-# subj_id_array = [719]
+subj_id_array = [719]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -46,8 +46,15 @@ preproc_params = dict(
 
 #%% Check if preprocessed EEG exist. If not, preprocess.
 subj_EEG_dict = dict()
+"""
+subj_EEG_dic: dictionary for storing subject EEG. 
+                subj_EEG_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                subj_EEG_dict["sub-{subj_id}"]["rest{run_id}"]
+                subj_EEG_dict["sub-{subj_id}"]["rm_ch_list"]
+"""
 for subj_id in tqdm(subj_id_array):
     subj_EEG_dict[f"sub-{subj_id}"] = dict()
+    subj_EEG_dict[f"sub-{subj_id}"]["rm_ch_list"] = dict()
     # get all the vdhr files in raw folder
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
     preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}",'eeg')
@@ -59,7 +66,7 @@ for subj_id in tqdm(subj_id_array):
         preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
         if not os.path.exists(preproc_fname):
             EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
-            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+            EEG, rm_ch_list = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
                                 is_reref=is_reref, reref_ch=reref_ch,
                                 is_ica_rmEye=is_ica_rmEye)
             EEG.save(preproc_fname, overwrite=True)
@@ -73,6 +80,7 @@ for subj_id in tqdm(subj_id_array):
         else:
             key_name = "rest"+run_id
         subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG
+        subj_EEG_dict[f"sub-{subj_id}"]["rm_ch_list"][key_name] = rm_ch_list
 
 
 #%% Epoch data
@@ -80,6 +88,21 @@ subj_epoch_dict = dict()
 subj_vtc_dict = dict()
 subj_react_dict = dict()
 include_2_analysis = []
+"""
+subj_epoch_dict: dictionary for storing subject Epoch.
+                    subj_epoch_dict["sub-xxx"]["run0x"][Events]
+                    Events include:
+                        'city_incorrect': incorrect city trials, time-lock to stimulus-onset (first frame)
+                        'city_correct': correct city trials, time-lock to stimulus-onset (first frame)
+                        'mnt_incorrect': incorrect mountain trials, time-lock to stimulus-onset (first frame)
+                        'mnt_correct': correct mountain trials, time-lock to stimulus-onset (first frame)
+                        'city_incorrect_response': incorrect city trials, same as city_incorrect
+                        'city_correct_response': correct city trials, time-lock to response (spacebar press)
+                        'mnt_incorrect_response': incorrect mountain trials, time-lock to response (spacebar press)
+                        'mnt_correct_response': correct mountain trials, same as mnt_correct
+
+
+"""
 # for each subject
 for subj_id in tqdm(subj_EEG_dict.keys()):
     subj_epoch_dict[subj_id] = dict()
@@ -110,8 +133,8 @@ for subj_id in tqdm(subj_EEG_dict.keys()):
                 try:    
                     epochs = epoch_by_select_event(EEG, events, select_event=select_event,
                                                                 baseline_length=baseline_length,
-                                                                epoch_reject_crit=dict(eeg=100e-6),
-                                                                is_detrend=1,
+                                                                epoch_reject_crit=epoch_reject_crit,
+                                                                is_detrend=is_detrend,
                                                                 event_duration=event_duration,
                                                                 verbose=False)
                     include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))

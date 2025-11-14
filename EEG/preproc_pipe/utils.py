@@ -10,7 +10,7 @@ import glob
 import re
 import tempfile
 import pandas as pd
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import uniform_filter1d, gaussian_filter1d
 import copy
 from spectral_connectivity import Multitaper, Connectivity
 
@@ -79,16 +79,50 @@ def fix_and_load_brainvision(vhdr_path,
         os.remove(tmp_path)
     return raw
 
+def check_flat_channels(EEG):
+    eeg_data = EEG.get_data(picks='eeg')
+    eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"]==2])
+    flat_ch_idx = []
+    # check flat channels
+    for ch_i in range(eeg_data.shape[0]):
+        if np.mean(eeg_data[ch_i]-np.mean(eeg_data[ch_i]))==0:
+            print(f"Warning: flat channel detected. ({eeg_chs[ch_i]})")
+            flat_ch_idx.append(eeg_chs[ch_i])
+    return flat_ch_idx
+
+def check_abnormal_var_channels(EEG, thres_std=3):
+    eeg_data = EEG.get_data(picks='eeg')
+    eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"]==2])
+    # calculate variance for each channels and transform to z-score
+    eeg_var = np.var(eeg_data,axis=1)
+    eeg_var_z = (eeg_var-np.mean(eeg_var))/np.std(eeg_var)
+    if np.any(abs(eeg_var_z))>thres_std:
+        print(f"Warning: channels with abnormal variance: {eeg_chs[abs(eeg_var_z)>thres_std]}")
+    return eeg_chs[abs(eeg_var_z)>thres_std]
+
 def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
                       is_reref=True, reref_ch=['tp9h','tp10h'],
                       is_ica_rmEye=True):
     eeg_trigger = EEG.get_data()[4]
+    # Check if Trigger is pressed before and after the experiment. (The duration of two triggers should be longer than 6 mins as experiment design.)
+    thres_trigger = (np.max(eeg_trigger)-np.min(eeg_trigger))/2+np.min(eeg_trigger)
+    eeg_duration = np.max(np.diff(np.where(eeg_trigger<thres_trigger)[0]))/EEG.info["sfreq"]/60 # mins
+    if eeg_duration < 6:
+        print("="*20)
+        print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
+        print("="*20)
+    rm_ch_list = []
     if is_bpfilter:
         # band-pass filtering (all channels)
         EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
         EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+    # check flat
+    rm_ch_list.extend(check_flat_channels(EEG))
+    # check variance
+    rm_ch_list.extend(check_abnormal_var_channels(EEG))
+    # rm eye-related ICA
     if is_ica_rmEye:
         # ICA on EEG channels only
         ica = mne.preprocessing.ICA(n_components=EEG.info.get_channel_types().count('eeg'),
@@ -100,14 +134,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         EEG = ica.apply(EEG,verbose=False)
     # Restore original Trigger channel data
     EEG._data[4] = eeg_trigger
-    # Check if Trigger is pressed before and after the experiment. (The duration of two triggers should be longer than 6 mins as experiment design.)
-    thres_trigger = (np.max(eeg_trigger)-np.min(eeg_trigger))/2+np.min(eeg_trigger)
-    eeg_duration = np.max(np.diff(np.where(eeg_trigger<thres_trigger)[0]))/EEG.info["sfreq"]/60 # mins
-    if eeg_duration < 6:
-        print("="*20)
-        print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
-        print("="*20)
-    return EEG
+    return EEG, rm_ch_list
 
 def gen_EEG_event_tsv(subj_id, savepath=None):
     # setup savepath
@@ -196,7 +223,8 @@ def tsv_to_events(event_file, sfreq):
                             mnt_incorrect=-1, mnt_correct=0,
                             city_incorrect_response=-12, city_correct_response=11,
                             mnt_incorrect_response=-11, mnt_correct_response=10)
-
+    # smooth VTC using Gaussian window (20 trials)
+    smoothed_vtc = gaussian_filter1d(events_df["VTC"], sigma=2.5, truncate=4) # kernel size = round(truncate*sigma)*2+1
     # create events array (onset, stim_channel_voltage, event_id)
     events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
@@ -207,7 +235,7 @@ def tsv_to_events(event_file, sfreq):
     # stack together
     events = np.vstack([events_stim_onset,events_response])
     # extract VTC
-    vtc_list = np.tile(events_df["VTC"],2)
+    vtc_list = np.tile(smoothed_vtc,2)
     # extract reaction time
     reaction_time = np.concatenate([events_df["reaction_time"].values, -1*events_df["reaction_time"].values])
     
