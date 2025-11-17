@@ -257,6 +257,40 @@ plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 
+#%% Check VTC and Reaction time
+plt_vtc = subj_vtc_dict['sub-721']['run02']['city_correct']
+plt_react = subj_react_dict['sub-721']['run02']['city_correct']
+
+# Calculate medians
+median_vtc = np.median(plt_vtc)
+median_react = np.median(plt_react)
+
+# Create masks for VTC
+above_median_vtc = plt_vtc >= median_vtc
+below_median_vtc = plt_vtc < median_vtc
+
+# Create arrays with NaN for segments we don't want to plot
+vtc_above = np.where(above_median_vtc, plt_vtc, np.nan)
+vtc_below = np.where(below_median_vtc, plt_vtc, np.nan)
+react_above = np.where(above_median_vtc, plt_react, np.nan)
+react_below = np.where(below_median_vtc, plt_react, np.nan)
+
+plt.figure(figsize=(15,8))
+# Plot VTC segments
+plt.plot(vtc_above, '-o', color='red', label='VTC Out zone')
+plt.plot(vtc_below, '-o', color='blue', label='VTC In zone')
+
+# Plot React segments
+plt.plot(react_above, color='orange', label=f'RT Out {np.mean(plt_react[above_median_vtc]):.3f}')
+plt.plot(react_below, color='green', label=f'RT In {np.mean(plt_react[below_median_vtc]):.3f}')
+
+# Add median lines
+plt.axhline(y=median_vtc, color='purple', linestyle='--', alpha=0.7, label=f'VTC Median: {median_vtc:.2f}')
+plt.axhline(y=median_react, color='brown', linestyle='--', alpha=0.7, label=f'React Median: {median_react:.2f}')
+
+plt.legend()
+plt.show()
+
 #%% compare city and mountain ERP
 is_save_fig = False
 select_events = ['city_correct', 'mnt_correct']
