@@ -19,8 +19,8 @@ from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
-# subj_id_array = [670, 671, 673, 695, 719, 721, 723]
-subj_id_array = [719]
+subj_id_array = [670, 671, 673, 695, 719, 721, 723]
+# subj_id_array = [719]
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -46,15 +46,18 @@ preproc_params = dict(
 
 #%% Check if preprocessed EEG exist. If not, preprocess.
 subj_EEG_dict = dict()
+rm_ch_dict = dict()
 """
 subj_EEG_dic: dictionary for storing subject EEG. 
                 subj_EEG_dict["sub-{subj_id}"]["gradcpt{run_id}"]
                 subj_EEG_dict["sub-{subj_id}"]["rest{run_id}"]
-                subj_EEG_dict["sub-{subj_id}"]["rm_ch_list"]
+rm_ch_dict: dictionary for storing the name of removed channels                
+                rm_ch_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                rm_ch_dict["sub-{subj_id}"]["rest{run_id}"]
 """
 for subj_id in tqdm(subj_id_array):
     subj_EEG_dict[f"sub-{subj_id}"] = dict()
-    subj_EEG_dict[f"sub-{subj_id}"]["rm_ch_list"] = dict()
+    rm_ch_dict[f"sub-{subj_id}"] = dict()
     # get all the vdhr files in raw folder
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
     preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}",'eeg')
@@ -63,25 +66,46 @@ for subj_id in tqdm(subj_id_array):
     filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
     # check if subject's EEG has been preprocessed.
     for fname in filename_list:
+        # get run id
+        run_id = fname.split('.')[0][-1]
+        if "cpt" in fname.lower():
+            key_name = "gradcpt"+run_id
+        else:
+            key_name = "rest"+run_id
+        # define savepath
         preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
         if not os.path.exists(preproc_fname):
             EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
-            EEG, rm_ch_list = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+            EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
                                 is_reref=is_reref, reref_ch=reref_ch,
                                 is_ica_rmEye=is_ica_rmEye)
             EEG.save(preproc_fname, overwrite=True)
         else:
             # load existed EEG
             EEG = mne.io.read_raw(preproc_fname,preload=True)
-        # store into dict
-        run_id = fname.split('.')[0][-1]
-        if "cpt" in fname.lower():
-            key_name = "gradcpt"+run_id
-        else:
-            key_name = "rest"+run_id
         subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG
-        subj_EEG_dict[f"sub-{subj_id}"]["rm_ch_list"][key_name] = rm_ch_list
+        # remove bad channels
+        rm_ch_list = []
+        # check flat
+        rm_ch_list.extend(check_flat_channels(EEG))
+        # check variance
+        rm_ch_list.extend(check_abnormal_var_channels(EEG))
+        rm_ch_dict[f"sub-{subj_id}"][key_name] = rm_ch_list    
+        # drop bad channels
+        EEG.drop_channels(rm_ch_list)
 
+#%% Check the number of EEG channels in each item of subj_EEG_dict
+for subj_id in subj_EEG_dict.keys():
+    print(f"\n{subj_id}:")
+    for run_key in subj_EEG_dict[subj_id].keys():
+        EEG = subj_EEG_dict[subj_id][run_key]
+        # Get only EEG channels (exclude EOG, ECG, STIM, etc.)
+        eeg_channels = [ch for ch in EEG.ch_names if EEG.get_channel_types([ch])[0] == 'eeg']
+        n_eeg_channels = len(eeg_channels)
+        n_total_channels = len(EEG.ch_names)
+        print(f"  {run_key}: {n_eeg_channels} EEG channels ({n_total_channels} total channels)")
+        # Optionally print channel names
+        print(f"    Channels: {', '.join(eeg_channels)}")
 
 #%% Epoch data
 subj_epoch_dict = dict()
@@ -96,10 +120,10 @@ subj_epoch_dict: dictionary for storing subject Epoch.
                         'city_correct': correct city trials, time-lock to stimulus-onset (first frame)
                         'mnt_incorrect': incorrect mountain trials, time-lock to stimulus-onset (first frame)
                         'mnt_correct': correct mountain trials, time-lock to stimulus-onset (first frame)
-                        'city_incorrect_response': incorrect city trials, same as city_incorrect
+                        'city_incorrect_response': incorrect city trials, time-lock to stimulus-onset (first frame)
                         'city_correct_response': correct city trials, time-lock to response (spacebar press)
                         'mnt_incorrect_response': incorrect mountain trials, time-lock to response (spacebar press)
-                        'mnt_correct_response': correct mountain trials, same as mnt_correct
+                        'mnt_correct_response': correct mountain trials, time-lock to stimulus-onset (first frame)
 
 
 """

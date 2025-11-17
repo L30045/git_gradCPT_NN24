@@ -111,17 +111,12 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         print("="*20)
         print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
         print("="*20)
-    rm_ch_list = []
     if is_bpfilter:
         # band-pass filtering (all channels)
         EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
     if is_reref:
         # re-reference to the average of mastoid (EEG channels only)
         EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
-    # check flat
-    rm_ch_list.extend(check_flat_channels(EEG))
-    # check variance
-    rm_ch_list.extend(check_abnormal_var_channels(EEG))
     # rm eye-related ICA
     if is_ica_rmEye:
         # ICA on EEG channels only
@@ -134,7 +129,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         EEG = ica.apply(EEG,verbose=False)
     # Restore original Trigger channel data
     EEG._data[4] = eeg_trigger
-    return EEG, rm_ch_list
+    return EEG
 
 def gen_EEG_event_tsv(subj_id, savepath=None):
     # setup savepath
