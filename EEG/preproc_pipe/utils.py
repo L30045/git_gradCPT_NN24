@@ -13,6 +13,7 @@ import pandas as pd
 from scipy.ndimage import uniform_filter1d, gaussian_filter1d
 import copy
 from spectral_connectivity import Multitaper, Connectivity
+from tqdm import tqdm
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
@@ -495,3 +496,215 @@ def plt_multitaper(plt_epoch,
         plt.show()
 
     return (log_power,multitaper,connectivity)
+
+#%% load EEG as epoch 
+def load_epoch_dict(subj_id_array, preproc_params):
+    # unpacked preproc_params
+    is_bpfilter = preproc_params['is_bpfilter']
+    bp_f_range = preproc_params['bp_f_range']
+    is_reref = preproc_params['is_reref']
+    reref_ch = preproc_params['reref_ch']
+    is_ica_rmEye = preproc_params['is_ica_rmEye']
+    select_event = preproc_params['select_event']
+    baseline_length = preproc_params['baseline_length']
+    epoch_reject_crit = preproc_params['epoch_reject_crit']
+    is_detrend = preproc_params['is_detrend']
+    ch_names = preproc_params['ch_names']
+    # load EEG
+    subj_EEG_dict = dict()
+    rm_ch_dict = dict()
+    """
+    subj_EEG_dic: dictionary for storing subject EEG. 
+                    subj_EEG_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                    subj_EEG_dict["sub-{subj_id}"]["rest{run_id}"]
+    rm_ch_dict: dictionary for storing the name of removed channels                
+                    rm_ch_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                    rm_ch_dict["sub-{subj_id}"]["rest{run_id}"]
+    """
+    for subj_id in tqdm(subj_id_array):
+        subj_EEG_dict[f"sub-{subj_id}"] = dict()
+        rm_ch_dict[f"sub-{subj_id}"] = dict()
+        # get all the vdhr files in raw folder
+        raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
+        preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}",'eeg')
+        if not os.path.exists(preproc_save_path):
+            os.makedirs(preproc_save_path, exist_ok=True)
+        filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
+        # check if subject's EEG has been preprocessed.
+        for fname in filename_list:
+            # get run id
+            run_id = fname.split('.')[0][-1]
+            if "cpt" in fname.lower():
+                key_name = "gradcpt"+run_id
+            else:
+                key_name = "rest"+run_id
+            # define savepath
+            preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
+            if not os.path.exists(preproc_fname):
+                EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+                EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                                    is_reref=is_reref, reref_ch=reref_ch,
+                                    is_ica_rmEye=is_ica_rmEye)
+                EEG.save(preproc_fname, overwrite=True)
+            else:
+                # load existed EEG
+                EEG = mne.io.read_raw(preproc_fname,preload=True)
+            subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG
+            # remove bad channels
+            rm_ch_list = []
+            # check flat
+            rm_ch_list.extend(check_flat_channels(EEG))
+            # check variance
+            rm_ch_list.extend(check_abnormal_var_channels(EEG))
+            rm_ch_dict[f"sub-{subj_id}"][key_name] = rm_ch_list    
+            # drop bad channels
+            EEG.drop_channels(rm_ch_list)
+
+    # Check the number of EEG channels in each item of subj_EEG_dict
+    # for subj_id in subj_EEG_dict.keys():
+    #     print(f"\n{subj_id}:")
+    #     for run_key in subj_EEG_dict[subj_id].keys():
+    #         EEG = subj_EEG_dict[subj_id][run_key]
+    #         # Get only EEG channels (exclude EOG, ECG, STIM, etc.)
+    #         eeg_channels = [ch for ch in EEG.ch_names if EEG.get_channel_types([ch])[0] == 'eeg']
+    #         n_eeg_channels = len(eeg_channels)
+    #         n_total_channels = len(EEG.ch_names)
+    #         print(f"  {run_key}: {n_eeg_channels} EEG channels ({n_total_channels} total channels)")
+    #         # Optionally print channel names
+    #         print(f"    Channels: {', '.join(eeg_channels)}")
+
+    # Epoch data
+    subj_epoch_dict = dict()
+    subj_vtc_dict = dict()
+    subj_react_dict = dict()
+    include_2_analysis = []
+    """
+    subj_epoch_dict: dictionary for storing subject Epoch.
+                        subj_epoch_dict["sub-xxx"]["run0x"][Events]
+                        Events include:
+                            'city_incorrect': incorrect city trials, time-lock to stimulus-onset (first frame)
+                            'city_correct': correct city trials, time-lock to stimulus-onset (first frame)
+                            'mnt_incorrect': incorrect mountain trials, time-lock to stimulus-onset (first frame)
+                            'mnt_correct': correct mountain trials, time-lock to stimulus-onset (first frame)
+                            'city_incorrect_response': incorrect city trials, time-lock to stimulus-onset (first frame)
+                            'city_correct_response': correct city trials, time-lock to response (spacebar press)
+                            'mnt_incorrect_response': incorrect mountain trials, time-lock to response (spacebar press)
+                            'mnt_correct_response': correct mountain trials, time-lock to stimulus-onset (first frame)
+    """
+    # for each subject
+    for subj_id in tqdm(subj_EEG_dict.keys()):
+        subj_epoch_dict[subj_id] = dict()
+        subj_vtc_dict[subj_id] = dict()
+        subj_react_dict[subj_id] = dict()
+        # check if event_file exist
+        event_file = os.path.join(data_save_path,f"{subj_id}","eeg",
+                                f"{subj_id}_task-gradCPT_run-01_events.tsv")
+        if not os.path.exists(event_file):
+            gen_EEG_event_tsv(int(subj_id.split('-')[-1]))
+        # for each run
+        for run_id in np.arange(1,4):
+            subj_epoch_dict[subj_id][f"run{run_id:02d}"] = dict()
+            subj_vtc_dict[subj_id][f"run{run_id:02d}"] = dict()
+            subj_react_dict[subj_id][f"run{run_id:02d}"] = dict()
+            EEG = subj_EEG_dict[subj_id][f"gradcpt{run_id}"]
+            # load corresponding event file
+            event_file = os.path.join(data_save_path,f"{subj_id}","eeg",
+                                    f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+            events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
+            # for each condition
+            for select_event in event_labels_lookup.keys():
+                if np.any(events[:,-1]==event_labels_lookup[select_event]):
+                    ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
+                    ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
+                    event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
+                    baseline_length = -1.2 if select_event.split('_')[-1]=='response' else -0.2
+                    try:    
+                        epochs = epoch_by_select_event(EEG, events, select_event=select_event,
+                                                                    baseline_length=baseline_length,
+                                                                    epoch_reject_crit=epoch_reject_crit,
+                                                                    is_detrend=is_detrend,
+                                                                    event_duration=event_duration,
+                                                                    verbose=False)
+                        include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
+                        # remove vtc that is dropped
+                        ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
+                        # remove reaction time that is dropped
+                        ev_react = ev_react[[len(x)==0 for x in epochs.drop_log]]
+                    except:
+                        print("="*20)
+                        print(f"No clean trial found in {subj_id}_gradCPT{run_id} ({select_event}).")    
+                        print("="*20)
+                        epochs = []
+                else:
+                    epochs=[]         
+                    ev_vtc = []         
+                    ev_react = []                                                  
+                # save epochs
+                subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event] = epochs
+                subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event] = ev_vtc
+                subj_react_dict[subj_id][f"run{run_id:02d}"][select_event] = ev_react
+
+    # save processed data for future use
+    # save_data = dict(
+    #     subj_epoch_dict=subj_epoch_dict,
+    #     subj_vtc_dict=subj_vtc_dict,
+    #     subj_react_dict=subj_react_dict,
+    #     include_2_analysis=include_2_analysis
+    # )
+    # with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
+    #     pickle.dump(save_data, f)
+
+    # combine runs for each subject
+    combine_epoch_dict = dict()
+    combine_vtc_dict = dict()
+    combine_react_dict = dict()
+    in_out_zone_dict = dict()
+    """
+    combine_epoch_dict: dictionary for combined epochs from each run for subject.
+                        combine_epoch_dict["select_event"]["ch"]: list of epoch of selected event and channel. (length equals to number of subjects)
+    """
+    # get median of the vtc for each subject
+    subj_thres_vtc = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]
+                                            for run_id in range(1, 4)
+                                            for event in event_labels_lookup.keys()
+                                            if len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                    for subj_id in subj_vtc_dict.keys()}
+    for select_event in event_labels_lookup.keys():
+        epoch_dict = dict()
+        vtc_dict = dict()
+        react_dict = dict()
+        ch_in_out_zone_dict = dict()
+        # initialize epoch_dict
+        for ch in ch_names:
+            epoch_dict[ch] = []
+            vtc_dict[ch] = []
+            react_dict[ch] = []
+            ch_in_out_zone_dict[ch] = []
+        for subj_id in subj_epoch_dict.keys():
+            tmp_epoch_list = []
+            tmp_vtc_list = []
+            tmp_react_list = []
+            tmp_in_out_zone_list = []
+            for run_id in np.arange(1,4):
+                loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
+                loc_v = subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event]
+                loc_r = subj_react_dict[subj_id][f"run{run_id:02d}"][select_event]
+                if len(loc_e)>0:
+                    tmp_epoch_list.append(loc_e)
+                    tmp_vtc_list.append(loc_v)
+                    tmp_react_list.append(loc_r)
+                    tmp_in_out_zone_list.append(loc_v<subj_thres_vtc[subj_id])
+            if len(tmp_epoch_list)>0:
+                # for each channel, create an epoch
+                for ch in ch_names:
+                    ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
+                    epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))
+                    vtc_dict[ch].append(np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names]))
+                    react_dict[ch].append(np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names]))
+                    ch_in_out_zone_dict[ch].append(np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names]))
+        combine_epoch_dict[select_event] = epoch_dict
+        combine_vtc_dict[select_event] = vtc_dict
+        combine_react_dict[select_event] = react_dict
+        in_out_zone_dict[select_event] = ch_in_out_zone_dict
+
+    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict)
