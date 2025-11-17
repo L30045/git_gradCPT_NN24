@@ -708,3 +708,37 @@ def load_epoch_dict(subj_id_array, preproc_params):
         in_out_zone_dict[select_event] = ch_in_out_zone_dict
 
     return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict)
+
+def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict):
+    check_ch = 'cz'
+    epoch_count = []
+    for ev in combine_epoch_dict.keys():
+        tmp_count = [len(x) for x in combine_epoch_dict[ev][check_ch]]
+        if len(tmp_count)>0:
+            epoch_count.append(tmp_count)
+    epoch_count = np.sum(np.vstack(epoch_count),axis=0)
+    print("Target number of epoch = 2700 (450 epochs* 3 runs* 2 time-lock)")
+    print(f"Number after removal = {epoch_count}")
+    print("Remove subjects with preserved trial less than half of the target.")
+    rm_subj_idx = epoch_count<0.5*2700
+    print(f"Remove subjects: {np.array(subj_id_array)[rm_subj_idx]}")
+
+    # Remove subjects by rm_subj_idx for all items in all dictionaries
+    keep_subj_idx = ~rm_subj_idx
+    for ev in combine_epoch_dict.keys():
+        for ch in combine_epoch_dict[ev].keys():
+            combine_epoch_dict[ev][ch] = [x for i, x in enumerate(combine_epoch_dict[ev][ch]) if keep_subj_idx[i]]
+
+    for ev in combine_vtc_dict.keys():
+        for ch in combine_vtc_dict[ev].keys():
+            combine_vtc_dict[ev][ch] = [x for i, x in enumerate(combine_vtc_dict[ev][ch]) if keep_subj_idx[i]]
+
+    for ev in combine_react_dict.keys():
+        for ch in combine_react_dict[ev].keys():
+            combine_react_dict[ev][ch] = [x for i, x in enumerate(combine_react_dict[ev][ch]) if keep_subj_idx[i]]
+
+    for ev in in_out_zone_dict.keys():
+        for ch in in_out_zone_dict[ev].keys():
+            in_out_zone_dict[ev][ch] = [x for i, x in enumerate(in_out_zone_dict[ev][ch]) if keep_subj_idx[i]]
+
+    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict

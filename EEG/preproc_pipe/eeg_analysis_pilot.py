@@ -50,6 +50,9 @@ preproc_params = dict(
 #%% load epoch for each condition. Epoch from each run is combined for each subject.
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
 
+#%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
+combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict)
+
 #%% Compare in-zone/out-of-zone reaction time
 check_ch = 'cz'
 in_zone_RT = [x[y] for x,y in zip(combine_react_dict['city_correct'][check_ch],in_out_zone_dict['city_correct'][check_ch])]
