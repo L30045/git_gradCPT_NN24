@@ -21,6 +21,7 @@ from spectral_connectivity.transforms import prepare_time_series
 # subj_id_array = [670, 671, 673, 695]
 subj_id_array = [670, 671, 673, 695, 719, 721, 723]
 # subj_id_array = [719]
+ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -202,10 +203,16 @@ subj_thres_vtc = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"ru
                   for subj_id in subj_vtc_dict.keys()}
 in_out_zone_dict = dict()
 for select_event in event_labels_lookup.keys():
-    epoch_list = []
-    vtc_list = []
-    react_list = []
-    in_out_zone_list = []
+    epoch_dict = dict()
+    vtc_dict = dict()
+    react_dict = dict()
+    ch_in_out_zone_dict = dict()
+    # initialize epoch_dict
+    for ch in ch_names:
+        epoch_dict[ch] = []
+        vtc_dict[ch] = []
+        react_dict[ch] = []
+        ch_in_out_zone_dict[ch] = []
     for subj_id in subj_epoch_dict.keys():
         tmp_epoch_list = []
         tmp_vtc_list = []
@@ -221,14 +228,17 @@ for select_event in event_labels_lookup.keys():
                 tmp_react_list.append(loc_r)
                 tmp_in_out_zone_list.append(loc_v<subj_thres_vtc[subj_id])
         if len(tmp_epoch_list)>0:
-            epoch_list.append(mne.concatenate_epochs(tmp_epoch_list,verbose=False))
-            vtc_list.append(np.concatenate(tmp_vtc_list))
-            react_list.append(np.concatenate(tmp_react_list))
-            in_out_zone_list.append(np.concatenate(tmp_in_out_zone_list))
-    combine_epoch_dict[select_event] = epoch_list
-    combine_vtc_dict[select_event] = vtc_list
-    combine_react_dict[select_event] = react_list
-    in_out_zone_dict[select_event] = in_out_zone_list
+            # for each channel, create an epoch
+            for ch in ch_names:
+                ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
+                epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))
+                vtc_dict[ch].append(np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names]))
+                react_dict[ch].append(np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names]))
+                ch_in_out_zone_dict[ch].append(np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names]))
+    combine_epoch_dict[select_event] = epoch_dict
+    combine_vtc_dict[select_event] = vtc_dict
+    combine_react_dict[select_event] = react_dict
+    in_out_zone_dict[select_event] = ch_in_out_zone_dict
 
 #%% compare city and mountain ERP
 is_save_fig = False
@@ -239,29 +249,27 @@ vis_ch = ['fz','cz','pz','oz']
 # Extract cross-subject ERPs for both conditions
 condition_data = {}
 for select_event in select_events:
-    subj_epoch_array = combine_epoch_dict[select_event]
-    n_subjects = len(subj_epoch_array)
-    xSubj_erps = []
-    for epoch in subj_epoch_array:
-        # Get average ERP for this subject
-        evoked = epoch.average()
-        subject_erps = []
-        for ch_i in vis_ch:
-            ch_idx = evoked.ch_names.index(ch_i)
-            subject_erps.append(evoked.data[ch_idx, :])
-        subject_erps = np.vstack(subject_erps)
-        xSubj_erps.append(subject_erps)
-    condition_data[select_event] = {'erps': xSubj_erps, 'n_subjects': n_subjects}
+    condition_data[select_event] = dict()
+    for ch in vis_ch:
+        subj_epoch_array = combine_epoch_dict[select_event][ch]
+        n_subjects = len(subj_epoch_array)
+        xSubj_erps = []
+        for epoch in subj_epoch_array:
+            # Get average ERP for this subject
+            evoked = epoch.average()
+            xSubj_erps.append(evoked.data)
+        xSubj_erps = np.vstack(xSubj_erps)
+        condition_data[select_event][ch] = {'erps': xSubj_erps, 'n_subjects': n_subjects}
 
 # Plot comparison for each channel
-for ch_i in range(len(vis_ch)):
+for ch in vis_ch:
     plt.figure(figsize=(10, 6))
 
     for idx, select_event in enumerate(select_events):
-        xSubj_erps = condition_data[select_event]['erps']
-        n_subjects = condition_data[select_event]['n_subjects']
-
-        plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
+        # xSubj_erps = condition_data[select_event][ch]['erps']
+        n_subjects = condition_data[select_event][ch]['n_subjects']
+        plt_erps = condition_data[select_event][ch]['erps']
+        # plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
         # Calculate mean and SEM across subjects
         mean_erp = np.mean(plt_erps, axis=0)
         sem_erp = np.std(plt_erps, axis=0) / np.sqrt(n_subjects)
@@ -269,7 +277,7 @@ for ch_i in range(len(vis_ch)):
         lower_bound = mean_erp - 2 * sem_erp
 
         # Get time vector and convert to milliseconds
-        time_vector = combine_epoch_dict[select_event][0].times * 1000
+        time_vector = combine_epoch_dict[select_event][ch][0].times * 1000
 
         # Plot
         label = select_event.replace('_', ' ').title()
@@ -280,13 +288,13 @@ for ch_i in range(len(vis_ch)):
     plt.axvline(0, color='k', linestyle='--', linewidth=1)
     plt.xlabel('Time (ms)')
     plt.ylabel('Amplitude (V)')
-    plt.title(f'{vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.title(f'{ch.upper()} (n={n_subjects})')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     # save figure to fig_save_path
     if is_save_fig:
-        save_filename = f'mntC_vs_mntIC_{vis_ch[ch_i]}_mean_2SEM.png'
+        save_filename = f'mntC_vs_mntIC_{ch}_mean_2SEM.png'
         plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
     plt.show()
 
@@ -295,18 +303,17 @@ for ch_i in range(len(vis_ch)):
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
 select_event = "mnt_correct"
-ch_i = 'cz'
+ch = 'cz'
 window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
-plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
+plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event][ch])
 time_vector = plt_epoch.times
-plt_epoch.pick(ch_i)
 plt_epoch = np.squeeze(plt_epoch.get_data())
 if window_size is None:
     window_size = np.max([4,np.floor(plt_epoch.shape[0]*0.01).astype(int)])
-plt_vtc = np.concatenate(combine_vtc_dict[select_event])
-plt_react = np.concatenate(combine_react_dict[select_event])
-title_txt = f'{select_event} - Channel: {ch_i}'
+plt_vtc = np.concatenate(combine_vtc_dict[select_event][ch])
+plt_react = np.concatenate(combine_react_dict[select_event][ch])
+title_txt = f'{select_event} - Channel: {ch}'
 
 _ = plt_ERPImage(time_vector, plt_epoch, 
                  sort_idx=plt_vtc,
@@ -317,14 +324,13 @@ _ = plt_ERPImage(time_vector, plt_epoch,
 
 #%% ERSP analysis using multi-taper
 start_time = time.time()
-select_event = "city_correct"
-ch_i = 'cz'
+select_event = "mnt_correct"
+ch = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
 time_window_step = 0.05
-plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event])
+plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event][ch])
 time_vector = plt_epoch.times
-plt_epoch.pick(ch_i)
 (_,multitaper,_) = plt_multitaper(plt_epoch,
                     time_halfbandwidth_product=time_halfbandwidth_product,
                     time_window_duration=time_window_duration,
@@ -345,15 +351,13 @@ print(f"Freq. resolution = {multitaper.frequency_resolution:.2F} Hz")
 #%% compare trials
 target_event = "mnt_correct"
 ref_event = "city_correct"
-ch_i = 'cz'
+ch = 'cz'
 time_halfbandwidth_product = 1 
 time_window_duration = 0.2 # sec
 time_window_step = 0.05
-plt_epoch_target = mne.concatenate_epochs(combine_epoch_dict[target_event])
-plt_epoch_ref = mne.concatenate_epochs(combine_epoch_dict[ref_event])
+plt_epoch_target = mne.concatenate_epochs(combine_epoch_dict[target_event][ch])
+plt_epoch_ref = mne.concatenate_epochs(combine_epoch_dict[ref_event][ch])
 time_vector = plt_epoch_target.times
-plt_epoch_target.pick(ch_i)
-plt_epoch_ref.pick(ch_i)
 (_,multitaper,_) = plt_multitaper(plt_epoch_target, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
@@ -362,17 +366,18 @@ plt_epoch_ref.pick(ch_i)
 print(f"Freq. resolution = {multitaper.frequency_resolution:.2F} Hz")
 
 #%% check in-zone vs out-of-zone ratio
+check_ch = 'cz'
 for select_event in in_out_zone_dict.keys():
     if "_response" not in select_event:
         total_in_zone = 0
         total_out_zone = 0
         print(f"\n{select_event}:")
-        for subj_i, in_out_zone in enumerate(in_out_zone_dict[select_event]):
+        for subj_i, in_out_zone in enumerate(in_out_zone_dict[select_event][check_ch]):
             n_in_zone = np.sum(in_out_zone)
             n_out_zone = np.sum(~in_out_zone)
             total_in_zone += n_in_zone
             total_out_zone += n_out_zone
-            print(f"  Subject {subj_i}: {n_in_zone} in-zone, {n_out_zone} out-of-zone")
+            print(f"  Subject {subj_id_array[subj_i]}: {n_in_zone} in-zone, {n_out_zone} out-of-zone")
         total_trials = total_in_zone + total_out_zone
         if total_trials > 0:
             print(f"  Total: {total_in_zone} in-zone ({total_in_zone/total_trials*100:.1f}%), {total_out_zone} out-of-zone ({total_out_zone/total_trials*100:.1f}%)")
@@ -384,26 +389,26 @@ select_event = "mnt_correct"
 vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions
-subj_epoch_array = combine_epoch_dict[select_event]
-n_subjects = len(subj_epoch_array)
-in_zone_erp = []
-out_zone_erp = []
-for subj_i, epoch in enumerate(subj_epoch_array):
+in_zone_erp = dict()
+out_zone_erp = dict()
+for ch in vis_ch:
+    subj_epoch_array = combine_epoch_dict[select_event][ch]
+    n_subjects = len(subj_epoch_array)
     subj_in_zone_erp = []
     subj_out_zone_erp = []
-    for ch_i in vis_ch:
+    for subj_i, epoch in enumerate(subj_epoch_array):
         # get channel data
-        ch_erp = np.squeeze(epoch.get_data(picks=ch_i))
+        ch_erp = np.squeeze(epoch.get_data())
         # get in-zone/ out-of-zone data
-        subj_in_zone_erp.append(np.mean(ch_erp[in_out_zone_dict[select_event][subj_i]],axis=0))
-        subj_out_zone_erp.append(np.mean(ch_erp[~in_out_zone_dict[select_event][subj_i]],axis=0))
-    in_zone_erp.append(np.vstack(subj_in_zone_erp))
-    out_zone_erp.append(np.vstack(subj_out_zone_erp))
+        subj_in_zone_erp.append(np.mean(ch_erp[in_out_zone_dict[select_event][ch][subj_i]],axis=0))
+        subj_out_zone_erp.append(np.mean(ch_erp[~in_out_zone_dict[select_event][ch][subj_i]],axis=0))
+    in_zone_erp[ch] = np.vstack(subj_in_zone_erp)
+    out_zone_erp[ch] = np.vstack(subj_out_zone_erp)
 
 # Plot comparison for each channel
-for ch_i in range(len(vis_ch)):
-    plt_in_zone = np.vstack([x[ch_i] for x in in_zone_erp])
-    plt_out_zone = np.vstack([x[ch_i] for x in out_zone_erp])
+for ch in vis_ch:
+    plt_in_zone = in_zone_erp[ch]
+    plt_out_zone = out_zone_erp[ch]
 
     plt.figure(figsize=(10, 6))
     # Calculate mean and SEM across subjects
@@ -417,7 +422,7 @@ for ch_i in range(len(vis_ch)):
     lower_out = mean_out - 2 * sem_out
 
     # Get time vector and convert to milliseconds
-    time_vector = combine_epoch_dict[select_event][0].times * 1000
+    time_vector = combine_epoch_dict[select_event][ch][0].times * 1000
 
     # Plot
     plt.plot(time_vector, mean_in, color='b', linewidth=2, label='Mean (in-zone)')
@@ -428,7 +433,7 @@ for ch_i in range(len(vis_ch)):
     plt.axvline(0, color='k', linestyle='--', linewidth=1)
     plt.xlabel('Time (ms)')
     plt.ylabel('Amplitude (V)')
-    plt.title(f'{vis_ch[ch_i].upper()} (n={n_subjects})')
+    plt.title(f'{ch.upper()} (n={n_subjects})')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -436,26 +441,26 @@ for ch_i in range(len(vis_ch)):
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "city_correct"
-ch_i = 'cz'
+select_event = "mnt_correct"
+ch = 'cz'
 time_halfbandwidth_product = 1
 time_window_duration = 0.2
 time_window_step = 0.1
 
 # Extract cross-subject ERPs for both conditions
-subj_epoch_array = combine_epoch_dict[select_event]
+subj_epoch_array = combine_epoch_dict[select_event][ch]
 time_vector = subj_epoch_array[0].times
 n_subjects = len(subj_epoch_array)
 in_zone_erp = []
 out_zone_erp = []
 for subj_i, epoch in enumerate(subj_epoch_array):
     # select trials based on in-zone/out-of-zone condition
-    in_zone_mask = in_out_zone_dict[select_event][subj_i]
-    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
+    in_zone_mask = in_out_zone_dict[select_event][ch][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][ch][subj_i]
 
     # get in-zone and out-of-zone epochs for specific channel
-    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
-    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
+    in_zone_epochs = epoch[in_zone_mask]
+    out_zone_epochs = epoch[out_zone_mask]
 
     in_zone_erp.append(in_zone_epochs)
     out_zone_erp.append(out_zone_epochs)
@@ -490,23 +495,23 @@ print(f"ERSP analysis completed in {elapsed_time:.2f} seconds ({elapsed_time/60:
 
 #%% Compare PSD
 select_event = "city_correct"
-ch_i = 'cz'
+ch = 'cz'
 time_halfbandwidth_product = 1
 
 # Extract cross-subject ERPs for both conditions
-subj_epoch_array = combine_epoch_dict[select_event]
+subj_epoch_array = combine_epoch_dict[select_event][ch]
 time_vector = subj_epoch_array[0].times
 n_subjects = len(subj_epoch_array)
 in_zone_erp = []
 out_zone_erp = []
 for subj_i, epoch in enumerate(subj_epoch_array):
     # select trials based on in-zone/out-of-zone condition
-    in_zone_mask = in_out_zone_dict[select_event][subj_i]
-    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
+    in_zone_mask = in_out_zone_dict[select_event][ch][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][ch][subj_i]
 
     # get in-zone and out-of-zone epochs for specific channel
-    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
-    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
+    in_zone_epochs = epoch[in_zone_mask]
+    out_zone_epochs = epoch[out_zone_mask]
 
     in_zone_erp.append(in_zone_epochs)
     out_zone_erp.append(out_zone_epochs)
@@ -525,19 +530,19 @@ out_zone_erp = mne.concatenate_epochs(out_zone_erp)
 select_event = "mnt_correct"
 
 # Extract cross-subject ERPs for both conditions
-subj_epoch_array = combine_epoch_dict[select_event]
+subj_epoch_array = combine_epoch_dict[select_event][ch]
 time_vector = subj_epoch_array[0].times
 n_subjects = len(subj_epoch_array)
 in_zone_erp = []
 out_zone_erp = []
 for subj_i, epoch in enumerate(subj_epoch_array):
     # select trials based on in-zone/out-of-zone condition
-    in_zone_mask = in_out_zone_dict[select_event][subj_i]
-    out_zone_mask = ~in_out_zone_dict[select_event][subj_i]
+    in_zone_mask = in_out_zone_dict[select_event][ch][subj_i]
+    out_zone_mask = ~in_out_zone_dict[select_event][ch][subj_i]
 
     # get in-zone and out-of-zone epochs for specific channel
-    in_zone_epochs = epoch[in_zone_mask].copy().pick(ch_i)
-    out_zone_epochs = epoch[out_zone_mask].copy().pick(ch_i)
+    in_zone_epochs = epoch[in_zone_mask]
+    out_zone_epochs = epoch[out_zone_mask]
 
     in_zone_erp.append(in_zone_epochs)
     out_zone_erp.append(out_zone_epochs)
@@ -556,8 +561,8 @@ print(f"Freq. resolution = {multitaper.frequency_resolution:.2F} Hz")
 vis_f_range = [0, 50] # Hz
 vis_mask = (connectivity.frequencies>=vis_f_range[0])&(connectivity.frequencies<=vis_f_range[1])
 plt.figure()
-# plt.plot(connectivity.frequencies[vis_mask], log_power_in_city[vis_mask], 'b-', label='City (in zone)')
-# plt.plot(connectivity.frequencies[vis_mask], log_power_out_city[vis_mask], 'b--', label='City (out of zone)')
+plt.plot(connectivity.frequencies[vis_mask], log_power_in_city[vis_mask], 'b-', label='City (in zone)')
+plt.plot(connectivity.frequencies[vis_mask], log_power_out_city[vis_mask], 'b--', label='City (out of zone)')
 plt.plot(connectivity.frequencies[vis_mask], log_power_in_mnt[vis_mask], 'r-', label='Mnt (in zone)')
 plt.plot(connectivity.frequencies[vis_mask], log_power_out_mnt[vis_mask], 'r--', label='Mnt (out of zone)')
 plt.xlabel("Frequency (Hz)")
