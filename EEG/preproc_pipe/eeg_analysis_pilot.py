@@ -125,8 +125,6 @@ subj_epoch_dict: dictionary for storing subject Epoch.
                         'city_correct_response': correct city trials, time-lock to response (spacebar press)
                         'mnt_incorrect_response': incorrect mountain trials, time-lock to response (spacebar press)
                         'mnt_correct_response': correct mountain trials, time-lock to stimulus-onset (first frame)
-
-
 """
 # for each subject
 for subj_id in tqdm(subj_EEG_dict.keys()):
@@ -195,13 +193,13 @@ with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
 combine_epoch_dict = dict()
 combine_vtc_dict = dict()
 combine_react_dict = dict()
+in_out_zone_dict = dict()
 # get median of the vtc for each subject
 subj_thres_vtc = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]
                                            for run_id in range(1, 4)
                                            for event in event_labels_lookup.keys()
                                            if len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
                   for subj_id in subj_vtc_dict.keys()}
-in_out_zone_dict = dict()
 for select_event in event_labels_lookup.keys():
     epoch_dict = dict()
     vtc_dict = dict()
@@ -239,6 +237,25 @@ for select_event in event_labels_lookup.keys():
     combine_vtc_dict[select_event] = vtc_dict
     combine_react_dict[select_event] = react_dict
     in_out_zone_dict[select_event] = ch_in_out_zone_dict
+
+#%% Compare in-zone/out-of-zone reaction time
+check_ch = 'cz'
+in_zone_RT = [x[y] for x,y in zip(combine_react_dict['city_correct'][check_ch],in_out_zone_dict['city_correct'][check_ch])]
+out_zone_RT = [x[~y] for x,y in zip(combine_react_dict['city_correct'][check_ch],in_out_zone_dict['city_correct'][check_ch])]
+print(f'RT diff (in/out zone) = {np.mean([np.mean(x)-np.mean(y) for x,y in zip(in_zone_RT,out_zone_RT)])*1000:.2f} ms')
+
+# Plot distribution of RT differences
+rt_diff_dist = [1000*(np.mean(x)-np.mean(y)) for x,y in zip(in_zone_RT,out_zone_RT)]
+plt.figure(figsize=(8, 5))
+plt.hist(rt_diff_dist, bins=20, edgecolor='black', alpha=0.7)
+plt.axvline(np.mean(rt_diff_dist), color='red', linestyle='--', linewidth=2, label=f'Mean = {np.mean(rt_diff_dist):.2f} ms')
+plt.xlabel('RT Difference (in-zone - out-zone) [ms]')
+plt.ylabel('Frequency')
+plt.title(f'Distribution of RT Differences ({check_ch.upper()})')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
 
 #%% compare city and mountain ERP
 is_save_fig = False
