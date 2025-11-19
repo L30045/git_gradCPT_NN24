@@ -181,7 +181,7 @@ plt.legend()
 plt.grid()
 plt.show()
 
-#%% IRF
+#%% constraint IRF
 """
 IRF = A * ((t-t0)/tau_D)^3 * exp((t-t0)/tau_D)
     + B * ((t-t0)/tau_C)^3 * exp((t-t0)/tau_C)
@@ -195,11 +195,17 @@ def make_IRF(params, t):
     irf = params[0] * (t/params[2])**3 * np.exp(-t/params[2])\
         + params[1] * (t/params[3])**3 * np.exp(-t/params[3])
     return irf
-params = [1e-4, 1e-4, 0.1, 0.1]
+params = [1, -0.5, 0.1, 0.15]
 irf = make_IRF(params, time_vector)
 plt.figure()
 plt.plot(time_vector, irf)
+plt.grid()
 
+
+#%% Unconstraint IRF
+"""
+Fit IRF directly without given equation.
+"""
 
 #%% Evaluation 
 
