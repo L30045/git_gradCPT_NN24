@@ -15,6 +15,7 @@ import sys
 import statsmodels.api as sm
 import pandas as pd
 from patsy import dmatrices
+from scipy.optimize import fmin
 
 #%% Test statsmodel
 df = sm.datasets.get_rdataset("Guerry", "HistData").data
@@ -59,9 +60,69 @@ preproc_params = dict(
 
 #%% load epoch for each condition. Epoch from each run is combined for each subject.
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
-
-#%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
+# remove subjects with number of epoch less than half of the target number of epoch (2700/2)
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict)
+
+#%% investigate if EEG characteristics still preserve after downsampling to 8Hz
+down_sampling_freq = 8 # Hz
+select_events = ['city_correct', 'mnt_correct']
+colors = ['b', 'r']
+vis_ch = ['fz','cz','pz','oz']
+
+# Extract cross-subject ERPs for both conditions
+condition_data = {}
+for select_event in select_events:
+    condition_data[select_event] = dict()
+    for ch in vis_ch:
+        subj_epoch_array = combine_epoch_dict[select_event][ch]
+        n_subjects = len(subj_epoch_array)
+        xSubj_erps = []
+        for epoch in subj_epoch_array:
+            # down sample epoch
+            epoch.resample(down_sampling_freq)
+            # Get average ERP for this subject
+            evoked = epoch.average()
+            xSubj_erps.append(evoked.data)
+        xSubj_erps = np.vstack(xSubj_erps)
+        condition_data[select_event][ch] = {'erps': xSubj_erps, 'n_subjects': n_subjects}
+
+# Plot comparison for each channel
+for ch in vis_ch:
+    plt.figure(figsize=(10, 6))
+
+    for idx, select_event in enumerate(select_events):
+        # xSubj_erps = condition_data[select_event][ch]['erps']
+        n_subjects = condition_data[select_event][ch]['n_subjects']
+        plt_erps = condition_data[select_event][ch]['erps']
+        # plt_erps = np.vstack([x[ch_i,:] for x in xSubj_erps])
+        # Calculate mean and SEM across subjects
+        mean_erp = np.mean(plt_erps, axis=0)
+        sem_erp = np.std(plt_erps, axis=0) / np.sqrt(n_subjects)
+        upper_bound = mean_erp + 2 * sem_erp
+        lower_bound = mean_erp - 2 * sem_erp
+
+        # Get time vector and convert to milliseconds
+        time_vector = combine_epoch_dict[select_event][ch][0].times * 1000
+
+        # Plot
+        label = select_event.replace('_', ' ').title()
+        plt.plot(time_vector, mean_erp, color=colors[idx], linewidth=2, label=f'{label} Mean')
+        plt.fill_between(time_vector, lower_bound, upper_bound, alpha=0.3, color=colors[idx])
+
+    plt.axhline(0, color='k', linestyle='--', linewidth=1)
+    plt.axvline(0, color='k', linestyle='--', linewidth=1)
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Amplitude (V)')
+    plt.title(f'{ch.upper()} (n={n_subjects})')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    # save figure to fig_save_path
+    if is_save_fig:
+        save_filename = f'mntC_vs_mntIC_{ch}_mean_2SEM.png'
+        plt.savefig(os.path.join(fig_save_path, save_filename), dpi=300, bbox_inches='tight')
+    plt.show()
+
 
 #%% project EEG from sensor space to source space
 """
@@ -97,7 +158,7 @@ We only have 6 good subjects for now. Should we do 6-fold cross validation inste
 
 
 
-#%% Design matrix and fit model
+#%% Design matrix
 """
 We are going to have a huge design matrix.
     Solution 1: Huge memory. (Not scalable if we recruit more and more subjects.)
@@ -110,19 +171,34 @@ Question:
 tmp_X_eeg = np.concatenate([combine_epoch_dict['city_correct'][key][0].get_data() for key in combine_epoch_dict['city_correct'].keys()], axis=1)
 # get pseudo source
 pseudo_S_eeg = tmp_X_eeg[0,1,:][-800:]
-# assume IRF is 1.6 seconds long
-design_matrix = []
-for t_i in range(800):
-    shift_S = np.concatenate([np.zeros(t_i), pseudo_S_eeg[:len(pseudo_S_eeg)-t_i]])
-    design_matrix.append(shift_S)
-design_matrix = np.stack(design_matrix,axis=1)
-# plot 3 columns to verify design_matrix is correct
+design_matrix = make_design_matrix(pseudo_S_eeg, 800)
+# visual check 
 plt.figure()
-plt.plot(design_matrix[:,0],label='t=0')
-plt.plot(design_matrix[:,50],label='t=50')
-plt.plot(design_matrix[:,100],label='t=100')
+plt.plot(design_matrix[:,0],color=[0,0,1],label='t=0')
+plt.plot(design_matrix[:,50],color=[0,0.5,1],label='t=50')
+plt.plot(design_matrix[:,100],color=[0,1,1],label='t=100')
 plt.legend()
 plt.grid()
+plt.show()
+
+#%% IRF
+"""
+IRF = A * ((t-t0)/tau_D)^3 * exp((t-t0)/tau_D)
+    + B * ((t-t0)/tau_C)^3 * exp((t-t0)/tau_C)
+"""
+time_vector = np.linspace(0, 1.6, int(1.6*500+1))
+def make_IRF(params, t):
+    """
+    params = [A, B, tau_D, tau_C] (I don't think we should fit t0.)
+    set t0 = 0
+    """
+    irf = params[0] * (t/params[2])**3 * np.exp(-t/params[2])\
+        + params[1] * (t/params[3])**3 * np.exp(-t/params[3])
+    return irf
+params = [1e-4, 1e-4, 0.1, 0.1]
+irf = make_IRF(params, time_vector)
+plt.figure()
+plt.plot(time_vector, irf)
 
 
 #%% Evaluation 
