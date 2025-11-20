@@ -505,7 +505,6 @@ def load_epoch_dict(subj_id_array, preproc_params):
     is_reref = preproc_params['is_reref']
     reref_ch = preproc_params['reref_ch']
     is_ica_rmEye = preproc_params['is_ica_rmEye']
-    select_event = preproc_params['select_event']
     baseline_length = preproc_params['baseline_length']
     epoch_reject_crit = preproc_params['epoch_reject_crit']
     is_detrend = preproc_params['is_detrend']
