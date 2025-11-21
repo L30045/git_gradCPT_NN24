@@ -14,6 +14,12 @@ import sys
 
 #%%
 subj_id = 695
+# smooth setting
+L = 20 # trial
+radius = np.ceil((L-1)/2).astype(int)
+alpha = 2.5 # default in Matlab
+sigma = (L-1)/(2*alpha)
+
 # for each run
 original_vtc = []
 smoothed_vtc = []
@@ -28,7 +34,7 @@ for run_id in np.arange(1,4):
     original_vtc.append(events_df["VTC"])
     rt_array.append(events_df["reaction_time"])
     # smooth VTC using Gaussian window (20 trials)
-    smoothed_vtc.append(gaussian_filter1d(events_df["VTC"], sigma=2.5, truncate=4)) # kernel size = round(truncate*sigma)*2+1
+    smoothed_vtc.append(gaussian_filter1d(events_df["VTC"], sigma=sigma, radius=radius)) # kernel size = round(truncate*sigma)*2+1
 
 # visualization - create figure with 3 subplots for each run
 fig, axes = plt.subplots(3,1, figsize=(12, 10))
