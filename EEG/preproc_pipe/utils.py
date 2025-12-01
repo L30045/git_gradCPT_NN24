@@ -21,7 +21,7 @@ git_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw")
 project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
-data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/processed_data")
+data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg")
 
 
 #%% utils function
@@ -135,7 +135,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
 def gen_EEG_event_tsv(subj_id, savepath=None):
     # setup savepath
     if savepath is None:
-        savepath = os.path.join(data_save_path,f'sub-{subj_id}/eeg')
+        savepath = os.path.join(data_save_path,f'sub-{subj_id}')
     gradcpt_path = os.path.join(data_path, f'sub-{subj_id}/gradCPT')
     # get all files with .mat ext in gradcpt_path
     files = [f for f in os.listdir(gradcpt_path) 
@@ -525,7 +525,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
         rm_ch_dict[f"sub-{subj_id}"] = dict()
         # get all the vdhr files in raw folder
         raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-        preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}",'eeg')
+        preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}")
         if not os.path.exists(preproc_save_path):
             os.makedirs(preproc_save_path, exist_ok=True)
         filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
@@ -596,7 +596,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
         subj_vtc_dict[subj_id] = dict()
         subj_react_dict[subj_id] = dict()
         # check if event_file exist
-        event_file = os.path.join(data_save_path,f"{subj_id}","eeg",
+        event_file = os.path.join(data_save_path,f"{subj_id}",
                                 f"{subj_id}_task-gradCPT_run-01_events.tsv")
         if not os.path.exists(event_file):
             gen_EEG_event_tsv(int(subj_id.split('-')[-1]))
@@ -607,7 +607,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
             subj_react_dict[subj_id][f"run{run_id:02d}"] = dict()
             EEG = subj_EEG_dict[subj_id][f"gradcpt{run_id}"]
             # load corresponding event file
-            event_file = os.path.join(data_save_path,f"{subj_id}","eeg",
+            event_file = os.path.join(data_save_path,f"{subj_id}",
                                     f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
             events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
             # for each condition
