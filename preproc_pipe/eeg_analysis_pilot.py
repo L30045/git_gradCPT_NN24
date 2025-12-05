@@ -19,13 +19,14 @@ from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
-subj_id_array = [670, 671, 673, 695, 719, 721, 723]
+subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 # subj_id_array = [719]
 ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
-reref_ch = ['tp9h','tp10h']
+# reref_ch = ['tp9h','tp10h']
+reref_ch = None # reref to average
 is_ica_rmEye = True
 select_event = "mnt_correct"
 baseline_length = -0.2
@@ -33,6 +34,7 @@ epoch_reject_crit = dict(
                         eeg=100e-6 #unit:V
                         )
 is_detrend = 1 # 0:constant, 1:linear, None
+is_overwrite = True # Force to re run preprocessing if it is True
 
 preproc_params = dict(
     is_bpfilter = is_bpfilter,
@@ -44,7 +46,8 @@ preproc_params = dict(
     baseline_length = baseline_length,
     epoch_reject_crit = epoch_reject_crit,
     is_detrend = is_detrend,
-    ch_names = ch_names
+    ch_names = ch_names,
+    is_overwrite = is_overwrite
 )
 
 #%% load epoch for each condition. Epoch from each run is combined for each subject.

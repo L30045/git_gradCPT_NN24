@@ -27,57 +27,51 @@ data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/de
 #%% utils function
 #%% Loading and generating events
 def fix_and_load_brainvision(vhdr_path,
-                             subj_id,
                              preload=True):
     """
     Load EEG into mne Raw object using vhdr.
     This function correct subject ID in vhdr by creating a temparary vhdr file.
     """
-    # check if subj_id == 695
-    if subj_id==695:
-        # load with MNE
-        raw = mne.io.read_raw_brainvision(vhdr_path, preload=preload, verbose=False)
-    else:
-        # read textvmrk
-        with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-        # filename
-        filename = os.path.basename(vhdr_path).split('.')[0]
-        # Capture the old filename from the text
-        match = re.search(r'(?im)^\s*DataFile\s*=\s*(.*)$', text)
-        if match:
-            # old_filename = match.group(1)
-            # Replace only the subject ID part
-            # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
-            new_filename = f"{filename}.eeg"
-            
-            text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
-                            f"DataFile={new_filename}",
-                            text)
-        # Capture the old filename from the text
-        match = re.search(r'(?im)^\s*MarkerFile\s*=\s*(.*)$', text)
-        if match:
-            # old_filename = match.group(1)
-            # Replace only the subject ID part
-            # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
-            new_filename = f"{filename}.vmrk"
+    # read textvmrk
+    with open(vhdr_path, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+    # filename
+    filename = os.path.basename(vhdr_path).split('.')[0]
+    # Capture the old filename from the text
+    match = re.search(r'(?im)^\s*DataFile\s*=\s*(.*)$', text)
+    if match:
+        # old_filename = match.group(1)
+        # Replace only the subject ID part
+        # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+        new_filename = f"{filename}.eeg"
+        
+        text_fixed = re.sub(r'(?im)^\s*DataFile\s*=.*$',
+                        f"DataFile={new_filename}",
+                        text)
+    # Capture the old filename from the text
+    match = re.search(r'(?im)^\s*MarkerFile\s*=\s*(.*)$', text)
+    if match:
+        # old_filename = match.group(1)
+        # Replace only the subject ID part
+        # new_filename = re.sub(r'sub-\d+', f'sub-{subj_id}', old_filename)
+        new_filename = f"{filename}.vmrk"
 
-            text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
-                            f"MarkerFile={new_filename}",
-                            text_fixed)
+        text_fixed = re.sub(r'(?im)^\s*MarkerFile\s*=.*$',
+                        f"MarkerFile={new_filename}",
+                        text_fixed)
 
-        # write to a temp file in same directory (so relative paths inside vhdr still work)
-        tmp = tempfile.NamedTemporaryFile(delete=False,
-                                            suffix='.vhdr',
-                                            dir=os.path.dirname(vhdr_path))
-        tmp_path = os.path.abspath(tmp.name)
-        tmp.close()
-        with open(tmp_path, "w", encoding="utf-8", errors="ignore") as f:
-            f.write(text_fixed)
-        # now load with MNE
-        raw = mne.io.read_raw_brainvision(tmp_path, preload=preload, verbose=False)
-        # remove tmp file
-        os.remove(tmp_path)
+    # write to a temp file in same directory (so relative paths inside vhdr still work)
+    tmp = tempfile.NamedTemporaryFile(delete=False,
+                                        suffix='.vhdr',
+                                        dir=os.path.dirname(vhdr_path))
+    tmp_path = os.path.abspath(tmp.name)
+    tmp.close()
+    with open(tmp_path, "w", encoding="utf-8", errors="ignore") as f:
+        f.write(text_fixed)
+    # now load with MNE
+    raw = mne.io.read_raw_brainvision(tmp_path, preload=preload, verbose=False)
+    # remove tmp file
+    os.remove(tmp_path)
     return raw
 
 def check_flat_channels(EEG):
@@ -101,9 +95,10 @@ def check_abnormal_var_channels(EEG, thres_std=3):
         print(f"Warning: channels with abnormal variance: {eeg_chs[abs(eeg_var_z)>thres_std]}")
     return eeg_chs[abs(eeg_var_z)>thres_std]
 
-def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
-                      is_reref=True, reref_ch=['tp9h','tp10h'],
+def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat=True, is_check_ch_var=True,
+                      is_reref=True, reref_ch=None,
                       is_ica_rmEye=True):
+    rm_ch_list = []
     eeg_trigger = EEG.get_data()[4]
     # Check if Trigger is pressed before and after the experiment. (The duration of two triggers should be longer than 6 mins as experiment design.)
     thres_trigger = (np.max(eeg_trigger)-np.min(eeg_trigger))/2+np.min(eeg_trigger)
@@ -111,13 +106,27 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
     if eeg_duration < 6:
         print("="*20)
         print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
+        print("Filename: ")
         print("="*20)
     if is_bpfilter:
         # band-pass filtering (all channels)
         EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
+    # check flat channels
+    if is_check_flat:
+        rm_ch_list.extend(check_flat_channels(EEG))
+    # check variance
+    if is_check_ch_var:
+        rm_ch_list.extend(check_abnormal_var_channels(EEG))
+    # drop bad channels
+    if len(rm_ch_list)>0:
+        EEG.drop_channels(rm_ch_list)
     if is_reref:
-        # re-reference to the average of mastoid (EEG channels only)
-        EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+        if reref_ch:
+            # re-reference to the average of mastoid (EEG channels only)
+            EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+        else:
+            # re-reference to common average
+            EEG.set_eeg_reference(ref_channels='average', ch_type='eeg',verbose=False)
     # rm eye-related ICA
     if is_ica_rmEye:
         # ICA on EEG channels only
@@ -130,7 +139,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45],
         EEG = ica.apply(EEG,verbose=False)
     # Restore original Trigger channel data
     EEG._data[4] = eeg_trigger
-    return EEG
+    return EEG, rm_ch_list
 
 def gen_EEG_event_tsv(subj_id, savepath=None):
     # setup savepath
@@ -149,15 +158,9 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         if "cpt" not in fname.lower():
             continue
         # get run id
-        """
-        The naming methods are different before and after Subject 695.
-        """
-        if subj_id<=695:
-            run_id = fname.lower().split("cpt")[-1][0]
-        else:
-            run_id = fname.lower().split("run-0")[-1][0]
+        run_id = fname.lower().split("run-0")[-1][0]
         # get EEG trigger
-        EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
+        EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
         eeg_trigger = EEG.get_data()[4]
         # load corresponding gradCPT
         f_cpt = files[[i for i, x in enumerate(files) if x.split('-0')[1][0]==run_id][0]]
@@ -509,6 +512,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
     epoch_reject_crit = preproc_params['epoch_reject_crit']
     is_detrend = preproc_params['is_detrend']
     ch_names = preproc_params['ch_names']
+    is_overwrite = preproc_params['is_overwrite']
     # load EEG
     subj_EEG_dict = dict()
     rm_ch_dict = dict()
@@ -539,25 +543,20 @@ def load_epoch_dict(subj_id_array, preproc_params):
                 key_name = "rest"+run_id
             # define savepath
             preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
-            if not os.path.exists(preproc_fname):
-                EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname),subj_id)
-                EEG = eeg_preproc_basic(EEG, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+            EEG_raw = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
+            if not os.path.exists(preproc_fname) or is_overwrite:
+                EEG, rm_ch_list = eeg_preproc_basic(EEG_raw, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
                                     is_reref=is_reref, reref_ch=reref_ch,
                                     is_ica_rmEye=is_ica_rmEye)
                 EEG.save(preproc_fname, overwrite=True)
             else:
                 # load existed EEG
                 EEG = mne.io.read_raw(preproc_fname,preload=True)
-            subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG
-            # remove bad channels
-            rm_ch_list = []
-            # check flat
-            rm_ch_list.extend(check_flat_channels(EEG))
-            # check variance
-            rm_ch_list.extend(check_abnormal_var_channels(EEG))
+                # reconstruct missing channels
+                rm_ch_list = list(set(raw_original.ch_names) - set(raw_preprocessed.ch_names))
+            subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG    
             rm_ch_dict[f"sub-{subj_id}"][key_name] = rm_ch_list    
-            # drop bad channels
-            EEG.drop_channels(rm_ch_list)
+
 
     # Check the number of EEG channels in each item of subj_EEG_dict
     # for subj_id in subj_EEG_dict.keys():
