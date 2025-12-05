@@ -34,7 +34,7 @@ epoch_reject_crit = dict(
                         eeg=100e-6 #unit:V
                         )
 is_detrend = 1 # 0:constant, 1:linear, None
-is_overwrite = True # Force to re run preprocessing if it is True
+is_overwrite = False # Force to re run preprocessing if it is True
 
 preproc_params = dict(
     is_bpfilter = is_bpfilter,

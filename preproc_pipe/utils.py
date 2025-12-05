@@ -241,16 +241,12 @@ def tsv_to_events(event_file, sfreq):
 
 
 #%% epoching, ERPImage, and ERSP using multitaper
-def epoch_by_select_event(EEG, events, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8, verbose=True):
+def epoch_by_select_event(EEG, events, event_labels_lookup, select_event='mnt_correct',baseline_length=-0.2,epoch_reject_crit=dict(eeg=100e-6), is_detrend=1, event_duration=0.8, verbose=True):
     
     """
     The event duration varies for each trial. For convenience, I fixed it as 0.8 second for mnt_correct trials and 1.6 for city_correct trials.
     (Chi 10/22/2025)
     """
-    event_labels_lookup = dict(city_incorrect=-2, city_correct=1,
-                            mnt_incorrect=-1, mnt_correct=0,
-                            city_incorrect_response=-12, city_correct_response=11,
-                            mnt_incorrect_response=-11, mnt_correct_response=10)
     n_select_ev = np.sum(events[:,-1]==event_labels_lookup[select_event])
     # pick only selected event
     events = events[events[:,-1]==event_labels_lookup[select_event]]
@@ -501,18 +497,6 @@ def plt_multitaper(plt_epoch,
 
 #%% load EEG as epoch 
 def load_epoch_dict(subj_id_array, preproc_params):
-    # unpacked preproc_params
-    is_bpfilter = preproc_params['is_bpfilter']
-    bp_f_range = preproc_params['bp_f_range']
-    is_reref = preproc_params['is_reref']
-    reref_ch = preproc_params['reref_ch']
-    is_ica_rmEye = preproc_params['is_ica_rmEye']
-    baseline_length = preproc_params['baseline_length']
-    epoch_reject_crit = preproc_params['epoch_reject_crit']
-    is_detrend = preproc_params['is_detrend']
-    ch_names = preproc_params['ch_names']
-    is_overwrite = preproc_params['is_overwrite']
-    # load EEG
     subj_EEG_dict = dict()
     rm_ch_dict = dict()
     """
@@ -524,58 +508,15 @@ def load_epoch_dict(subj_id_array, preproc_params):
                     rm_ch_dict["sub-{subj_id}"]["rest{run_id}"]
     """
     for subj_id in tqdm(subj_id_array):
-        subj_EEG_dict[f"sub-{subj_id}"] = dict()
-        rm_ch_dict[f"sub-{subj_id}"] = dict()
-        # get all the vdhr files in raw folder
-        raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-        preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}")
-        if not os.path.exists(preproc_save_path):
-            os.makedirs(preproc_save_path, exist_ok=True)
-        filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
-        # check if subject's EEG has been preprocessed.
-        for fname in filename_list:
-            # get run id
-            run_id = fname.split('.')[0][-1]
-            if "cpt" in fname.lower():
-                key_name = "gradcpt"+run_id
-            else:
-                key_name = "rest"+run_id
-            # define savepath
-            preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
-            EEG_raw = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
-            if not os.path.exists(preproc_fname) or is_overwrite:
-                print(f"Start preprocessing {preproc_fname}")
-                EEG, rm_ch_list = eeg_preproc_basic(EEG_raw, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
-                                    is_reref=is_reref, reref_ch=reref_ch,
-                                    is_ica_rmEye=is_ica_rmEye)
-                EEG.save(preproc_fname, overwrite=True)
-            else:
-                # load existed EEG
-                EEG = mne.io.read_raw(preproc_fname,preload=True)
-                # reconstruct missing channels
-                rm_ch_list = list(set(EEG_raw.ch_names) - set(EEG.ch_names))
-            subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG    
-            rm_ch_dict[f"sub-{subj_id}"][key_name] = rm_ch_list    
-
-
-    # Check the number of EEG channels in each item of subj_EEG_dict
-    # for subj_id in subj_EEG_dict.keys():
-    #     print(f"\n{subj_id}:")
-    #     for run_key in subj_EEG_dict[subj_id].keys():
-    #         EEG = subj_EEG_dict[subj_id][run_key]
-    #         # Get only EEG channels (exclude EOG, ECG, STIM, etc.)
-    #         eeg_channels = [ch for ch in EEG.ch_names if EEG.get_channel_types([ch])[0] == 'eeg']
-    #         n_eeg_channels = len(eeg_channels)
-    #         n_total_channels = len(EEG.ch_names)
-    #         print(f"  {run_key}: {n_eeg_channels} EEG channels ({n_total_channels} total channels)")
-    #         # Optionally print channel names
-    #         print(f"    Channels: {', '.join(eeg_channels)}")
-
+        print(f"preprocessing sub-{subj_id}")
+        single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(subj_id, preproc_params)
+        subj_EEG_dict[f"sub-{subj_id}"] = single_subj_EEG_dict
+        rm_ch_dict[f"sub-{subj_id}"] = single_subj_rm_ch_dict
+        
     # Epoch data
     subj_epoch_dict = dict()
     subj_vtc_dict = dict()
     subj_react_dict = dict()
-    include_2_analysis = []
     """
     subj_epoch_dict: dictionary for storing subject Epoch.
                         subj_epoch_dict["sub-xxx"]["run0x"][Events]
@@ -590,67 +531,14 @@ def load_epoch_dict(subj_id_array, preproc_params):
                             'mnt_correct_response': correct mountain trials, time-lock to stimulus-onset (first frame)
     """
     # for each subject
-    for subj_id in tqdm(subj_EEG_dict.keys()):
-        subj_epoch_dict[subj_id] = dict()
-        subj_vtc_dict[subj_id] = dict()
-        subj_react_dict[subj_id] = dict()
-        # check if event_file exist
-        event_file = os.path.join(data_save_path,f"{subj_id}",
-                                f"{subj_id}_task-gradCPT_run-01_events.tsv")
-        if not os.path.exists(event_file):
-            gen_EEG_event_tsv(int(subj_id.split('-')[-1]))
-        # for each run
-        for run_id in np.arange(1,4):
-            subj_epoch_dict[subj_id][f"run{run_id:02d}"] = dict()
-            subj_vtc_dict[subj_id][f"run{run_id:02d}"] = dict()
-            subj_react_dict[subj_id][f"run{run_id:02d}"] = dict()
-            EEG = subj_EEG_dict[subj_id][f"gradcpt{run_id}"]
-            # load corresponding event file
-            event_file = os.path.join(data_save_path,f"{subj_id}",
-                                    f"{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-            events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
-            # for each condition
-            for select_event in event_labels_lookup.keys():
-                if np.any(events[:,-1]==event_labels_lookup[select_event]):
-                    ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
-                    ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
-                    event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
-                    baseline_length = -1.2 if select_event.split('_')[-1]=='response' else -0.2
-                    try:    
-                        epochs = epoch_by_select_event(EEG, events, select_event=select_event,
-                                                                    baseline_length=baseline_length,
-                                                                    epoch_reject_crit=epoch_reject_crit,
-                                                                    is_detrend=is_detrend,
-                                                                    event_duration=event_duration,
-                                                                    verbose=False)
-                        include_2_analysis.append((subj_id, f"run{run_id:02d}", select_event))
-                        # remove vtc that is dropped
-                        ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
-                        # remove reaction time that is dropped
-                        ev_react = ev_react[[len(x)==0 for x in epochs.drop_log]]
-                    except:
-                        print("="*20)
-                        print(f"No clean trial found in {subj_id}_gradCPT{run_id} ({select_event}).")    
-                        print("="*20)
-                        epochs = []
-                else:
-                    epochs=[]         
-                    ev_vtc = []         
-                    ev_react = []                                                  
-                # save epochs
-                subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event] = epochs
-                subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event] = ev_vtc
-                subj_react_dict[subj_id][f"run{run_id:02d}"][select_event] = ev_react
-
-    # save processed data for future use
-    # save_data = dict(
-    #     subj_epoch_dict=subj_epoch_dict,
-    #     subj_vtc_dict=subj_vtc_dict,
-    #     subj_react_dict=subj_react_dict,
-    #     include_2_analysis=include_2_analysis
-    # )
-    # with open(os.path.join(data_save_path, f'subj_epochs_dict.pkl'), 'wb') as f:
-    #     pickle.dump(save_data, f)
+    for key_name in tqdm(subj_EEG_dict.keys()):
+        subj_id = int(key_name.split('-')[-1])
+        print(f"Epoching {key_name}")
+        single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name])
+        # save epochs
+        subj_epoch_dict[key_name] = single_subj_epoch_dict
+        subj_vtc_dict[key_name] = single_subj_vtc_dict
+        subj_react_dict[key_name] = single_subj_react_dict
 
     # combine runs for each subject
     combine_epoch_dict = dict()
@@ -740,3 +628,106 @@ def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, com
             in_out_zone_dict[ev][ch] = [x for i, x in enumerate(in_out_zone_dict[ev][ch]) if keep_subj_idx[i]]
 
     return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict
+
+
+def eeg_preproc_subj_level(subj_id, preproc_params):
+    # unpacked preproc_params
+    is_bpfilter = preproc_params['is_bpfilter']
+    bp_f_range = preproc_params['bp_f_range']
+    is_reref = preproc_params['is_reref']
+    reref_ch = preproc_params['reref_ch']
+    is_ica_rmEye = preproc_params['is_ica_rmEye']
+    baseline_length = preproc_params['baseline_length']
+    epoch_reject_crit = preproc_params['epoch_reject_crit']
+    is_detrend = preproc_params['is_detrend']
+    ch_names = preproc_params['ch_names']
+    is_overwrite = preproc_params['is_overwrite']
+    # load EEG
+    subj_EEG_dict = dict()
+    rm_ch_dict = dict()
+    # get all the vdhr files in raw folder
+    raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
+    preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}")
+    if not os.path.exists(preproc_save_path):
+        os.makedirs(preproc_save_path, exist_ok=True)
+    filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
+    # check if subject's EEG has been preprocessed.
+    for fname in filename_list:
+        # get run id
+        run_id = fname.split('.')[0][-1]
+        if "cpt" in fname.lower():
+            key_name = "gradcpt"+run_id
+        else:
+            key_name = "rest"+run_id
+        # define savepath
+        preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
+        EEG_raw = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
+        if not os.path.exists(preproc_fname) or is_overwrite:
+            print(f"Start preprocessing {preproc_fname}")
+            EEG, rm_ch_list = eeg_preproc_basic(EEG_raw, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
+                                is_reref=is_reref, reref_ch=reref_ch,
+                                is_ica_rmEye=is_ica_rmEye)
+            EEG.save(preproc_fname, overwrite=True)
+        else:
+            # load existed EEG
+            EEG = mne.io.read_raw(preproc_fname,preload=True)
+            # reconstruct missing channels
+            rm_ch_list = list(set(EEG_raw.ch_names) - set(EEG.ch_names))
+        subj_EEG_dict[key_name] = EEG    
+        rm_ch_dict[key_name] = rm_ch_list
+
+    return subj_EEG_dict, rm_ch_dict
+
+def eeg_epoch_subj_level(key_name, subj_EEG_dict):
+    subj_epoch_dict = dict()
+    subj_vtc_dict = dict()
+    subj_react_dict = dict()
+    # check if event_file exist
+    event_file = os.path.join(data_save_path,f"{key_name}",
+                            f"{key_name}_task-gradCPT_run-01_events.tsv")
+    if not os.path.exists(event_file):
+        gen_EEG_event_tsv(int(key_name.split('-')[-1]))
+    # for each run
+    for run_id in np.arange(1,4):
+        subj_epoch_dict[f"run{run_id:02d}"] = dict()
+        subj_vtc_dict[f"run{run_id:02d}"] = dict()
+        subj_react_dict[f"run{run_id:02d}"] = dict()
+        EEG = subj_EEG_dict[f"gradcpt{run_id}"]
+        # load corresponding event file
+        event_file = os.path.join(data_save_path,f"{key_name}",
+                                f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
+        # for each condition
+        for select_event in event_labels_lookup.keys():
+            if np.any(events[:,-1]==event_labels_lookup[select_event]):
+                ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
+                ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
+                event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
+                baseline_length = -1.2 if select_event.split('_')[-1]=='response' else -0.2
+                try:    
+                    epochs = epoch_by_select_event(EEG, events, event_labels_lookup,
+                                                                select_event=select_event,
+                                                                baseline_length=baseline_length,
+                                                                epoch_reject_crit=epoch_reject_crit,
+                                                                is_detrend=is_detrend,
+                                                                event_duration=event_duration,
+                                                                verbose=False)
+                    # remove vtc that is dropped
+                    ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
+                    # remove reaction time that is dropped
+                    ev_react = ev_react[[len(x)==0 for x in epochs.drop_log]]
+                except:
+                    print("="*20)
+                    print(f"No clean trial found in {key_name}_gradCPT{run_id} ({select_event}).")    
+                    print("="*20)
+                    epochs = []
+            else:
+                epochs=[]         
+                ev_vtc = []         
+                ev_react = []                                                  
+            # save epochs
+            subj_epoch_dict[f"run{run_id:02d}"][select_event] = epochs
+            subj_vtc_dict[f"run{run_id:02d}"][select_event] = ev_vtc
+            subj_react_dict[f"run{run_id:02d}"][select_event] = ev_react
+
+    return subj_epoch_dict, subj_vtc_dict, subj_react_dict, event_labels_lookup
