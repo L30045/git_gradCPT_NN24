@@ -106,7 +106,6 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
     if eeg_duration < 6:
         print("="*20)
         print("Valid recording length is shorter than 6 mins. (Missing triggers or not enough recorrding length.)")
-        print("Filename: ")
         print("="*20)
     if is_bpfilter:
         # band-pass filtering (all channels)
@@ -545,6 +544,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
             preproc_fname = os.path.join(preproc_save_path,fname.split('.')[0]+'_preproc_eeg.fif')
             EEG_raw = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
             if not os.path.exists(preproc_fname) or is_overwrite:
+                print(f"Start preprocessing {preproc_fname}")
                 EEG, rm_ch_list = eeg_preproc_basic(EEG_raw, is_bpfilter=is_bpfilter, bp_f_range=bp_f_range,
                                     is_reref=is_reref, reref_ch=reref_ch,
                                     is_ica_rmEye=is_ica_rmEye)
@@ -553,7 +553,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
                 # load existed EEG
                 EEG = mne.io.read_raw(preproc_fname,preload=True)
                 # reconstruct missing channels
-                rm_ch_list = list(set(raw_original.ch_names) - set(raw_preprocessed.ch_names))
+                rm_ch_list = list(set(EEG_raw.ch_names) - set(EEG.ch_names))
             subj_EEG_dict[f"sub-{subj_id}"][key_name] = EEG    
             rm_ch_dict[f"sub-{subj_id}"][key_name] = rm_ch_list    
 

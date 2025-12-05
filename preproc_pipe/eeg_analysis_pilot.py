@@ -25,8 +25,8 @@ ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
-# reref_ch = ['tp9h','tp10h']
-reref_ch = None # reref to average
+reref_ch = ['tp9h','tp10h']
+# reref_ch = None # reref to average
 is_ica_rmEye = True
 select_event = "mnt_correct"
 baseline_length = -0.2
@@ -76,8 +76,8 @@ plt.tight_layout()
 plt.show()
 
 #%% Check VTC and Reaction time
-plt_vtc = subj_vtc_dict['sub-721']['run02']['city_correct']
-plt_react = subj_react_dict['sub-721']['run02']['city_correct']
+plt_vtc = subj_vtc_dict['sub-733']['run02']['city_correct']
+plt_react = subj_react_dict['sub-733']['run02']['city_correct']
 
 # Calculate medians
 median_vtc = np.median(plt_vtc)
