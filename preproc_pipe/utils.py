@@ -553,7 +553,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
     subj_thres_vtc = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]
                                             for run_id in range(1, 4)
                                             for event in event_labels_lookup.keys()
-                                            if len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                                            if not event.endswith("_response") and len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
                     for subj_id in subj_vtc_dict.keys()}
     for select_event in event_labels_lookup.keys():
         epoch_dict = dict()
@@ -678,7 +678,7 @@ def eeg_preproc_subj_level(subj_id, preproc_params):
 
     return subj_EEG_dict, rm_ch_dict
 
-def eeg_epoch_subj_level(key_name, subj_EEG_dict):
+def eeg_epoch_subj_level(key_name, single_subj_EEG_dict):
     subj_epoch_dict = dict()
     subj_vtc_dict = dict()
     subj_react_dict = dict()
@@ -692,7 +692,7 @@ def eeg_epoch_subj_level(key_name, subj_EEG_dict):
         subj_epoch_dict[f"run{run_id:02d}"] = dict()
         subj_vtc_dict[f"run{run_id:02d}"] = dict()
         subj_react_dict[f"run{run_id:02d}"] = dict()
-        EEG = subj_EEG_dict[f"gradcpt{run_id}"]
+        EEG = single_subj_EEG_dict[f"gradcpt{run_id}"]
         # load corresponding event file
         event_file = os.path.join(data_save_path,f"{key_name}",
                                 f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")

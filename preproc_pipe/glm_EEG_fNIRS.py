@@ -16,6 +16,7 @@ import statsmodels.api as sm
 import pandas as pd
 from patsy import dmatrices
 from scipy.optimize import fmin
+from sklearn.decomposition import PCA
 
 #%% Test statsmodel
 df = sm.datasets.get_rdataset("Guerry", "HistData").data
@@ -26,7 +27,6 @@ y, X = dmatrices('Lottery ~ Literacy + Wealth + Region', data=df, return_type='d
 mod = sm.OLS(y, X)    # Describe model
 res = mod.fit()       # Fit model
 print(res.summary())
-
 
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
@@ -53,8 +53,291 @@ preproc_params = dict(
     baseline_length = baseline_length,
     epoch_reject_crit = epoch_reject_crit,
     is_detrend = is_detrend,
-    ch_names = ch_names
+    ch_names = ch_names,
+    is_overwrite = False
 )
+
+
+#%% Load HRF
+example_file = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-695/sub-695_conc_o_results_for_chi.pkl"
+with open(example_file,'rb') as f:
+    hrf_data = pickle.load(f)
+#%% visualize HbO in DorsAttnB
+"""
+TODO: get the name of parcels of interest. Targeting DorsAttnB for now.
+"""
+target_parcel = "DorsAttnB"
+t_hrf_data = hrf_data['HRF_only'].time.values
+hbo_only_all_parcel = hrf_data['HRF_only'].data.magnitude[0,:,:]
+roi_index = [x.startswith(target_parcel) for x in hrf_data['HRF_only'].parcel.values]
+unique_roi_name = np.unique(['_'.join(x.split('_')[:2]) for x in hrf_data['HRF_only'].parcel.values[roi_index]])
+
+# Plot mean HbO for each unique ROI name
+plt.figure(figsize=(12, 6))
+for roi_name in unique_roi_name:
+    roi_mask = ['_'.join(x.split('_')[:2]) == roi_name for x in hrf_data['HRF_only'].parcel.values[roi_index]]
+    hbo_roi = hbo_only_all_parcel[roi_index,:][roi_mask,:]
+    mean_hbo = np.mean(hbo_roi, axis=0)
+    plt.plot(t_hrf_data, mean_hbo, label=roi_name, linewidth=2)
+plt.xlabel('Time (s)')
+plt.ylabel('HbO')
+plt.title(f'Mean HbO for each ROI in {target_parcel}')
+plt.legend()
+plt.grid()
+plt.show()
+
+#%% Check continuous time course
+hbo_cont_all_parcel = hrf_data["full_timeseries"].data[0,:,:]
+print(f"HbO recording length = {hbo_cont_all_parcel.shape[1]/(1/np.diff(t_hrf_data)[0])} second")
+print("Time doesn't match with EEG. Need to check time label")
+#%% load eeg to match the time
+single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(695, preproc_params)
+single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level("sub-695", single_subj_EEG_dict)
+
+#%% combine mnt_correct trials across runs
+mnt_correct_all_eeg_chs = []
+for key_name in single_subj_epoch_dict.keys():
+    mnt_correct_all_eeg_chs.append(single_subj_epoch_dict[key_name]['mnt_correct'].get_data()[:,:4,:])
+mnt_correct_all_eeg_chs = np.concatenate(mnt_correct_all_eeg_chs,axis=0)
+
+# Reshape from (trials, channels, times) to (channels, trials * times)
+n_trials, n_channels, n_times = mnt_correct_all_eeg_chs.shape
+mnt_correct_2d = mnt_correct_all_eeg_chs.transpose(1, 0, 2).reshape(n_channels, n_trials * n_times)
+
+# Calculate PCA along axis 1 (trials * times)
+pca = PCA()
+pca.fit(mnt_correct_2d.T)  # Transpose so samples are along axis 0
+pca_components = pca.components_  # Shape: (n_components, n_channels)
+explained_variance = pca.explained_variance_ratio_
+
+# Transform data to get PCA time series: (PCA, trials * times)
+pca_timeseries_2d = pca.transform(mnt_correct_2d.T).T  # Shape: (n_components, trials * times)
+
+# Reshape back to 3D: (trials, PCA, times)
+n_pca_components = pca_timeseries_2d.shape[0]
+pca_timeseries_3d = pca_timeseries_2d.reshape(n_pca_components, n_trials, n_times).transpose(1, 0, 2)
+
+fig, ax = plt.subplots(2,1,figsize=(10,8))
+for i in range(4):
+    ax[0].plot(np.mean(pca_timeseries_3d,axis=0)[i],label=f"Explained VAR = {explained_variance[i]:.2f}")
+ax[0].legend()
+pca_90 = np.sum(np.mean(pca_timeseries_3d,axis=0)[:np.where(np.cumsum(explained_variance)>0.9)[0][0]+1],axis=0)
+ax[1].plot(pca_90,
+            label=f"Sum of 90% var. explained PCA comp. {np.sum(np.cumsum(explained_variance)<=0.9)+1} comp.")
+for ch_i, ch in enumerate(ch_names):
+    ax[1].plot(np.mean(mnt_correct_all_eeg_chs[:,ch_i,:],axis=0), label=ch)
+ax[1].legend()
+for ax_i in range(2):
+    ax[ax_i].grid()
+plt.show()
+
+#%% Extract EEG feature for IRF
+def find_zero_crossings(signal, times):
+    """
+    Find zero crossing indices in a signal.
+
+    Parameters:
+    -----------
+    signal : array
+        The signal data
+    times : array
+        Time vector corresponding to the signal
+
+    Returns:
+    --------
+    zero_crossing_times : array
+        Times where zero crossings occur
+    zero_crossing_indices : array
+        Indices where zero crossings occur
+    """
+    # Find sign changes (zero crossings)
+    sign_changes = np.diff(np.sign(signal))
+    zero_crossing_indices = np.where(sign_changes != 0)[0]
+
+    # Interpolate to get exact crossing times
+    zero_crossing_times = []
+    for idx in zero_crossing_indices:
+        # Linear interpolation to find exact zero crossing
+        t1, t2 = times[idx], times[idx + 1]
+        v1, v2 = signal[idx], signal[idx + 1]
+        # t_zero = t1 - v1 * (t2 - t1) / (v2 - v1)
+        t_zero = t1 + (0 - v1) * (t2 - t1) / (v2 - v1)
+        zero_crossing_times.append(t_zero)
+
+    return np.array(zero_crossing_times), zero_crossing_indices
+
+def calculate_component_area(signal, times, start_idx, end_idx):
+    """
+    Calculate the area under a component using trapezoidal integration.
+
+    Parameters:
+    -----------
+    signal : array
+        The signal data
+    times : array
+        Time vector corresponding to the signal
+    start_idx : int
+        Start index of the component
+    end_idx : int
+        End index of the component
+
+    Returns:
+    --------
+    area : float
+        Area under the curve (can be negative)
+    """
+    return np.trapz(signal[start_idx:end_idx+1], times[start_idx:end_idx+1])
+
+def extract_n2_p3_features(signal, times, n2_window=(0.4, 0.7), p3_window=(0.6, 1.1)):
+    """
+    Extract N2 and P3 features from ERP signal.
+
+    Parameters:
+    -----------
+    signal : array
+        The ERP signal
+    times : array
+        Time vector in seconds
+    n2_window : tuple
+        Time window (start, end) in seconds to search for N2 peak
+    p3_window : tuple
+        Time window (start, end) in seconds to search for P3 peak
+
+    Returns:
+    --------
+    results : dict
+        Dictionary containing:
+        - zero_crossing_times: all zero crossing time points
+        - n2_peak_time: time of N2 peak
+        - n2_peak_amp: amplitude of N2 peak
+        - n2_area: area of N2 component
+        - p3_peak_time: time of P3 peak
+        - p3_peak_amp: amplitude of P3 peak
+        - p3_area: area of P3 component
+    """
+    # Find all zero crossings
+    zero_crossing_times, zero_crossing_indices = find_zero_crossings(signal, times)
+
+    # Find N2 (negative peak in specified window)
+    n2_mask = (times >= n2_window[0]) & (times <= n2_window[1])
+    n2_idx = np.argmin(signal[n2_mask])
+    n2_global_idx = np.where(n2_mask)[0][n2_idx]
+    n2_peak_time = times[n2_global_idx]
+    n2_peak_amp = signal[n2_global_idx]
+
+    # Find N2 boundaries (zero crossings around N2 peak)
+    n2_start_crossings = zero_crossing_indices[zero_crossing_indices < n2_global_idx]
+    n2_end_crossings = zero_crossing_indices[zero_crossing_indices > n2_global_idx]
+
+    if len(n2_start_crossings) > 0 and len(n2_end_crossings) > 0:
+        n2_start_idx = n2_start_crossings[-1]
+        n2_end_idx = n2_end_crossings[0]
+        n2_area = calculate_component_area(signal, times, n2_start_idx, n2_end_idx)
+    else:
+        n2_area = np.nan
+        n2_start_idx = None
+        n2_end_idx = None
+
+    # Find P3 (positive peak in specified window)
+    p3_mask = (times >= p3_window[0]) & (times <= p3_window[1])
+    p3_idx = np.argmax(signal[p3_mask])
+    p3_global_idx = np.where(p3_mask)[0][p3_idx]
+    p3_peak_time = times[p3_global_idx]
+    p3_peak_amp = signal[p3_global_idx]
+
+    # Find P3 boundaries (zero crossings around P3 peak)
+    p3_start_crossings = zero_crossing_indices[zero_crossing_indices < p3_global_idx]
+    p3_end_crossings = zero_crossing_indices[zero_crossing_indices > p3_global_idx]
+
+    if len(p3_start_crossings) > 0 and len(p3_end_crossings) > 0:
+        p3_start_idx = p3_start_crossings[-1]
+        p3_end_idx = p3_end_crossings[0]
+        p3_area = calculate_component_area(signal, times, p3_start_idx, p3_end_idx)
+    else:
+        p3_area = np.nan
+        p3_start_idx = None
+        p3_end_idx = None
+
+    results = {
+        'zero_crossing_times': zero_crossing_times,
+        'zero_crossing_indices': zero_crossing_indices,
+        'n2_peak_time': n2_peak_time,
+        'n2_peak_amp': n2_peak_amp,
+        'n2_area': n2_area,
+        'n2_start_idx': n2_start_idx,
+        'n2_end_idx': n2_end_idx,
+        'p3_peak_time': p3_peak_time,
+        'p3_peak_amp': p3_peak_amp,
+        'p3_area': p3_area,
+        'p3_start_idx': p3_start_idx,
+        'p3_end_idx': p3_end_idx
+    }
+
+    return results
+
+# Analyze pca_90 for N2 and P3
+# Get time vector from the epochs
+time_vector_pca = single_subj_epoch_dict[list(single_subj_epoch_dict.keys())[0]]['mnt_correct'].times
+
+# Extract N2 and P3 features
+n2_p3_features = extract_n2_p3_features(pca_90, time_vector_pca)
+
+# Visualize results
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(time_vector_pca, pca_90, 'k-', linewidth=2, label='PCA 90% variance')
+ax.axhline(0, color='gray', linestyle='--', linewidth=1)
+ax.axvline(0, color='gray', linestyle='--', linewidth=1)
+
+# Mark zero crossings
+for zt in n2_p3_features['zero_crossing_times']:
+    ax.axvline(zt, color='lightblue', linestyle=':', alpha=0.5, linewidth=1)
+
+# Mark N2
+ax.plot(n2_p3_features['n2_peak_time'], n2_p3_features['n2_peak_amp'],
+        'rv', markersize=10, label=f"N2 (t={n2_p3_features['n2_peak_time']*1000:.1f}ms)")
+if not np.isnan(n2_p3_features['n2_area']) and n2_p3_features['n2_start_idx'] is not None:
+    n2_region = slice(n2_p3_features['n2_start_idx'], n2_p3_features['n2_end_idx']+1)
+    ax.fill_between(time_vector_pca[n2_region], 0, pca_90[n2_region],
+                    alpha=0.3, color='red', label=f"N2 area={n2_p3_features['n2_area']:.2e}")
+
+# Mark P3
+ax.plot(n2_p3_features['p3_peak_time'], n2_p3_features['p3_peak_amp'],
+        'b^', markersize=10, label=f"P3 (t={n2_p3_features['p3_peak_time']*1000:.1f}ms)")
+if not np.isnan(n2_p3_features['p3_area']) and n2_p3_features['p3_start_idx'] is not None:
+    p3_region = slice(n2_p3_features['p3_start_idx'], n2_p3_features['p3_end_idx']+1)
+    ax.fill_between(time_vector_pca[p3_region], 0, pca_90[p3_region],
+                    alpha=0.3, color='blue', label=f"P3 area={n2_p3_features['p3_area']:.2e}")
+
+ax.set_xlabel('Time (s)')
+ax.set_ylabel('Amplitude')
+ax.set_title('N2 and P3 Component Analysis')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# Print summary
+print("="*50)
+print("N2 and P3 Component Analysis Summary")
+print("="*50)
+print(f"Zero crossing times (s): {n2_p3_features['zero_crossing_times']}")
+print(f"\nN2 Component:")
+print(f"  Peak time: {n2_p3_features['n2_peak_time']*1000:.2f} ms")
+print(f"  Peak amplitude: {n2_p3_features['n2_peak_amp']:.4e}")
+print(f"  Area: {n2_p3_features['n2_area']:.4e}")
+print(f"\nP3 Component:")
+print(f"  Peak time: {n2_p3_features['p3_peak_time']*1000:.2f} ms")
+print(f"  Peak amplitude: {n2_p3_features['p3_peak_amp']:.4e}")
+print(f"  Area: {n2_p3_features['p3_area']:.4e}")
+print("="*50)
+
+#%% Create IRF for N2/P3/N2+P3
+
+
+
+
+#%% GLM HbO DorsAttnB = conv(h_HbO, N2/P3/N2+P3)
+
 
 #%% load epoch for each condition. Epoch from each run is combined for each subject.
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
