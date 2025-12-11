@@ -534,7 +534,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
     for key_name in tqdm(subj_EEG_dict.keys()):
         subj_id = int(key_name.split('-')[-1])
         print(f"Epoching {key_name}")
-        single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name])
+        single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name], preproc_params)
         # save epochs
         subj_epoch_dict[key_name] = single_subj_epoch_dict
         subj_vtc_dict[key_name] = single_subj_vtc_dict
@@ -584,10 +584,16 @@ def load_epoch_dict(subj_id_array, preproc_params):
                 # for each channel, create an epoch
                 for ch in ch_names:
                     ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
-                    epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))
-                    vtc_dict[ch].append(np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names]))
-                    react_dict[ch].append(np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names]))
-                    ch_in_out_zone_dict[ch].append(np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names]))
+                    if len(ch_picked_epoch)>0:
+                        epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))
+                        vtc_dict[ch].append(np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names]))
+                        react_dict[ch].append(np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names]))
+                        ch_in_out_zone_dict[ch].append(np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names]))
+                    else:
+                        epoch_dict[ch] = []
+                        vtc_dict[ch] = []
+                        react_dict[ch] = []
+                        ch_in_out_zone_dict[ch] = []
         combine_epoch_dict[select_event] = epoch_dict
         combine_vtc_dict[select_event] = vtc_dict
         combine_react_dict[select_event] = react_dict

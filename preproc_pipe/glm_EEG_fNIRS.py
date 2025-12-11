@@ -121,12 +121,14 @@ fig, ax = plt.subplots(2,1,figsize=(10,8))
 for i in range(4):
     ax[0].plot(np.mean(pca_timeseries_3d,axis=0)[i],label=f"Explained VAR = {explained_variance[i]:.2f}")
 ax[0].legend()
+ax[0].set_title("Averaged PCA across trials")
 pca_90 = np.sum(np.mean(pca_timeseries_3d,axis=0)[:np.where(np.cumsum(explained_variance)>0.9)[0][0]+1],axis=0)
 ax[1].plot(pca_90,
             label=f"Sum of 90% var. explained PCA comp. {np.sum(np.cumsum(explained_variance)<=0.9)+1} comp.")
 for ch_i, ch in enumerate(ch_names):
-    ax[1].plot(np.mean(mnt_correct_all_eeg_chs[:,ch_i,:],axis=0), label=ch)
+    ax[1].plot(np.mean(mnt_correct_all_eeg_chs[:,ch_i,:],axis=0), label=f"mean across trials ({ch})")
 ax[1].legend()
+ax[1].set_title("Comp. between PC and Ch")
 for ax_i in range(2):
     ax[ax_i].grid()
 plt.show()
