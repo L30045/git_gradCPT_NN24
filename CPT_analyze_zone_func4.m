@@ -18,7 +18,7 @@ if nargin<4 %if unspecified use median
 end
 
 if nargin<5 %if unspecified use median
-    plotYN=0;
+    plotYN=1;
 end
 
 %smoothing function

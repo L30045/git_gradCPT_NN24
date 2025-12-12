@@ -22,6 +22,7 @@ data_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourced
 project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
 data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg")
+vtc_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/VTC_analysis")
 
 
 #%% utils function
@@ -152,6 +153,18 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
     # get EEG path
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
     filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
+    # load VTC information
+    vtc_filename = f"sub-{subj_id}_VTC_original.pkl" 
+    smooth_vtc_filename = f"sub-{subj_id}_VTC_smoothed.pkl" 
+    if os.path.join(vtc_save_path,f'sub-{subj_id}',vtc_filename):
+        with open(os.path.join(vtc_save_path,f'sub-{subj_id}',vtc_filename), 'rb') as f:
+            vtc_dict = pickle.load(f)
+        with open(os.path.join(vtc_save_path,f'sub-{subj_id}',smooth_vtc_filename), 'rb') as f:
+            smooth_vtc_dict = pickle.load(f)
+    else:
+        vtc_dict = None
+        smooth_vtc_dict= None
+
     for fname in filename_list:
         # check if fname is a run session
         if "cpt" not in fname.lower():
@@ -162,7 +175,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
         eeg_trigger = EEG.get_data()[4]
         # load corresponding gradCPT
-        f_cpt = files[[i for i, x in enumerate(files) if x.split('-0')[1][0]==run_id][0]]
+        f_cpt = files[[i for i, x in enumerate(files) if x.split('run-0')[1][0]==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
@@ -174,18 +187,26 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         if t_onset[-1]>EEG.times[-1]:
             raise ValueError("Event onset time exceed EEG recording time.")
         # VTC
-        react_time = data_cpt['response'][:-1,4] # sec
-        meanRT = np.nanmean(react_time[react_time > 0])
-        stdRT = np.nanstd(react_time[react_time > 0])
-        vtc = copy.deepcopy(react_time)
-        # fill in no reaction time trial with linear interpolation
-        non_zero_idx = np.where(vtc>0)[0]
-        zero_idx = np.where(vtc==0)[0]
-        if len(zero_idx) > 0 and len(non_zero_idx) > 0:
-            # use linear interpolation to fill missing values
-            vtc[zero_idx] = np.interp(zero_idx, non_zero_idx, vtc[non_zero_idx])
-        # calculate VTC
-        vtc = np.abs((vtc-meanRT)/stdRT)
+        if not vtc_dict:
+            # get reaction time. Remove last trial since it is a fade-out only trial.
+            react_time = data_cpt['response'][:-1,4] # sec
+            # get mean and std RT for trials with non-zero RT
+            meanRT = np.nanmean(react_time[react_time > 0])
+            stdRT = np.nanstd(react_time[react_time > 0])
+            original_vtc = copy.deepcopy(react_time)
+            # fill in no reaction time trial with linear interpolation
+            non_zero_idx = np.where(original_vtc>0)[0]
+            zero_idx = np.where(original_vtc==0)[0]
+            if len(zero_idx) > 0 and len(non_zero_idx) > 0:
+                # use linear interpolation to fill missing values
+                original_vtc[zero_idx] = np.interp(zero_idx, non_zero_idx, original_vtc[non_zero_idx])
+            # calculate VTC
+            original_vtc = np.abs((original_vtc-meanRT)/stdRT)
+            # smooth VTC
+            smoothed_vtc = smoothing_VTC_gaussian_array(original_vtc, L=20)
+        else:
+            original_vtc = vtc_dict["run-0"+run_id]
+            smoothed_vtc = smooth_vtc_dict["run-0"+run_id]
         # create DataFrame
         ev_df = pd.DataFrame(columns=[
             'onset',
@@ -195,7 +216,8 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
             'exemplar',
             'reaction_time',
             'response_code',
-            'VTC'
+            'VTC',
+            'VTC_smoothed'
         ])
         ev_df['onset'] = t_onset
         ev_df['duration'] = np.diff(data_cpt['ttt'][:,0])
@@ -204,7 +226,8 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         ev_df['exemplar'] = np.zeros(t_onset.shape).astype(int) # missing stimulus figure id
         ev_df['reaction_time'] = react_time
         ev_df['response_code'] = data_cpt['response'][:-1,6].astype(int) # press or not
-        ev_df['VTC'] = vtc
+        ev_df['VTC'] = original_vtc
+        ev_df['VTC_smoothed'] = smoothed_vtc
         # save dataframe
         save_filename = os.path.join(savepath, f'sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv')
         ev_df.to_csv(save_filename, sep='\t', index=False)
@@ -221,8 +244,11 @@ def tsv_to_events(event_file, sfreq):
                             mnt_incorrect=-1, mnt_correct=0,
                             city_incorrect_response=-12, city_correct_response=11,
                             mnt_incorrect_response=-11, mnt_correct_response=10)
-    # smooth VTC using Gaussian window (20 trials)
-    smoothed_vtc = gaussian_filter1d(events_df["VTC"], sigma=2.5, truncate=4) # kernel size = round(truncate*sigma)*2+1
+    # check if smooth VTC in eventfiles
+    if 'VTC_smoothed' in events_df.columns:
+        smoothed_vtc = events_df["VTC_smoothed"]
+    else:
+        smoothed_vtc = smoothing_VTC_gaussian_array(events_df["VTC"], L=20)
     # create events array (onset, stim_channel_voltage, event_id)
     events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
@@ -238,6 +264,34 @@ def tsv_to_events(event_file, sfreq):
     reaction_time = np.concatenate([events_df["reaction_time"].values, -1*events_df["reaction_time"].values])
     
     return events, event_labels_lookup, vtc_list, reaction_time
+
+def smoothing_VTC_gaussian_array(vtc, sigma=None, alpha=2.5, L=None, radius=None, truncate=4, savepath=None):
+    """
+    Smooth VTC using gaussian_filter1d.
+    ---------------------------------------------------
+    Input:
+        vtc_dict: VTC Dict.
+        sigma: stddev used in gaussian filter.
+        alpha: default parameter for determining sigma in Matlab gausswin function
+        L: designed window size. use this parameter to determine radius. If None, define window size by sigma and truncate, or radius.
+        radius: radius of gaussian filter. Ignored if L is given.
+        truncate: number of stddev away from center will be truncated
+        savepath: where to save smoothed VTC
+    Output:
+        smooth_vtc_dict: smoothed VTC Dict.
+    """
+    # define  from L and alpha if sigma is not given
+    if not sigma:
+        if not L:
+            sigma = 12
+        else:
+            sigma = (L-1)/(2*alpha) # default formula for stddev in Matlab gausswin function
+    # define radius if L is given
+    if L:
+        radius = np.ceil((L-1)/2).astype(int) # radius of gaussian filter
+    # smooth VTC
+    smooth_vtc = gaussian_filter1d(vtc, sigma=sigma, radius=radius, truncate=4)
+    return smooth_vtc
 
 
 #%% epoching, ERPImage, and ERSP using multitaper
