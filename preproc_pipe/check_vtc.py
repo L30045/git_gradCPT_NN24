@@ -1,5 +1,6 @@
 #%% load library
 import numpy as np
+import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 import mne
@@ -25,16 +26,39 @@ original_vtc = []
 smoothed_vtc = []
 rt_array = []
 
+filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/VTC_analysis/sub-{subj_id}"
+# original
+with open(os.path.join(filepath,f'sub-{subj_id}_VTC_original.pkl'),'rb') as f:
+    ori_vtc = pickle.load(f)
+# smooth
+with open(os.path.join(filepath,f'sub-{subj_id}_VTC_smoothed.pkl'),'rb') as f:
+    smooth_vtc = pickle.load(f)
+
+#%% load mat from Michael's code
+mat_vtc = sp.io.loadmat(os.path.join(os.pardir,"matlab_vtc.mat"))
+mat_vtc_run1 = mat_vtc["VARIABILITY_TC"]
+py_vtc_run1 = smooth_vtc["run-01"]
+fig, ax = plt.subplots(2,1)
+ax[0].plot(mat_vtc_run1,label='Matlab')
+ax[0].plot(py_vtc_run1,label='Python')
+ax[1].plot(mat_vtc_run1.flatten()-py_vtc_run1, label=f'Mat-Py ({np.sum(mat_vtc_run1.flatten()-py_vtc_run1):.3f})')
+for ax_i in range(2):
+    ax[ax_i].legend()
+    ax[ax_i].grid()
+plt.show()
+
+
+#%%
 for run_id in np.arange(1,4):
     # load corresponding event file
     event_file = os.path.join(data_save_path,f"sub-{subj_id}",
                             f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
     events_df = pd.read_csv(event_file,sep='\t')
     event_ids = events_df["response_code"].astype(int)
-    original_vtc.append(events_df["VTC"])
     rt_array.append(events_df["reaction_time"])
-    # smooth VTC using Gaussian window (20 trials)
-    smoothed_vtc.append(gaussian_filter1d(events_df["VTC"], sigma=sigma, radius=radius)) # kernel size = round(truncate*sigma)*2+1
+    
+    original_vtc.append(ori_vtc[f"run-0{run_id}"])
+    smoothed_vtc.append(smooth_vtc[f"run-0{run_id}"])
 
 # visualization - create figure with 3 subplots for each run
 fig, axes = plt.subplots(3,1, figsize=(12, 10))
