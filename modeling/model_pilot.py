@@ -19,6 +19,8 @@ import statsmodels.api as sm
 from patsy import dmatrices
 from scipy.optimize import fmin
 from sklearn.decomposition import PCA
+from functools import reduce
+import operator
 
 ##############################################################################
 import gzip
@@ -34,6 +36,7 @@ from cedalion import units
 import cedalion.sigproc.motion_correct as motion
 from cedalion.plots import scalp_plot
 from scipy.signal import filtfilt, windows
+import cedalion.sigproc.frequency as frequency
 
 # import my own functions from a different directory
 sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_help_funcs/')
@@ -47,52 +50,44 @@ import module_preprocess as mpf
 # import warnings
 # warnings.filterwarnings('ignore')
 
-#%% load HbO
-project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/'
-subj_id = 695
-hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
-with gzip.open(hbo_file, 'rb') as f:
-    results = pickle.load(f)
+#%% GLM setup 
+RUN_PREPROCESS = True
+RUN_HRF_ESTIMATION = True
+SPLIT_VTC = False
+SAVE_RESIDUAL = False
+NOISE_MODEL = 'ar_irls'
+root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
 
-all_runs = results['runs']
-all_chs_pruned = results['chs_pruned']
-all_stims = results['stims']
-geo3d = results['geo3d']
+if NOISE_MODEL == 'ols':
+    DO_TDDR = True
+    DO_DRIFT = True
+    DO_DRIFT_LEGENDRE = False
+    DRIFT_ORDER = 3
+    F_MIN = 0 * units.Hz
+    F_MAX = 0.5 * units.Hz
+elif NOISE_MODEL == 'ar_irls':
+    DO_TDDR = False
+    DO_DRIFT = False
+    DO_DRIFT_LEGENDRE = True
+    DRIFT_ORDER = 3
+    F_MAX = 0
+    F_MIN = 0
+else:
+    print('Not a valid noise model - please select ols or ar_irls')
 
-run1 = all_runs[0]
-conc_ts = run1['conc_o']
-
-#%% get epoched concentration
-run_id = 1
-event_file = os.path.join(project_path, f"sub-{subj_id}", 'nirs',  f"sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv")
-event_df = pd.read_csv(event_file,sep='\t')
-# get mnt_correct event onset time
-mnt_df = event_df[(event_df['trial_type']=='mnt')&(event_df["response_code"]==0)]
-# epoch HbO
-len_epoch = 12 # seconds
-t_conc_ts = conc_ts.time
-sfreq_conc = 1/np.diff(t_conc_ts)[0]
-len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
-hbo_epoch = np.zeros((conc_ts.values.shape[1],len(event_df["onset"]),len_epoch_sample))
-hbr_epoch = np.zeros(hbo_epoch.shape)
-for t_i, t_onset in enumerate(event_df["onset"]):
-    ev_i = np.where(t_conc_ts.values>=t_onset)[0][0]
-    if ev_i+len_epoch_sample > conc_ts.values.shape[-1]:
-        continue
-    hbo_epoch[:,t_i,:] = conc_ts.values[0,:,ev_i:ev_i+len_epoch_sample]
-    hbr_epoch[:,t_i,:] = conc_ts.values[1,:,ev_i:ev_i+len_epoch_sample]
-# remove last epoch if it is empty
-hbo_epoch = hbo_epoch[:,np.sum(np.sum(hbo_epoch,axis=-1),axis=0)!=0,:]
-hbr_epoch = hbr_epoch[:,np.sum(np.sum(hbr_epoch,axis=-1),axis=0)!=0,:]
-
-#%% get epoched EEG
-
-
-
-
-
-
-
+cfg_GLM = {
+    'do_drift': DO_DRIFT,
+    'do_drift_legendre': DO_DRIFT_LEGENDRE,
+    'do_short_sep': True,
+    'drift_order' : DRIFT_ORDER,
+    'distance_threshold' : 20*units.mm, # for ssr
+    'short_channel_method' : 'mean',
+    'noise_model' : NOISE_MODEL,
+    't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
+    't_std' : 1*units.s ,  
+    't_pre' : 2*units.s,
+    't_post' : 10*units.s
+    }
 
 
 #%% preprocessing parameter setting
@@ -123,6 +118,194 @@ preproc_params = dict(
     ch_names = ch_names,
     is_overwrite = False
 )
+
+
+#%% load HbO
+project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/'
+subj_id = 695
+hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+with gzip.open(hbo_file, 'rb') as f:
+    results = pickle.load(f)
+
+all_runs = results['runs']
+all_chs_pruned = results['chs_pruned']
+all_stims = results['stims']
+geo3d = results['geo3d']
+
+# run1 = all_runs[0]
+# conc_ts = run1['conc_o']
+
+#%% get epoched concentration
+run_id = 1
+event_file = os.path.join(project_path, f"sub-{subj_id}", 'nirs',  f"sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv")
+event_df = pd.read_csv(event_file,sep='\t')
+# find corresponding runs in all_runs
+for r_i, run in enumerate(all_runs):
+    if np.all(run.stim.iloc[0]==event_df.iloc[0]):
+        target_run = run
+        conc_ts = run['conc_o']
+        chs_pruned = all_chs_pruned[r_i]
+        break
+# get mnt_correct event onset time
+mnt_df = event_df[(event_df['trial_type']=='mnt')&(event_df["response_code"]==0)]
+# epoch HbO
+len_epoch = 12 # seconds
+t_conc_ts = conc_ts.time
+sfreq_conc = 1/np.diff(t_conc_ts)[0]
+len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
+hbo_epoch = np.zeros((conc_ts.values.shape[1],len(event_df["onset"]),len_epoch_sample))
+hbr_epoch = np.zeros(hbo_epoch.shape)
+for t_i, t_onset in enumerate(event_df["onset"]):
+    ev_i = np.where(t_conc_ts.values>=t_onset)[0][0]
+    if ev_i+len_epoch_sample > conc_ts.values.shape[-1]:
+        continue
+    hbo_epoch[:,t_i,:] = conc_ts.values[0,:,ev_i:ev_i+len_epoch_sample]
+    hbr_epoch[:,t_i,:] = conc_ts.values[1,:,ev_i:ev_i+len_epoch_sample]
+# remove last epoch if it is empty (channel, trial, eopch length)
+hbo_epoch = hbo_epoch[:,np.sum(np.sum(hbo_epoch,axis=-1),axis=0)!=0,:]
+hbr_epoch = hbr_epoch[:,np.sum(np.sum(hbr_epoch,axis=-1),axis=0)!=0,:]
+
+#%% get epoched EEG
+# load eeg to match the time
+single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(695, preproc_params)
+single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level("sub-695", single_subj_EEG_dict, preproc_params)
+
+#%% get mnt_correct trials 
+mnt_correct_all_eeg_chs = single_subj_epoch_dict[f"run{run_id:02d}"]['mnt_correct'].get_data()[:,:4,:]
+# get preserved trial index
+mnt_correct_preserved_idx = np.where([len(log) == 0 for log in single_subj_epoch_dict[f"run{run_id:02d}"]['mnt_correct'].drop_log])[0]
+# get mnt correct hbo
+mnt_correct_hbo_epoch = np.zeros((conc_ts.values.shape[1],len(mnt_df["onset"]),len_epoch_sample))
+mnt_correct_hbr_epoch = np.zeros(mnt_correct_hbo_epoch.shape)
+for t_i, t_onset in enumerate(mnt_df["onset"]):
+    ev_i = np.where(t_conc_ts.values>=t_onset)[0][0]
+    if ev_i+len_epoch_sample > conc_ts.values.shape[-1]:
+        continue
+    mnt_correct_hbo_epoch[:,t_i,:] = conc_ts.values[0,:,ev_i:ev_i+len_epoch_sample]
+    mnt_correct_hbr_epoch[:,t_i,:] = conc_ts.values[1,:,ev_i:ev_i+len_epoch_sample]
+# remove last epoch if it is empty (channel, trial, eopch length)
+mnt_correct_hbo_epoch = mnt_correct_hbo_epoch[:,np.sum(np.sum(mnt_correct_hbo_epoch,axis=-1),axis=0)!=0,:]
+mnt_correct_hbr_epoch = mnt_correct_hbr_epoch[:,np.sum(np.sum(mnt_correct_hbr_epoch,axis=-1),axis=0)!=0,:]
+# preserve hbo with corresponding EEG
+mnt_correct_hbo_epoch = mnt_correct_hbo_epoch[:,mnt_correct_preserved_idx,:]
+mnt_correct_hbr_epoch = mnt_correct_hbr_epoch[:,mnt_correct_preserved_idx,:]
+# preserve mnt event with corresponding EEG in event_df
+mnt_df = mnt_df.iloc[mnt_correct_preserved_idx]
+
+#%% Get EEG rescale factors
+# get cz from mnt correct trial
+t_vector = single_subj_epoch_dict[f"run{run_id:02d}"]['mnt_correct'].times
+eeg_cz_mnt = np.squeeze(single_subj_epoch_dict[f"run{run_id:02d}"]['mnt_correct'].pick('cz').get_data())
+# Extract N2 and P3 features
+area_list = []
+for eeg_i in range(len(eeg_cz_mnt)):
+    n2_p3_features = extract_n2_p3_features(eeg_cz_mnt[eeg_i], t_vector)
+    n2_area = np.abs(n2_p3_features['n2_area'])
+    p3_area = np.abs(n2_p3_features['p3_area'])
+    area_list.append(n2_area+p3_area)
+# rescale area to range 0 to 1. (0 as 0, 1 as max(area))
+area_list = np.array(area_list)
+area_list = area_list/np.max(area_list)
+
+#%% create design matrix for each event, scale HRF based on Cz variance
+# for each event, create a design matrix and scale the gaussian kernels
+run_unit = target_run[0].pint.units
+dm_list = []
+for ev_i in range(len(mnt_df)):
+    # create design matrix for single event
+    dm = glm.design_matrix.hrf_regressors(
+                                        target_run[0],
+                                        mnt_df.iloc[[ev_i]],
+                                        glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                    )
+    # rescale by Cz area
+    dm.common = dm.common*area_list[ev_i]
+    # append
+    dm_list.append(dm)
+# Create a new design matrix object with the concatenated common regressors
+dms = dm_list.pop()
+dms_common = dms.common
+# merge all dms along time axis
+while len(dm_list)>0:
+    dms_common += dm_list.pop().common
+# assign merged common back to dms
+dms.common = dms_common
+
+# Combine drift and short-separation regressors (if any)
+if cfg_GLM['do_drift']:
+    drift_regressors = get_drift_regressors([target_run['conc_o']], cfg_GLM)
+    dms &= reduce(operator.and_, drift_regressors)
+
+if cfg_GLM['do_drift_legendre']:
+    drift_regressors = get_drift_legendre_regressors([target_run['conc_o']], cfg_GLM)
+    dms &= reduce(operator.and_, drift_regressors)
+
+if cfg_GLM['do_short_sep']:
+    ss_regressors = get_short_regressors([target_run['conc_o']], [chs_pruned], geo3d, cfg_GLM)
+    dms &= reduce(operator.and_, ss_regressors)
+
+dms.common = dms.common.fillna(0)
+
+#%% check dm
+plt_dm = dms
+# using xr.DataArray.plot
+f, ax = plt.subplots(1,1,figsize=(12,10))
+plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time < 600).T.plot(vmin=-2,vmax=2)
+plt.title("Shared Regressors")
+#p.xticks(rotation=90)
+plt.show()
+
+#%% GLM fitting from shank Jun 02 2025
+# 3. get betas and covariance
+results = glm.fit(target_run[0], dms, noise_model=cfg_GLM['noise_model']) 
+betas = results.sm.params
+cov_params = results.sm.cov_params()
+
+#%% 4. estimate HRF and MSE
+basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(target_run[0])
+
+trial_type_list = mnt_df['trial_type'].unique()
+
+hrf_mse_list = []
+hrf_estimate_list = []
+
+for trial_type in trial_type_list:
+    
+    betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+    hrf_estimate = estimate_HRF_from_beta(betas_hrf, basis_hrf)
+    
+    cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                        regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                )
+    hrf_mse = estimate_HRF_cov(cov_hrf, basis_hrf)
+
+    hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+    hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+
+    hrf_estimate_list.append(hrf_estimate)
+    hrf_mse_list.append(hrf_mse)
+
+hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+# set universal time so that all hrfs have the same time base 
+fs = frequency.sampling_rate(target_run[0]).to('Hz')
+before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+dT = np.round(1 / fs, 3)  # millisecond precision
+n_timepoints = len(hrf_estimate.time)
+reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+hrf_mse = hrf_mse.assign_coords({'time': reltime})
+hrf_mse.time.attrs['units'] = 'second'
+
+hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+hrf_estimate.time.attrs['units'] = 'second'
+
 
 
 #%% Load HRF
@@ -157,9 +340,6 @@ plt.show()
 hbo_cont_all_parcel = hrf_data["full_timeseries"].data[0,:,:]
 print(f"HbO recording length = {hbo_cont_all_parcel.shape[1]/(1/np.diff(t_hrf_data)[0])} second")
 print("Time doesn't match with EEG. Need to check time label")
-#%% load eeg to match the time
-single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(695, preproc_params)
-single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level("sub-695", single_subj_EEG_dict, preproc_params)
 
 #%% combine mnt_correct trials across runs
 mnt_correct_all_eeg_chs = []
