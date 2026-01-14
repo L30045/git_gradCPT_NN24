@@ -111,7 +111,7 @@ plt.show()
 
 #%% compare city and mountain ERP
 is_save_fig = False
-select_events = ['city_correct', 'mnt_correct']
+select_events = ['city_correct_response', 'mnt_incorrect_response']
 colors = ['b', 'r']
 vis_ch = ['fz','cz','pz','oz']
 

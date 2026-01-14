@@ -14,6 +14,7 @@ from scipy.ndimage import uniform_filter1d, gaussian_filter1d
 import copy
 from spectral_connectivity import Multitaper, Connectivity
 from tqdm import tqdm
+import pickle
 
 #%% path setting
 # Add the parent directory and src directory to sys.path
@@ -627,7 +628,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
         react_dict = dict()
         ch_in_out_zone_dict = dict()
         # initialize epoch_dict
-        for ch in ch_names:
+        for ch in preproc_params['ch_names']:
             epoch_dict[ch] = []
             vtc_dict[ch] = []
             react_dict[ch] = []

@@ -27,6 +27,7 @@ all_runs = results['runs']
 all_chs_pruned = results['chs_pruned']
 all_stims = results['stims']
 geo3d = results['geo3d']
+cfg_GLM['geo3d'] = geo3d
 
 #%% get epoched concentration
 run_dict = dict()
@@ -53,7 +54,7 @@ for r_i, run in enumerate(all_runs):
     for run_key in run_dict.keys():
         ev_df = run_dict[run_key]['ev_df']
         if len(ev_df) > 0 and len(run.stim) > 0 and np.all(run.stim.iloc[0] == ev_df.iloc[0]):
-            run_dict[run_key]['run'] = run
+            run_dict[run_key]['run'] = run[0]
             run_dict[run_key]['conc_ts'] = run['conc_o']
             run_dict[run_key]['chs_pruned'] = all_chs_pruned[r_i]
             break
@@ -160,7 +161,9 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
     dm_dict = dict()
     for run_key in run_dict.keys():
         dm_dict[run_key] = dict()
-        target_run = run_dict[run_key]['run'][0]
+        target_run = run_dict[run_key]['run']
+        conc_o = run_dict[run_key]['conc_ts']
+        chs_pruned = run_dict[run_key]['chs_pruned']
         ev_df = run_dict[run_key]['ev_df']
         # for each event, create a dm list
         if not select_event:
@@ -171,6 +174,11 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
                 case 'mnt_incorrect':
                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+            # check if event exist
+            if len(target_ev_df)==0:
+                # store in dm_dict
+                dm_dict[run_key][ev_name] = []
+                continue
             # create design matrix
             dm_list = []
             for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
@@ -192,56 +200,31 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                 dms_common += dm_list.pop().common
             # assign merged common back to dms
             dms.common = dms_common
+            # Combine drift and short-separation regressors (if any)
+            if cfg_GLM['do_drift']:
+                drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
+                dms &= reduce(operator.and_, drift_regressors)
+
+            if cfg_GLM['do_drift_legendre']:
+                drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
+                dms &= reduce(operator.and_, drift_regressors)
+
+            if cfg_GLM['do_short_sep']:
+                ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
+                dms &= reduce(operator.and_, ss_regressors)
+
+            dms.common = dms.common.fillna(0)
+
             # store in dm_dict
             dm_dict[run_key][ev_name] = dms
      
     return dm_dict
 
 #%%
-dm_dict = add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct'], select_chs=['cz'])
-
-
-#%% create design matrix for each event, scale HRF based on Cz variance
-# for each event, create a design matrix and scale the gaussian kernels
-run_unit = target_run[0].pint.units
-dm_list = []
-for ev_i in range(len(mnt_df)):
-    # create design matrix for single event
-    dm = glm.design_matrix.hrf_regressors(
-                                        target_run[0],
-                                        mnt_df.iloc[[ev_i]],
-                                        glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
-                                    )
-    # rescale by Cz area
-    dm.common = dm.common*area_list[ev_i]
-    # append
-    dm_list.append(dm)
-# Create a new design matrix object with the concatenated common regressors
-dms = dm_list.pop()
-dms_common = dms.common
-# merge all dms along time axis
-while len(dm_list)>0:
-    dms_common += dm_list.pop().common
-# assign merged common back to dms
-dms.common = dms_common
-
-# Combine drift and short-separation regressors (if any)
-if cfg_GLM['do_drift']:
-    drift_regressors = model.get_drift_regressors([target_run['conc_o']], cfg_GLM)
-    dms &= reduce(operator.and_, drift_regressors)
-
-if cfg_GLM['do_drift_legendre']:
-    drift_regressors = model.get_drift_legendre_regressors([target_run['conc_o']], cfg_GLM)
-    dms &= reduce(operator.and_, drift_regressors)
-
-if cfg_GLM['do_short_sep']:
-    ss_regressors = model.get_short_regressors([target_run['conc_o']], [chs_pruned], geo3d, cfg_GLM)
-    dms &= reduce(operator.and_, ss_regressors)
-
-dms.common = dms.common.fillna(0)
+dm_dict = add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
 #%% check dm
-plt_dm = dms
+plt_dm = dm_dict['run02']['mnt_correct']
 # using xr.DataArray.plot
 f, ax = plt.subplots(1,1,figsize=(12,10))
 plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time < 600).T.plot(vmin=-2,vmax=2)
@@ -251,11 +234,13 @@ plt.show()
 
 #%% GLM fitting from shank Jun 02 2025
 # 3. get betas and covariance
-results = glm.fit(target_run[0], dms, noise_model=cfg_GLM['noise_model']) 
+ev_name = 'mnt_correct'
+results = glm.fit(run_dict[run_key]['run'], dm_dict[run_key][ev_name], noise_model=cfg_GLM['noise_model']) 
 betas = results.sm.params
 cov_params = results.sm.cov_params()
 
 #%% 4. estimate HRF and MSE
+run_unit = run_dict['run01']['run'][0].pint.units
 basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(target_run[0])
 
 trial_type_list = mnt_df['trial_type'].unique()
