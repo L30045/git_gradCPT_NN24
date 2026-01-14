@@ -29,21 +29,38 @@ all_stims = results['stims']
 geo3d = results['geo3d']
 
 #%% get epoched concentration
-run_id = 1
-event_file = os.path.join(project_path, f"sub-{subj_id}", 'nirs',  f"sub-{subj_id}_task-gradCPT_run-0{run_id}_events.tsv")
-event_df = pd.read_csv(event_file,sep='\t')
-# find corresponding runs in all_runs
+run_dict = dict()
+# Find all event files in project_path
+event_files = glob.glob(os.path.join(project_path, f"sub-{subj_id}", 'nirs', f"sub-{subj_id}_task-gradCPT_run-*_events.tsv"))
+event_files = sorted(event_files)  # Sort to ensure consistent ordering
+
+# Load each event file into run_dict
+for event_file in event_files:
+    # Extract run number from filename (e.g., run-01 -> 1)
+    run_num = event_file.split('run-')[1].split('_')[0]
+    run_key = f'run{run_num}'
+
+    # Initialize run dict if not exists
+    if run_key not in run_dict:
+        run_dict[run_key] = dict()
+
+    # Load event dataframe
+    run_dict[run_key]['ev_df'] = pd.read_csv(event_file, sep='\t')
+
+# find corresponding runs in all_runs and assign to run_dict
 for r_i, run in enumerate(all_runs):
-    if np.all(run.stim.iloc[0]==event_df.iloc[0]):
-        target_run = run
-        conc_ts = run['conc_o']
-        chs_pruned = all_chs_pruned[r_i]
-        break
-# get mnt_correct event onset time
-mnt_df = event_df[(event_df['trial_type']=='mnt')&(event_df["response_code"]==0)]
+    # Match this run to the correct run_dict entry by comparing first event
+    for run_key in run_dict.keys():
+        ev_df = run_dict[run_key]['ev_df']
+        if len(ev_df) > 0 and len(run.stim) > 0 and np.all(run.stim.iloc[0] == ev_df.iloc[0]):
+            run_dict[run_key]['run'] = run
+            run_dict[run_key]['conc_ts'] = run['conc_o']
+            run_dict[run_key]['chs_pruned'] = all_chs_pruned[r_i]
+            break
+
 # epoch HbO
 len_epoch = 12 # seconds
-t_conc_ts = conc_ts.time
+t_conc_ts = run['conc_o'].time
 sfreq_conc = 1/np.diff(t_conc_ts)[0]
 len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
 
@@ -54,17 +71,21 @@ single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labe
 
 #%% get event trials
 def get_valid_event_idx(ev_name, single_subj_epoch_dict):
-    run_keys = np.sort([x for x in single_subj_epoch_dict.keys()])
-    ev_preserved_idx_list = []
-    ev_rejected_idx_list = []
-    for run_key in run_keys:
-        # get preserved trial index
-        ev_preserved_idx = np.where([len(log) == 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
-        # get rejected trial index
-        ev_rejected_idx = np.where([len(log) != 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
-        ev_preserved_idx_list.append(ev_preserved_idx)
-        ev_rejected_idx_list.append(ev_rejected_idx)
-    return ev_preserved_idx, ev_rejected_idx, run_keys
+    ev_idx_dict = dict()
+    for run_key in single_subj_epoch_dict.keys():
+        ev_idx_dict[run_key] = dict()
+        if len(single_subj_epoch_dict[run_key][ev_name])>0:
+            # get preserved trial index
+            ev_preserved_idx = np.where([len(log) == 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
+            # get rejected trial index
+            ev_rejected_idx = np.where([len(log) != 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
+            # add dict
+            ev_idx_dict[run_key]['preserved'] = ev_preserved_idx
+            ev_idx_dict[run_key]['rejected'] = ev_rejected_idx
+        else:
+            ev_idx_dict[run_key]['preserved'] = []
+            ev_idx_dict[run_key]['rejected'] = []
+    return ev_idx_dict
 
 #%% get ERP area
 def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
@@ -80,42 +101,104 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
     # for each run
     for run_key in single_subj_epoch_dict.keys():
         erp_area_dict[run_key]=dict()
-        t_vector = single_subj_epoch_dict[run_key][ev_name].times
-        # for each channel, extract ERP area
-        ev_eeg = single_subj_epoch_dict[run_key][ev_name].pick(picks='eeg')
-        for ch_name in ev_eeg.ch_names:
-            ev_ch_eeg = ev_eeg.get_data()[:,ev_eeg.ch_names.index(ch_name),:]            
-            # Extract N2 and P3 features
-            area_list = []
-            for eeg_i in range(len(ev_ch_eeg)):
-                n2_p3_features = extract_n2_p3_features(ev_ch_eeg[eeg_i], t_vector,
-                                                        n2_window=n2_window,
-                                                        p3_window=p3_window)
-                n2_area = np.abs(n2_p3_features['n2_area'])
-                p3_area = np.abs(n2_p3_features['p3_area'])
-                if ev_name.endswith('respons'):
-                    area_list.append(n2_area)
-                else:
-                    area_list.append(n2_area+p3_area)
-            # rescale area to range 0 to 1. (0 as 0, 1 as max(area))
-            area_list = np.array(area_list)
-            if is_norm:
-                area_list = area_list/np.max(area_list)
-            # store results
-            erp_area_dict[run_key][ch_name] = area_list
+        if len(single_subj_epoch_dict[run_key][ev_name])>0:
+            t_vector = single_subj_epoch_dict[run_key][ev_name].times
+            # for each channel, extract ERP area
+            ev_eeg = single_subj_epoch_dict[run_key][ev_name].pick(picks='eeg')
+            for ch_name in ev_eeg.ch_names:
+                ev_ch_eeg = ev_eeg.get_data()[:,ev_eeg.ch_names.index(ch_name),:]            
+                # Extract N2 and P3 features
+                area_list = []
+                for eeg_i in range(len(ev_ch_eeg)):
+                    n2_p3_features = extract_n2_p3_features(ev_ch_eeg[eeg_i], t_vector,
+                                                            n2_window=n2_window,
+                                                            p3_window=p3_window)
+                    n2_area = np.abs(n2_p3_features['n2_area'])
+                    p3_area = np.abs(n2_p3_features['p3_area'])
+                    if ev_name.endswith('respons'):
+                        area_list.append(n2_area)
+                    else:
+                        area_list.append(n2_area+p3_area)
+                # rescale area to range 0 to 1. (0 as 0, 1 as max(area))
+                area_list = np.array(area_list)
+                if is_norm:
+                    area_list = area_list/np.max(area_list)
+                # store results
+                erp_area_dict[run_key][ch_name] = area_list
+        else:
+            erp_area_dict[run_key] = []
     return erp_area_dict
 
 #%% get mnt_correct trials 
-mnt_correct_preserved_idx, mnt_correct_rejected_idx, run_keys = get_valid_event_idx('mnt_correct',single_subj_epoch_dict)
+mnt_correct_idx_dict = get_valid_event_idx('mnt_correct',single_subj_epoch_dict)
 mnt_correct_area_dict = get_ERP_area('mnt_correct', single_subj_epoch_dict)
 
-#%% get mnt_incorrect trials
-mnt_incorrect_preserved_idx, mnt_incorrect_rejected_idx, run_keys = get_valid_event_idx('mnt_incorrect_response',single_subj_epoch_dict)
+# get mnt_incorrect trials
+mnt_incorrect_idx_dict = get_valid_event_idx('mnt_incorrect_response',single_subj_epoch_dict)
 mnt_incorrect_area_dict = get_ERP_area('mnt_incorrect_response', single_subj_epoch_dict)
 
+# combine mnt_correct_idx_dict, mnt_correct_area_dict, mnt_incorrect_idx_dict, mnt_incorrect_area_dict into a dict
+ev_dict = dict()
+for run_key in mnt_correct_idx_dict.keys():
+    ev_dict[run_key] = {
+        'mnt_correct': {
+            'idx': mnt_correct_idx_dict[run_key],
+            'area': mnt_correct_area_dict[run_key]
+        },
+        'mnt_incorrect': {
+            'idx': mnt_incorrect_idx_dict[run_key],
+            'area': mnt_incorrect_area_dict[run_key]
+        }
+    }
+
+#%% add events to design matrix
+# add events per run.
+def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz']):
+    """
+    select_chs: select channels to add to design matrix
+    """
+    dm_dict = dict()
+    for run_key in run_dict.keys():
+        dm_dict[run_key] = dict()
+        target_run = run_dict[run_key]['run'][0]
+        ev_df = run_dict[run_key]['ev_df']
+        # for each event, create a dm list
+        if not select_event:
+            select_event = ev_dict[run_key].keys()
+        for ev_name in select_event:
+            match ev_name:
+                case 'mnt_correct':
+                    target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
+                case 'mnt_incorrect':
+                    target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+            # create design matrix
+            dm_list = []
+            for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
+                dm = glm.design_matrix.hrf_regressors(
+                                            target_run,
+                                            target_ev_df.iloc[[event_id]],
+                                            glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                        )
+                # rescale by Cz area
+                #TODO: allow multiple channels in DM
+                dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
+                # append
+                dm_list.append(dm)
+            # Create a new design matrix object with the concatenated common regressors
+            dms = dm_list.pop()
+            dms_common = dms.common
+            # merge all dms along time axis
+            while len(dm_list)>0:
+                dms_common += dm_list.pop().common
+            # assign merged common back to dms
+            dms.common = dms_common
+            # store in dm_dict
+            dm_dict[run_key][ev_name] = dms
+     
+    return dm_dict
+
 #%%
-# preserve mnt event with corresponding EEG in event_df
-mnt_df = mnt_df.iloc[mnt_correct_preserved_idx]
+dm_dict = add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct'], select_chs=['cz'])
 
 
 #%% create design matrix for each event, scale HRF based on Cz variance

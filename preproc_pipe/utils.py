@@ -142,6 +142,9 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
     return EEG, rm_ch_list
 
 def gen_EEG_event_tsv(subj_id, savepath=None):
+    """
+    TODO: sub-695 run2, mnt_correct number doesn't match with Laura's event file. 2026-01-14
+    """
     # setup savepath
     if savepath is None:
         savepath = os.path.join(data_save_path,f'sub-{subj_id}')
@@ -177,6 +180,17 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         # load corresponding gradCPT
         f_cpt = files[[i for i, x in enumerate(files) if x.split('run-0')[1][0]==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
+        # get reaction time. Remove last trial since it is a fade-out only trial.
+        react_time = data_cpt['response'][:-1,4] # sec
+        # assign correct response code
+        # correct/incorrect city trial in data_cpt is ('city', 1) and ('city', 0).
+        # correct/incorrect mnt trial in data_cpt is ('mnt', 0) and ('mnt', -1).
+        # assigned response code: city_correct=1, city_incorrect=-1, mnt_correct=0, mnt_incorrect=-2
+        response_code = data_cpt['response'][:-1,6].astype(int)
+        # assign mnt_incorrect trials
+        response_code[response_code==-1] = -2
+        # assign city_incorrect trials
+        response_code[(response_code==0)&(data_cpt['response'][:-1,0]==2)] = -1
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
         # find when EEG trigger is on (to 0)
@@ -188,8 +202,6 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
             raise ValueError("Event onset time exceed EEG recording time.")
         # VTC
         if not vtc_dict:
-            # get reaction time. Remove last trial since it is a fade-out only trial.
-            react_time = data_cpt['response'][:-1,4] # sec
             # get mean and std RT for trials with non-zero RT
             meanRT = np.nanmean(react_time[react_time > 0])
             stdRT = np.nanstd(react_time[react_time > 0])
@@ -225,7 +237,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         ev_df['trial_type'] = ['city' if x==2 else 'mnt' for x in data_cpt['response'][:-1,0]]
         ev_df['exemplar'] = np.zeros(t_onset.shape).astype(int) # missing stimulus figure id
         ev_df['reaction_time'] = react_time
-        ev_df['response_code'] = data_cpt['response'][:-1,6].astype(int) # press or not
+        ev_df['response_code'] = response_code
         ev_df['VTC'] = original_vtc
         ev_df['VTC_smoothed'] = smoothed_vtc
         # save dataframe
@@ -240,10 +252,10 @@ def tsv_to_events(event_file, sfreq):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
     event_ids = events_df["response_code"].astype(int)
-    event_labels_lookup = dict(city_incorrect=-2, city_correct=1,
-                            mnt_incorrect=-1, mnt_correct=0,
-                            city_incorrect_response=-12, city_correct_response=11,
-                            mnt_incorrect_response=-11, mnt_correct_response=10)
+    event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
+                            mnt_incorrect=-2, mnt_correct=0,
+                            city_incorrect_response=-11, city_correct_response=11,
+                            mnt_incorrect_response=-12, mnt_correct_response=10)
     # check if smooth VTC in eventfiles
     if 'VTC_smoothed' in events_df.columns:
         smoothed_vtc = events_df["VTC_smoothed"]
