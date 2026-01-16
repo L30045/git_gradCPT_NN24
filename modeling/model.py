@@ -25,6 +25,9 @@ from cedalion.plots import scalp_plot
 from scipy.signal import filtfilt, windows
 import xarray as xr
 
+from functools import reduce
+import operator
+
 
 #%% helper function
 def make_design_matrix(X, winlen=None):

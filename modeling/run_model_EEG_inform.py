@@ -14,7 +14,6 @@ git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 from utils import *
 import model
-from model import extract_n2_p3_features
 from params_setting import *
 
 #%% load HbO
