@@ -5,8 +5,6 @@ import statsmodels.api as sm
 from patsy import dmatrices
 from scipy.optimize import fmin
 from sklearn.decomposition import PCA
-from functools import reduce
-import operator
 
 ##############################################################################
 import gzip
@@ -22,7 +20,6 @@ from cedalion import units
 import cedalion.sigproc.motion_correct as motion
 from cedalion.plots import scalp_plot
 from scipy.signal import filtfilt, windows
-import cedalion.sigproc.frequency as frequency
 
 # import my own functions from a different directory
 sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_help_funcs/')

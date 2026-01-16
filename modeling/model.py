@@ -27,7 +27,7 @@ import xarray as xr
 
 from functools import reduce
 import operator
-
+import cedalion.sigproc.frequency as frequency
 
 #%% helper function
 def make_design_matrix(X, winlen=None):

@@ -159,6 +159,14 @@ for subj_id in tqdm(subj_id_array):
 
             hrf_dict[run_key]['hrf_estimate'] = hrf_estimate
             hrf_dict[run_key]['hrf_mse'] = hrf_mse
+        
+        save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+        save_dict = dict(
+            glm=glm_results_dict,
+            hrf=hrf_dict,
+        )
+        with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_{ev_name}_results.pkl'),'wb') as f:
+            pickle.dump(save_dict,f)
 
         # get Laura's HRF estimate, MSE, and model residual
         glm_results_dict_laura = dict()
@@ -180,13 +188,11 @@ for subj_id in tqdm(subj_id_array):
             hrf_dict_laura[run_key]['hrf_estimate'] = hrf_estimate
             hrf_dict_laura[run_key]['hrf_mse'] = hrf_mse
 
-        #%% save dict
+        # save dict
         save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
         save_dict = dict(
-            glm=glm_results_dict,
-            glm_laura=glm_results_dict_laura,
-            hrf=hrf_dict,
-            hrf_laura=hrf_dict_laura
+            glm=glm_results_dict_laura,
+            hrf=hrf_dict_laura
         )
-        with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_{ev_name}_results.pkl'),'wb') as f:
+        with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_{ev_name}_results_laura.pkl'),'wb') as f:
             pickle.dump(save_dict,f)
