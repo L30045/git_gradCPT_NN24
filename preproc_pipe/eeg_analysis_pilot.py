@@ -18,8 +18,8 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-# subj_id_array = [670, 671, 673, 695]
-subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
+subj_id_array = [670, 671, 673, 695]
+# subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 # subj_id_array = [719]
 ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
@@ -111,7 +111,7 @@ plt.show()
 
 #%% compare city and mountain ERP
 is_save_fig = False
-select_events = ['city_correct_response', 'mnt_incorrect_response']
+select_events = ['city_correct', 'mnt_correct']
 colors = ['b', 'r']
 vis_ch = ['fz','cz','pz','oz']
 
@@ -171,7 +171,7 @@ for ch in vis_ch:
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_correct"
+select_event = "mnt_incorrect_response"
 ch = 'cz'
 window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
@@ -254,7 +254,7 @@ for select_event in in_out_zone_dict.keys():
             print(f"  Total: No trials found")
 
 #%% zone-in vs zone-out
-select_event = "mnt_correct"
+select_event = "mnt_incorrect_response"
 vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions

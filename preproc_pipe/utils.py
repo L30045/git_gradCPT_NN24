@@ -649,7 +649,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
                     tmp_in_out_zone_list.append(loc_v<subj_thres_vtc[subj_id])
             if len(tmp_epoch_list)>0:
                 # for each channel, create an epoch
-                for ch in ch_names:
+                for ch in preproc_params['ch_names']:
                     ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
                     if len(ch_picked_epoch)>0:
                         epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))

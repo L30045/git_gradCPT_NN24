@@ -278,3 +278,224 @@ def extract_n2_p3_features(signal, times, n2_window=(0.4, 0.7), p3_window=(0.6, 
     }
 
     return results
+
+# get event trials
+def get_valid_event_idx(ev_name, single_subj_epoch_dict):
+    ev_idx_dict = dict()
+    for run_key in single_subj_epoch_dict.keys():
+        ev_idx_dict[run_key] = dict()
+        if len(single_subj_epoch_dict[run_key][ev_name])>0:
+            # get preserved trial index
+            ev_preserved_idx = np.where([len(log) == 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
+            # get rejected trial index
+            ev_rejected_idx = np.where([len(log) != 0 for log in single_subj_epoch_dict[run_key][ev_name].drop_log])[0]
+            # add dict
+            ev_idx_dict[run_key]['preserved'] = ev_preserved_idx
+            ev_idx_dict[run_key]['rejected'] = ev_rejected_idx
+        else:
+            ev_idx_dict[run_key]['preserved'] = []
+            ev_idx_dict[run_key]['rejected'] = []
+    return ev_idx_dict
+
+# get ERP area
+def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
+    # define output dict
+    erp_area_dict = dict()
+    # define ERP period of interest
+    if ev_name.endswith('response'):
+        n2_window=(0,0.2)
+        p3_window=(0,0.2)
+    else:
+        n2_window=(0.4, 0.7)
+        p3_window=(0.6, 1.1)
+    # for each run
+    for run_key in single_subj_epoch_dict.keys():
+        erp_area_dict[run_key]=dict()
+        if len(single_subj_epoch_dict[run_key][ev_name])>0:
+            t_vector = single_subj_epoch_dict[run_key][ev_name].times
+            # for each channel, extract ERP area
+            ev_eeg = single_subj_epoch_dict[run_key][ev_name].pick(picks='eeg')
+            for ch_name in ev_eeg.ch_names:
+                ev_ch_eeg = ev_eeg.get_data()[:,ev_eeg.ch_names.index(ch_name),:]            
+                # Extract N2 and P3 features
+                area_list = []
+                for eeg_i in range(len(ev_ch_eeg)):
+                    n2_p3_features = extract_n2_p3_features(ev_ch_eeg[eeg_i], t_vector,
+                                                            n2_window=n2_window,
+                                                            p3_window=p3_window)
+                    n2_area = np.abs(n2_p3_features['n2_area'])
+                    p3_area = np.abs(n2_p3_features['p3_area'])
+                    if ev_name.endswith('respons'):
+                        area_list.append(n2_area)
+                    else:
+                        area_list.append(n2_area+p3_area)
+                # rescale area to range 0 to 1. (0 as 0, 1 as max(area))
+                area_list = np.array(area_list)
+                if is_norm:
+                    area_list = area_list/np.max(area_list)
+                # store results
+                erp_area_dict[run_key][ch_name] = area_list
+        else:
+            erp_area_dict[run_key] = []
+    return erp_area_dict
+
+# add events to design matrix
+# add events per run.
+def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz']):
+    """
+    select_chs: select channels to add to design matrix
+    """
+    dm_dict = dict()
+    for run_key in run_dict.keys():
+        dm_dict[run_key] = dict()
+        target_run = run_dict[run_key]['run']
+        conc_o = run_dict[run_key]['conc_ts']
+        chs_pruned = run_dict[run_key]['chs_pruned']
+        ev_df = run_dict[run_key]['ev_df']
+        # for each run, get drift and short-separation regressors (if any)
+        if cfg_GLM['do_drift']:
+            drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
+        elif cfg_GLM['do_drift_legendre']:
+            drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
+        else:
+            drift_regressors = None
+        if cfg_GLM['do_short_sep']:
+            ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
+        else:
+            ss_regressors = None
+        # for each event, create a dm list
+        if not select_event:
+            select_event = ev_dict[run_key].keys()
+        for ev_name in select_event:
+            if ev_name=='mnt_correct':
+                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
+                # rename trial_type
+                target_ev_df.loc[:,'trial_type'] = 'mnt_correct'
+            elif ev_name=='mnt_incorrect':
+                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+                # rename trial_type
+                target_ev_df.loc[:,'trial_type'] = 'mnt_incorrect'
+            # check if event exist
+            if len(target_ev_df)==0:
+                # store in dm_dict
+                dm_dict[run_key][ev_name] = []
+                continue
+            # create design matrix
+            dm_list = []
+            for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
+                dm = glm.design_matrix.hrf_regressors(
+                                            target_run,
+                                            target_ev_df.iloc[[event_id]],
+                                            glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                        )
+                # rescale by Cz area
+                #TODO: allow multiple channels in DM
+                dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
+                # append
+                dm_list.append(dm)
+            # Create a new design matrix object with the concatenated common regressors
+            dms = dm_list.pop()
+            dms_common = dms.common
+            # merge all dms along time axis
+            while len(dm_list)>0:
+                dms_common += dm_list.pop().common
+            # assign merged common back to dms
+            dms.common = dms_common
+            # add drift and short-separation regressors if any
+            if drift_regressors:
+                dms &= reduce(operator.and_, drift_regressors)
+                dms.common = dms.common.fillna(0)
+            if ss_regressors:
+                dms &= reduce(operator.and_, ss_regressors)
+                dms.common = dms.common.fillna(0)
+            # store in dm_dict
+            dm_dict[run_key][ev_name] = dms
+    
+    return dm_dict
+
+# GLM model from pf.GLM()
+# Unknown pf.GLM() loaded. Required only 4 inputs (no geo3d).
+def GLM_copy_from_pf(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
+    # 1. need to concatenate runs 
+    if len(runs) > 1:
+        Y_all, stim_df, runs_updated = concatenate_runs(runs, stim_list)
+    else:
+        Y_all = runs[0]
+        stim_df = stim_list[0]
+        runs_updated = runs
+        
+    run_unit = Y_all.pint.units
+    # 2. define design matrix
+    dms = glm.design_matrix.hrf_regressors(
+                                    Y_all,
+                                    stim_df,
+                                    glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                )
+
+
+    # Combine drift and short-separation regressors (if any)
+    if cfg_GLM['do_drift']:
+        drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_drift_legendre']:
+        drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_short_sep']:
+        ss_regressors = model.get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+        dms &= reduce(operator.and_, ss_regressors)
+
+    dms.common = dms.common.fillna(0)
+
+    # 3. get betas and covariance
+    results = glm.fit(Y_all, dms, noise_model=cfg_GLM['noise_model']) 
+    betas = results.sm.params
+    cov_params = results.sm.cov_params()
+
+    # 4. estimate HRF and MSE
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(Y_all)
+
+    trial_type_list = stim_df['trial_type'].unique()
+
+    hrf_mse_list = []
+    hrf_estimate_list = []
+
+    for trial_type in trial_type_list:
+        
+        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+        
+        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                    )
+        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+
+        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+
+        hrf_estimate_list.append(hrf_estimate)
+        hrf_mse_list.append(hrf_mse)
+
+    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+    # set universal time so that all hrfs have the same time base 
+    fs = frequency.sampling_rate(runs[0]).to('Hz')
+    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+    dT = np.round(1 / fs, 3)  # millisecond precision
+    n_timepoints = len(hrf_estimate.time)
+    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+    hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    hrf_mse.time.attrs['units'] = 'second'
+
+    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    hrf_estimate.time.attrs['units'] = 'second'
+
+    return results, hrf_estimate, hrf_mse
