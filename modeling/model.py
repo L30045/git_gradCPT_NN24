@@ -354,13 +354,13 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
         ev_df = run_dict[run_key]['ev_df']
         # for each run, get drift and short-separation regressors (if any)
         if cfg_GLM['do_drift']:
-            drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
+            drift_regressors = get_drift_regressors([conc_o], cfg_GLM)
         elif cfg_GLM['do_drift_legendre']:
-            drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
+            drift_regressors = get_drift_legendre_regressors([conc_o], cfg_GLM)
         else:
             drift_regressors = None
         if cfg_GLM['do_short_sep']:
-            ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
+            ss_regressors = get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
         else:
             ss_regressors = None
         # for each event, create a dm list
@@ -435,15 +435,15 @@ def GLM_copy_from_pf(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
 
     # Combine drift and short-separation regressors (if any)
     if cfg_GLM['do_drift']:
-        drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
+        drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
         dms &= reduce(operator.and_, drift_regressors)
 
     if cfg_GLM['do_drift_legendre']:
-        drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        drift_regressors = get_drift_legendre_regressors(runs_updated, cfg_GLM)
         dms &= reduce(operator.and_, drift_regressors)
 
     if cfg_GLM['do_short_sep']:
-        ss_regressors = model.get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+        ss_regressors = get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
         dms &= reduce(operator.and_, ss_regressors)
 
     dms.common = dms.common.fillna(0)
@@ -464,12 +464,12 @@ def GLM_copy_from_pf(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
     for trial_type in trial_type_list:
         
         betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+        hrf_estimate = estimate_HRF_from_beta(betas_hrf, basis_hrf)
         
         cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
                             regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
                                     )
-        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+        hrf_mse = estimate_HRF_cov(cov_hrf, basis_hrf)
 
         hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
         hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
