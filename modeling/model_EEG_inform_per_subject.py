@@ -165,6 +165,17 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
         conc_o = run_dict[run_key]['conc_ts']
         chs_pruned = run_dict[run_key]['chs_pruned']
         ev_df = run_dict[run_key]['ev_df']
+        # for each run, get drift and short-separation regressors (if any)
+        if cfg_GLM['do_drift']:
+            drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
+        elif cfg_GLM['do_drift_legendre']:
+            drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
+        else:
+            drift_regressors = None
+        if cfg_GLM['do_short_sep']:
+            ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
+        else:
+            ss_regressors = None
         # for each event, create a dm list
         if not select_event:
             select_event = ev_dict[run_key].keys()
@@ -172,8 +183,12 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
             match ev_name:
                 case 'mnt_correct':
                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
+                    # rename trial_type
+                    target_ev_df.loc[:,'trial_type'] = 'mnt-correct'
                 case 'mnt_incorrect':
                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+                    # rename trial_type
+                    target_ev_df.loc[:,'trial_type'] = 'mnt-incorrect'
             # check if event exist
             if len(target_ev_df)==0:
                 # store in dm_dict
@@ -200,21 +215,13 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                 dms_common += dm_list.pop().common
             # assign merged common back to dms
             dms.common = dms_common
-            # Combine drift and short-separation regressors (if any)
-            if cfg_GLM['do_drift']:
-                drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
+            # add drift and short-separation regressors if any
+            if drift_regressors:
                 dms &= reduce(operator.and_, drift_regressors)
-
-            if cfg_GLM['do_drift_legendre']:
-                drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
-                dms &= reduce(operator.and_, drift_regressors)
-
-            if cfg_GLM['do_short_sep']:
-                ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
+                dms.common = dms.common.fillna(0)
+            if ss_regressors:
                 dms &= reduce(operator.and_, ss_regressors)
-
-            dms.common = dms.common.fillna(0)
-
+                dms.common = dms.common.fillna(0)
             # store in dm_dict
             dm_dict[run_key][ev_name] = dms
      
@@ -224,7 +231,7 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
 dm_dict = add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
 #%% check dm
-plt_dm = dm_dict['run02']['mnt_correct']
+plt_dm = dm_dict['run01']['mnt_correct']
 # using xr.DataArray.plot
 f, ax = plt.subplots(1,1,figsize=(12,10))
 plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time < 600).T.plot(vmin=-2,vmax=2)
@@ -232,78 +239,297 @@ plt.title("Shared Regressors")
 #p.xticks(rotation=90)
 plt.show()
 
-#%% GLM fitting from shank Jun 02 2025
+#%% get GLM fitting results for each subject from shank Jun 02 2025
 # 3. get betas and covariance
 ev_name = 'mnt_correct'
-results = glm.fit(run_dict[run_key]['run'], dm_dict[run_key][ev_name], noise_model=cfg_GLM['noise_model']) 
-betas = results.sm.params
-cov_params = results.sm.cov_params()
+glm_results_dict = dict()
+for run_key in tqdm(run_dict.keys(),leave=True, position=0):
+    results = glm.fit(run_dict[run_key]['run'], dm_dict[run_key][ev_name], noise_model=cfg_GLM['noise_model'])
+    glm_results_dict[run_key] = results
 
-#%% 4. estimate HRF and MSE
-run_unit = run_dict['run01']['run'][0].pint.units
-basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(target_run[0])
+#%% tmp
+trial_type_list = ['mnt']
+hrf_dict_laura = dict()
+for run_key in tqdm(run_dict.keys()):
+    hrf_dict_laura[run_key] = dict()
+    betas = glm_results_dict_laura[run_key].sm.params
+    cov_params = glm_results_dict_laura[run_key].sm.cov_params()
+    run_unit = run_dict[run_key]['run'].pint.units
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
-trial_type_list = mnt_df['trial_type'].unique()
+    hrf_mse_list = []
+    hrf_estimate_list = []
 
-hrf_mse_list = []
-hrf_estimate_list = []
+    for trial_type in trial_type_list:
+        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+        
+        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                    )
+        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-for trial_type in trial_type_list:
-    
-    betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-    hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
-    
-    cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                        regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+
+        hrf_estimate_list.append(hrf_estimate)
+        hrf_mse_list.append(hrf_mse)
+
+    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+    # set universal time so that all hrfs have the same time base 
+    fs = frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+    dT = np.round(1 / fs, 3)  # millisecond precision
+    n_timepoints = len(hrf_estimate.time)
+    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+    hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    hrf_mse.time.attrs['units'] = 'second'
+
+    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    hrf_estimate.time.attrs['units'] = 'second'
+
+    hrf_dict_laura[run_key]['hrf_estimate'] = hrf_estimate
+    hrf_dict_laura[run_key]['hrf_mse'] = hrf_mse
+
+
+#%% get HRF and MSE for each run
+# 4. estimate HRF and MSE
+trial_type_list = ['mnt']
+hrf_dict = dict()
+for run_key in tqdm(run_dict.keys()):
+    hrf_dict[run_key] = dict()
+    betas = glm_results_dict[run_key].sm.params
+    cov_params = glm_results_dict[run_key].sm.cov_params()
+    run_unit = run_dict[run_key]['run'].pint.units
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+
+    hrf_mse_list = []
+    hrf_estimate_list = []
+
+    for trial_type in trial_type_list:
+        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+        
+        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                    )
+        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+
+        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+
+        hrf_estimate_list.append(hrf_estimate)
+        hrf_mse_list.append(hrf_mse)
+
+    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+    # set universal time so that all hrfs have the same time base 
+    fs = frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+    dT = np.round(1 / fs, 3)  # millisecond precision
+    n_timepoints = len(hrf_estimate.time)
+    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+    hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    hrf_mse.time.attrs['units'] = 'second'
+
+    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    hrf_estimate.time.attrs['units'] = 'second'
+
+    hrf_dict[run_key]['hrf_estimate'] = hrf_estimate
+    hrf_dict[run_key]['hrf_mse'] = hrf_mse
+
+#%% GLM model from pf.GLM()
+# Unknown pf.GLM() loaded. Required only 4 inputs (no geo3d).
+def GLM_copy_from_pf(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
+    # 1. need to concatenate runs 
+    if len(runs) > 1:
+        Y_all, stim_df, runs_updated = concatenate_runs(runs, stim_list)
+    else:
+        Y_all = runs[0]
+        stim_df = stim_list[0]
+        runs_updated = runs
+        
+    run_unit = Y_all.pint.units
+    # 2. define design matrix
+    dms = glm.design_matrix.hrf_regressors(
+                                    Y_all,
+                                    stim_df,
+                                    glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
                                 )
-    hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-    hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-    hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
 
-    hrf_estimate_list.append(hrf_estimate)
-    hrf_mse_list.append(hrf_mse)
+    # Combine drift and short-separation regressors (if any)
+    if cfg_GLM['do_drift']:
+        drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
 
-hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
-hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+    if cfg_GLM['do_drift_legendre']:
+        drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
 
-hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
-hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+    if cfg_GLM['do_short_sep']:
+        ss_regressors = model.get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+        dms &= reduce(operator.and_, ss_regressors)
 
-# set universal time so that all hrfs have the same time base 
-fs = frequency.sampling_rate(target_run[0]).to('Hz')
-before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+    dms.common = dms.common.fillna(0)
 
-dT = np.round(1 / fs, 3)  # millisecond precision
-n_timepoints = len(hrf_estimate.time)
-reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+    # 3. get betas and covariance
+    results = glm.fit(Y_all, dms, noise_model=cfg_GLM['noise_model']) 
+    betas = results.sm.params
+    cov_params = results.sm.cov_params()
 
-hrf_mse = hrf_mse.assign_coords({'time': reltime})
-hrf_mse.time.attrs['units'] = 'second'
+    # 4. estimate HRF and MSE
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(Y_all)
 
-hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
-hrf_estimate.time.attrs['units'] = 'second'
+    trial_type_list = stim_df['trial_type'].unique()
+
+    hrf_mse_list = []
+    hrf_estimate_list = []
+
+    for trial_type in trial_type_list:
+        
+        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+        
+        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                    )
+        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+
+        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+
+        hrf_estimate_list.append(hrf_estimate)
+        hrf_mse_list.append(hrf_mse)
+
+    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+    # set universal time so that all hrfs have the same time base 
+    fs = frequency.sampling_rate(runs[0]).to('Hz')
+    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+    dT = np.round(1 / fs, 3)  # millisecond precision
+    n_timepoints = len(hrf_estimate.time)
+    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+    hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    hrf_mse.time.attrs['units'] = 'second'
+
+    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    hrf_estimate.time.attrs['units'] = 'second'
+
+    return results, hrf_estimate, hrf_mse
+
+#%% get Laura's HRF estimate, MSE, and model residual
+ev_name = 'mnt_correct'
+glm_results_dict_laura = dict()
+hrf_dict_laura = dict()
+for run_key in tqdm(run_dict.keys(),leave=True, position=0):
+    ev_df = run_dict[run_key]['ev_df']
+    hrf_dict_laura[run_key] = dict()
+    match ev_name:
+        case 'mnt_correct':
+            target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
+            # rename trial_type
+            target_ev_df.loc[:,'trial_type'] = 'mnt-correct'
+        case 'mnt_incorrect':
+            target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+            # rename trial_type
+            target_ev_df.loc[:,'trial_type'] = 'mnt-incorrect'
+    results, hrf_estimate, hrf_mse = GLM_copy_from_pf([run_dict[run_key]['run']], cfg_GLM, cfg_GLM['geo3d'], [run_dict[run_key]['chs_pruned']], [target_ev_df])
+    glm_results_dict_laura[run_key] = results
+    hrf_dict_laura[run_key]['hrf_estimate'] = hrf_estimate
+    hrf_dict_laura[run_key]['hrf_mse'] = hrf_mse
+
+#%% save dict
+save_dict = dict(
+    glm=glm_results_dict,
+    glm_laura=glm_results_dict_laura,
+    hrf=hrf_dict,
+    hrf_laura=hrf_dict_laura
+)
+with open('./output/mnt_correct_results.pkl','wb') as f:
+    pickle.dump(save_dict,f)
 
 #%% Visualizing MSE
 summarized_method = lambda x, y: np.sum(x[:,:,:,y].values,axis=x.dims.index('time')).reshape(-1)
 mse_check = 'HbO'
+run_key = 'run01'
 if mse_check == 'HbT':
-    vis_mse = summarized_method(hrf_mse,0)+summarized_method(hrf_mse,1)
+    vis_mse = summarized_method(hrf_dict[run_key]['hrf_mse'],0)+summarized_method(hrf_dict[run_key]['hrf_mse'],1)
+    vis_mse_laura = summarized_method(hrf_dict_laura[run_key]['hrf_mse'],0)+summarized_method(hrf_dict_laura[run_key]['hrf_mse'],1)
 else:
-    vis_mse = summarized_method(hrf_mse,0 if mse_check=='HbO' else 1)
-f, ax = plt.subplots(1, 2, figsize=(15, 8))
+    vis_mse = summarized_method(hrf_dict[run_key]['hrf_mse'],0 if mse_check=='HbO' else 1)
+    vis_mse_laura = summarized_method(hrf_dict_laura[run_key]['hrf_mse'],0 if mse_check=='HbO' else 1)
+# set visualization min/max
+vmin = np.min(np.concat([vis_mse,vis_mse_laura]))
+vmax = np.max(np.concat([vis_mse,vis_mse_laura]))
+
+# plot
+# f, ax = plt.subplots(1, 3, figsize=(20, 8))
+# scalp_plot(
+#     run_dict[run_key]['conc_ts'],
+#     geo3d,
+#     vis_mse_laura,
+#     ax[0],
+#     cmap='jet',
+#     vmin=vmin,
+#     vmax=vmax,
+#     optode_labels=False,
+#     title="Original",
+#     optode_size=6,
+# )
+# scalp_plot(
+#     run_dict[run_key]['conc_ts'],
+#     geo3d,
+#     vis_mse,
+#     ax[1],
+#     cmap='jet',
+#     vmin=vmin,
+#     vmax=vmax,
+#     optode_labels=False,
+#     title="EEG-informed",
+#     optode_size=6,
+# )
+mse_diff = (vis_mse_laura-vis_mse)/vis_mse_laura
+vmin = 0
+vmax = 1
+f, ax = plt.subplots(1, 2, figsize=(10, 8))
+ax[0].boxplot(mse_diff, label=f"Median = {np.median(mse_diff)*100:.02f}%")
+ax[0].set_xticklabels(['MSE reduced ratio'],fontsize=15)
+ax[0].grid()
+ax[0].legend(fontsize=15)
 scalp_plot(
-conc_ts,
-geo3d,
-vis_mse,
-ax[1],
-cmap='jet',
-# vmin=-5,
-# vmax=0,
-optode_labels=False,
-title="MSE",
-optode_size=6,
+    run_dict[run_key]['conc_ts'],
+    geo3d,
+    mse_diff,
+    ax[1],
+    cmap='jet',
+    vmin=vmin,
+    vmax=vmax,
+    optode_labels=False,
+    # title="Original",
+    optode_size=6,
 )
 
 #%% add other EEG channels
