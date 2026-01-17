@@ -647,20 +647,30 @@ def load_epoch_dict(subj_id_array, preproc_params):
                     tmp_vtc_list.append(loc_v)
                     tmp_react_list.append(loc_r)
                     tmp_in_out_zone_list.append(loc_v<subj_thres_vtc[subj_id])
-            if len(tmp_epoch_list)>0:
-                # for each channel, create an epoch
-                for ch in preproc_params['ch_names']:
+            # initialize append values
+            concat_epoch = []
+            concat_vtc = []
+            concat_react = []
+            concat_ch_in_out_zone = []
+            # for each channel, create an epoch
+            for ch in preproc_params['ch_names']:
+                # initialize append values
+                concat_epoch = []
+                concat_vtc = []
+                concat_react = []
+                concat_ch_in_out_zone = []
+                if len(tmp_epoch_list)>0:
                     ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
                     if len(ch_picked_epoch)>0:
-                        epoch_dict[ch].append(mne.concatenate_epochs(ch_picked_epoch,verbose=False))
-                        vtc_dict[ch].append(np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names]))
-                        react_dict[ch].append(np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names]))
-                        ch_in_out_zone_dict[ch].append(np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names]))
-                    else:
-                        epoch_dict[ch] = []
-                        vtc_dict[ch] = []
-                        react_dict[ch] = []
-                        ch_in_out_zone_dict[ch] = []
+                        concat_epoch = mne.concatenate_epochs(ch_picked_epoch,verbose=False)
+                        concat_vtc = np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names])
+                        concat_react = np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names])
+                        concat_ch_in_out_zone = np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names])
+                epoch_dict[ch].append(concat_epoch)
+                vtc_dict[ch].append(concat_vtc)
+                react_dict[ch].append(concat_react)
+                ch_in_out_zone_dict[ch].append(concat_ch_in_out_zone)
+
         combine_epoch_dict[select_event] = epoch_dict
         combine_vtc_dict[select_event] = vtc_dict
         combine_react_dict[select_event] = react_dict

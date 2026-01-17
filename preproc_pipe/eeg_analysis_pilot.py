@@ -18,9 +18,9 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695]
+# subj_id_array = [670, 671, 673, 695]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
-# subj_id_array = [719]
+subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
 ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
@@ -121,14 +121,14 @@ for select_event in select_events:
     condition_data[select_event] = dict()
     for ch in vis_ch:
         subj_epoch_array = combine_epoch_dict[select_event][ch]
-        n_subjects = len(subj_epoch_array)
         xSubj_erps = []
         for epoch in subj_epoch_array:
-            # Get average ERP for this subject
-            evoked = epoch.average()
-            xSubj_erps.append(evoked.data)
+            # If subject epoch exist, Get average ERP for this subject
+            if len(epoch)>0:
+                evoked = epoch.average()
+                xSubj_erps.append(evoked.data)
         xSubj_erps = np.vstack(xSubj_erps)
-        condition_data[select_event][ch] = {'erps': xSubj_erps, 'n_subjects': n_subjects}
+        condition_data[select_event][ch] = {'erps': xSubj_erps, 'n_subjects': xSubj_erps.shape[0]}
 
 # Plot comparison for each channel
 for ch in vis_ch:
@@ -149,15 +149,16 @@ for ch in vis_ch:
         time_vector = combine_epoch_dict[select_event][ch][0].times * 1000
 
         # Plot
-        label = select_event.replace('_', ' ').title()
-        plt.plot(time_vector, mean_erp, color=colors[idx], linewidth=2, label=f'{label} Mean')
+        # label = select_event.replace('_', ' ').title()
+        label = 'City' if select_event.split('_')[0]=='city' else 'Mountain'
+        plt.plot(time_vector, mean_erp, color=colors[idx], linewidth=2, label=f'{label} ({n_subjects})')
         plt.fill_between(time_vector, lower_bound, upper_bound, alpha=0.3, color=colors[idx])
 
     plt.axhline(0, color='k', linestyle='--', linewidth=1)
     plt.axvline(0, color='k', linestyle='--', linewidth=1)
     plt.xlabel('Time (ms)')
     plt.ylabel('Amplitude (V)')
-    plt.title(f'{ch.upper()} (n={n_subjects})')
+    plt.title(f'{ch.upper()}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -171,11 +172,11 @@ for ch in vis_ch:
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_incorrect_response"
+select_event = "mnt_correct"
 ch = 'cz'
 window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
-plt_epoch = mne.concatenate_epochs(combine_epoch_dict[select_event][ch])
+plt_epoch = mne.concatenate_epochs([x for x in combine_epoch_dict[select_event][ch] if len(x)>0])
 time_vector = plt_epoch.times
 plt_epoch = np.squeeze(plt_epoch.get_data())
 if window_size is None:
@@ -254,7 +255,7 @@ for select_event in in_out_zone_dict.keys():
             print(f"  Total: No trials found")
 
 #%% zone-in vs zone-out
-select_event = "mnt_incorrect_response"
+select_event = "mnt_correct"
 vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions
@@ -294,9 +295,9 @@ for ch in vis_ch:
     time_vector = combine_epoch_dict[select_event][ch][0].times * 1000
 
     # Plot
-    plt.plot(time_vector, mean_in, color='b', linewidth=2, label='Mean (in-zone)')
+    plt.plot(time_vector, mean_in, color='b', linewidth=2, label='In-zone')
     plt.fill_between(time_vector, lower_in, upper_in, alpha=0.3, color='b')
-    plt.plot(time_vector, mean_out, color='r', linewidth=2, label='Mean (out-of-zone)')
+    plt.plot(time_vector, mean_out, color='r', linewidth=2, label='Out-of-zone')
     plt.fill_between(time_vector, lower_out, upper_out, alpha=0.3, color='r')
     plt.axhline(0, color='k', linestyle='--', linewidth=1)
     plt.axvline(0, color='k', linestyle='--', linewidth=1)

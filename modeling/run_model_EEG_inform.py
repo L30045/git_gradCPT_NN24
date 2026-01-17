@@ -17,7 +17,8 @@ import model
 from params_setting import *
 
 #%% load HbO
-subj_id_array = [670, 671, 673, 695]
+subj_id_array = [695, 721, 723, 726, 730]
+# subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
     print(f"Start processing sub-{subj_id}")
@@ -143,7 +144,7 @@ for subj_id in tqdm(subj_id_array):
             hrf_mse = hrf_mse.pint.quantify(run_unit**2)
 
             # set universal time so that all hrfs have the same time base 
-            fs = frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+            fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
             before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
             after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
 
