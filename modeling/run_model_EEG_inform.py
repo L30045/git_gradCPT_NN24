@@ -17,7 +17,7 @@ import model
 from params_setting import *
 
 #%% load HbO
-subj_id_array = [695, 721, 723, 726, 730]
+subj_id_array = [695, 721, 723]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -163,13 +163,12 @@ for subj_id in tqdm(subj_id_array):
         
         save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
         save_dict = dict(
-            glm=glm_results_dict,
-            hrf=hrf_dict,
+            hrf=[hrf_dict[run_key]['hrf_mse'] for run_key in hrf_dict.keys()]
         )
-        with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_{ev_name}_results.pkl'),'wb') as f:
+        with open(os.path.join(save_file_path,f'sub-{subj_id}_{ev_name}_hrf_mse.pkl'),'wb') as f:
             pickle.dump(save_dict,f)
 
-        # get Laura's HRF estimate, MSE, and model residual
+        #%% get Laura's HRF estimate, MSE, and model residual
         glm_results_dict_laura = dict()
         hrf_dict_laura = dict()
         for run_key in tqdm(run_dict.keys(),leave=True, position=0):
@@ -192,8 +191,7 @@ for subj_id in tqdm(subj_id_array):
         # save dict
         save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
         save_dict = dict(
-            glm=glm_results_dict_laura,
-            hrf=hrf_dict_laura
+            hrf=[hrf_dict_laura[run_key]['hrf_mse'] for run_key in hrf_dict_laura.keys()]
         )
-        with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_{ev_name}_results_laura.pkl'),'wb') as f:
+        with open(os.path.join(save_file_path,f'sub-{subj_id}_{ev_name}_hrf_mse_laura.pkl'),'wb') as f:
             pickle.dump(save_dict,f)
