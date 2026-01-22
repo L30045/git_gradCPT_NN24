@@ -13,6 +13,7 @@ import sys
 import statsmodels.api as sm
 import pandas as pd
 from patsy import dmatrices
+import copy
 
 import cedalion
 import cedalion.nirs
@@ -369,6 +370,7 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
         # for each event, create a dm list
         if not select_event:
             select_event = ev_dict[run_key].keys()
+        ev_dms = []
         for ev_name in select_event:
             if ev_name=='mnt_correct':
                 target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
@@ -385,6 +387,7 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                 continue
             # create design matrix
             dm_list = []
+            # for each event, rescale and create a dm
             for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
                 dm = glm.design_matrix.hrf_regressors(
                                             target_run,
@@ -404,15 +407,24 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                 dms_common += dm_list.pop().common
             # assign merged common back to dms
             dms.common = dms_common
-            # add drift and short-separation regressors if any
-            if drift_regressors:
-                dms &= reduce(operator.and_, drift_regressors)
-                dms.common = dms.common.fillna(0)
-            if ss_regressors:
-                dms &= reduce(operator.and_, ss_regressors)
-                dms.common = dms.common.fillna(0)
-            # store in dm_dict
-            dm_dict[run_key][ev_name] = dms
+            # store event DM
+            ev_dms.append(dms)
+        # combine all event DMs into one big DM
+        combined_dm = ev_dms.pop()
+        while len(ev_dms)>0:
+            ev_dm = ev_dms.pop()
+            combined_dm &= reduce(operator.and_, [ev_dm])
+            combined_dm.common = combined_dm.common.fillna(0)
+        
+        # add drift and short-separation regressors if any
+        if drift_regressors:
+            combined_dm &= reduce(operator.and_, drift_regressors)
+            combined_dm.common = combined_dm.common.fillna(0)
+        if ss_regressors:
+            combined_dm &= reduce(operator.and_, ss_regressors)
+            combined_dm.common = combined_dm.common.fillna(0)
+        # store in dm_dict
+        dm_dict[run_key] = combined_dm
     
     return dm_dict
 
@@ -502,3 +514,102 @@ def GLM_copy_from_pf(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
     hrf_estimate.time.attrs['units'] = 'second'
 
     return results, hrf_estimate, hrf_mse
+
+def concatenate_runs_dms(run_dict, dm_dict):
+    """
+    Concatenate multiple runs along time dimension for joint analysis.
+    
+    Combines time series and stimulus timing from multiple runs into single
+    continuous arrays. Adjusts time coordinates and stimulus onsets to maintain
+    temporal continuity. Enables fitting a single GLM across all runs.
+    
+    """
+
+    CURRENT_OFFSET = 0
+    runs_updated = []
+    dm_updated = []
+
+    for run_key in run_dict.keys():
+        ts = run_dict[run_key]['run']
+        dm = dm_dict[run_key]
+        time = ts.time.values
+        new_time = time + CURRENT_OFFSET
+
+        ts_new = ts.copy(deep=True)
+        ts_new = ts_new.pint.dequantify().pint.quantify('molar')
+        ts_new.assign_coords(time=new_time)
+
+        dm_new = copy.deepcopy(dm)
+        dm_new.common = dm_new.common.assign_coords(time=new_time)
+
+        runs_updated.append(ts_new)
+        dm_updated.append(dm_new.common)
+
+        CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+
+    Y_all = xr.concat(runs_updated, dim='time')
+    Y_all.time.attrs['units'] = units.s
+    dm_all = copy.deepcopy(dm_dict[run_key])
+    dm_all.common = xr.concat(dm_updated, dim="time")
+    
+    return Y_all, dm_all, runs_updated
+
+def concatenate_runs(runs, stim):
+    """
+    Concatenate multiple runs along time dimension for joint analysis.
+    
+    Combines time series and stimulus timing from multiple runs into single
+    continuous arrays. Adjusts time coordinates and stimulus onsets to maintain
+    temporal continuity. Enables fitting a single GLM across all runs.
+    
+    Parameters
+    ----------
+    runs : list of xr.DataArray
+        List of concentration time series, one per run, with dimensions
+        (channel, chromo, time).
+    stim : list of pd.DataFrame
+        List of stimulus DataFrames, one per run, with columns:
+        ['onset', 'duration', 'trial_type']
+    
+    Returns
+    -------
+    Y_all : xr.DataArray
+        Concatenated time series with dimensions (channel, chromo, time).
+        Time coordinates adjusted to be continuous across runs.
+    stim_df : pd.DataFrame
+        Concatenated stimulus DataFrame with adjusted onset times.
+    runs_updated : list of xr.DataArray
+        List of runs with updated time coordinates (for design matrix construction).
+        
+    Notes
+    -----
+    Time offset for each run is computed as: offset_i = last_time_{i-1} + dt
+    All runs are converted to 'molar' units before concatenation.
+    Maintains sampling rate continuity between runs.
+    """
+
+    CURRENT_OFFSET = 0
+    runs_updated = []
+    stim_updated = []
+
+    for s, ts in zip(stim, runs):
+        time = ts.time.values
+        new_time = time + CURRENT_OFFSET
+
+        ts_new = ts.copy(deep=True)
+        ts_new = ts_new.pint.dequantify().pint.quantify('molar')
+        ts_new = ts_new.assign_coords(time=new_time)
+
+        stim_shift = s.copy()
+        stim_shift['onset'] += CURRENT_OFFSET
+
+        stim_updated.append(stim_shift)
+        runs_updated.append(ts_new)
+
+        CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+
+    Y_all = xr.concat(runs_updated, dim='time')
+    Y_all.time.attrs['units'] = units.s
+    stim_df = pd.concat(stim_updated, ignore_index = True)
+
+    return Y_all, stim_df, runs_updated

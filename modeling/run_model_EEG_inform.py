@@ -17,7 +17,7 @@ import model
 from params_setting import *
 
 #%% load HbO
-subj_id_array = [695, 721, 723]
+subj_id_array = [670, 695, 721, 723]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -100,98 +100,95 @@ for subj_id in tqdm(subj_id_array):
     #%%
     dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
+    #%% Get DM
+    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+
+    #%% combine DMs from all runs into one big DM
+    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
+
+    #%% get GLM fitting results for each subject from shank Jun 02 2025
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     # 3. get betas and covariance
-    for ev_name in ['mnt_correct']:
-        glm_results_dict = dict()
-        for run_key in tqdm(run_dict.keys(),leave=True, position=0):
-            results = glm.fit(run_dict[run_key]['run'], dm_dict[run_key][ev_name], noise_model=cfg_GLM['noise_model'])
-            glm_results_dict[run_key] = results
+    result_dict = dict()
+    glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
+    result_dict['resid'] = glm_results.sm.resid
 
-        #%% get HRF and MSE for each run
-        # 4. estimate HRF and MSE
-        trial_type_list = [ev_name]
-        hrf_dict = dict()
-        for run_key in tqdm(run_dict.keys()):
-            hrf_dict[run_key] = dict()
-            betas = glm_results_dict[run_key].sm.params
-            cov_params = glm_results_dict[run_key].sm.cov_params()
-            run_unit = run_dict[run_key]['run'].pint.units
-            basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+    #%% get HRF and MSE for each run
+    # 4. estimate HRF and MSE
+    trial_type_list = ['mnt_correct','mnt_incorrect']
 
-            hrf_mse_list = []
-            hrf_estimate_list = []
+    betas = glm_results.sm.params
+    cov_params = glm_results.sm.cov_params()
+    run_unit = Y_all.pint.units
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
-            for trial_type in trial_type_list:
-                betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-                hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
-                
-                cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                                    regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
-                                            )
-                hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+    hrf_mse_list = []
+    hrf_estimate_list = []
 
-                hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-                hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
-
-                hrf_estimate_list.append(hrf_estimate)
-                hrf_mse_list.append(hrf_mse)
-
-            hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
-            hrf_estimate = hrf_estimate.pint.quantify(run_unit)
-
-            hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
-            hrf_mse = hrf_mse.pint.quantify(run_unit**2)
-
-            # set universal time so that all hrfs have the same time base 
-            fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
-            before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-            after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
-
-            dT = np.round(1 / fs, 3)  # millisecond precision
-            n_timepoints = len(hrf_estimate.time)
-            reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
-
-            hrf_mse = hrf_mse.assign_coords({'time': reltime})
-            hrf_mse.time.attrs['units'] = 'second'
-
-            hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
-            hrf_estimate.time.attrs['units'] = 'second'
-
-            hrf_dict[run_key]['hrf_estimate'] = hrf_estimate
-            hrf_dict[run_key]['hrf_mse'] = hrf_mse
+    for trial_type in trial_type_list:
+        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
         
-        save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-        save_dict = dict(
-            hrf=[hrf_dict[run_key]['hrf_mse'] for run_key in hrf_dict.keys()]
-        )
-        with open(os.path.join(save_file_path,f'sub-{subj_id}_{ev_name}_hrf_mse.pkl'),'wb') as f:
-            pickle.dump(save_dict,f)
+        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                    )
+        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-        #%% get Laura's HRF estimate, MSE, and model residual
-        glm_results_dict_laura = dict()
-        hrf_dict_laura = dict()
-        for run_key in tqdm(run_dict.keys(),leave=True, position=0):
-            ev_df = run_dict[run_key]['ev_df']
-            hrf_dict_laura[run_key] = dict()
-            if ev_name=='mnt_correct':
-            
-                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
-                # rename trial_type
-                target_ev_df.loc[:,'trial_type'] = 'mnt_correct'
-            elif ev_name=='mnt_incorrect':
-                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
-                # rename trial_type
-                target_ev_df.loc[:,'trial_type'] = 'mnt_incorrect'
-            results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf([run_dict[run_key]['run']], cfg_GLM, cfg_GLM['geo3d'], [run_dict[run_key]['chs_pruned']], [target_ev_df])
-            glm_results_dict_laura[run_key] = results
-            hrf_dict_laura[run_key]['hrf_estimate'] = hrf_estimate
-            hrf_dict_laura[run_key]['hrf_mse'] = hrf_mse
+        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
 
-        # save dict
-        save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-        save_dict = dict(
-            hrf=[hrf_dict_laura[run_key]['hrf_mse'] for run_key in hrf_dict_laura.keys()]
-        )
-        with open(os.path.join(save_file_path,f'sub-{subj_id}_{ev_name}_hrf_mse_laura.pkl'),'wb') as f:
-            pickle.dump(save_dict,f)
+        hrf_estimate_list.append(hrf_estimate)
+        hrf_mse_list.append(hrf_mse)
+
+    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+
+    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+
+    # set universal time so that all hrfs have the same time base 
+    fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+
+    dT = np.round(1 / fs, 3)  # millisecond precision
+    n_timepoints = len(hrf_estimate.time)
+    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+
+    hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    hrf_mse.time.attrs['units'] = 'second'
+
+    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    hrf_estimate.time.attrs['units'] = 'second'
+
+    result_dict['hrf_estimate'] = hrf_estimate
+    result_dict['hrf_mse'] = hrf_mse
+
+    
+    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_eeg-informed.pkl'),'wb') as f:
+        pickle.dump(result_dict,f)
+
+    #%% get Laura's HRF estimate, MSE, and model residual
+    result_dict_stim = dict()
+    run_list = []
+    pruned_chans_list = []
+    stim_list = []
+    for run_key in run_dict.keys():
+        run_list.append(run_dict[run_key]['run'])
+        pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
+        ev_df = run_dict[run_key]['ev_df'].copy()
+        # rename trial_type
+        ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)].loc[:,'trial_type'] = 'mnt-correct'
+        ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)].loc[:,'trial_type'] = 'mnt-incorrect'
+        stim_list.append(ev_df[ev_df['trial_type']=='mnt'])
+
+    results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    result_dict_stim['resid'] = results.sm.resid
+    result_dict_stim['hrf_estimate'] = hrf_estimate
+    result_dict_stim['hrf_mse'] = hrf_mse
+
+    #%% save dict
+    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only.pkl'),'wb') as f:
+        pickle.dump(result_dict_stim,f)
