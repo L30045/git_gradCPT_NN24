@@ -8,7 +8,6 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import mne
-mne.viz.set_browser_backend("matplotlib")
 import os
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
@@ -97,19 +96,16 @@ for subj_id in tqdm(subj_id_array):
             }
         }
 
-    #%%
-    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
-
     #%% Get DM
-    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], is_full_model=True)
 
     #%% combine DMs from all runs into one big DM
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
-    #%% get GLM fitting results for each subject from shank Jun 02 2025
     # 3. get betas and covariance
     result_dict = dict()
+    print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
     glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
     result_dict['resid'] = glm_results.sm.resid
 
@@ -166,29 +162,30 @@ for subj_id in tqdm(subj_id_array):
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_eeg-informed.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
     #%% get Laura's HRF estimate, MSE, and model residual
-    result_dict_stim = dict()
-    run_list = []
-    pruned_chans_list = []
-    stim_list = []
-    for run_key in run_dict.keys():
-        run_list.append(run_dict[run_key]['run'])
-        pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
-        ev_df = run_dict[run_key]['ev_df'].copy()
-        # rename trial_type
-        ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)].loc[:,'trial_type'] = 'mnt-correct'
-        ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)].loc[:,'trial_type'] = 'mnt-incorrect'
-        stim_list.append(ev_df[ev_df['trial_type']=='mnt'])
+    # result_dict_stim = dict()
+    # run_list = []
+    # pruned_chans_list = []
+    # stim_list = []
+    # for run_key in run_dict.keys():
+    #     run_list.append(run_dict[run_key]['run'])
+    #     pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
+    #     ev_df = run_dict[run_key]['ev_df'].copy()
+    #     # rename trial_type
+    #     ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)].loc[:,'trial_type'] = 'mnt-correct'
+    #     ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)].loc[:,'trial_type'] = 'mnt-incorrect'
+    #     stim_list.append(ev_df[ev_df['trial_type']=='mnt'])
+    
+    # print(f"Start Stim-only GLM fitting (sub-{subj_id})")
+    # results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    # result_dict_stim['resid'] = results.sm.resid
+    # result_dict_stim['hrf_estimate'] = hrf_estimate
+    # result_dict_stim['hrf_mse'] = hrf_mse
 
-    results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    result_dict_stim['resid'] = results.sm.resid
-    result_dict_stim['hrf_estimate'] = hrf_estimate
-    result_dict_stim['hrf_mse'] = hrf_mse
-
-    #%% save dict
-    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only.pkl'),'wb') as f:
-        pickle.dump(result_dict_stim,f)
+    # # save dict
+    # save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only.pkl'),'wb') as f:
+    #     pickle.dump(result_dict_stim,f)

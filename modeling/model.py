@@ -345,7 +345,7 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
 
 # add events to design matrix
 # add events per run.
-def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz']):
+def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'], is_full_model=False):
     """
     select_chs: select channels to add to design matrix
     """
@@ -385,6 +385,11 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                 # store in dm_dict
                 dm_dict[run_key][ev_name] = []
                 continue
+            # create stim onset regressors
+            if is_full_model:
+                stim_ev_df = copy.deepcopy(target_ev_df)
+                # rename trial_type
+                stim_ev_df.loc[:,'trial_type'] = np.unique(stim_ev_df['trial_type'])[0]+'_stim'
             # create design matrix
             dm_list = []
             # for each event, rescale and create a dm
@@ -405,6 +410,14 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
             # merge all dms along time axis
             while len(dm_list)>0:
                 dms_common += dm_list.pop().common
+            # build full model
+            if is_full_model:
+                stim_dm = glm.design_matrix.hrf_regressors(
+                                            target_run,
+                                            stim_ev_df,
+                                            glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                        )
+                dms_common += stim.dm.common
             # assign merged common back to dms
             dms.common = dms_common
             # store event DM
@@ -551,6 +564,7 @@ def concatenate_runs_dms(run_dict, dm_dict):
     Y_all.time.attrs['units'] = units.s
     dm_all = copy.deepcopy(dm_dict[run_key])
     dm_all.common = xr.concat(dm_updated, dim="time")
+    dm_all.common = dm_all.common.fillna(0)
     
     return Y_all, dm_all, runs_updated
 
