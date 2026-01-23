@@ -410,6 +410,8 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
             # merge all dms along time axis
             while len(dm_list)>0:
                 dms_common += dm_list.pop().common
+            # assign merged common back to dms
+            dms.common = dms_common
             # build full model
             if is_full_model:
                 stim_dm = glm.design_matrix.hrf_regressors(
@@ -417,9 +419,7 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
                                             stim_ev_df,
                                             glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
                                         )
-                dms_common += stim.dm.common
-            # assign merged common back to dms
-            dms.common = dms_common
+                dms &= reduce(operator.and_, [stim_dm])
             # store event DM
             ev_dms.append(dms)
         # combine all event DMs into one big DM

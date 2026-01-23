@@ -235,7 +235,7 @@ Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
 
 #%% check dm
 # plt_dm = dm_dict['run01']
-plt_dm = dm_all
+plt_dm = dms
 # using xr.DataArray.plot
 f, ax = plt.subplots(1,1,figsize=(12,10))
 # plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time<600).T.plot(vmin=-2,vmax=2)
