@@ -416,7 +416,7 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
             if is_full_model:
                 stim_dm = glm.design_matrix.hrf_regressors(
                                             target_run,
-                                            stim_ev_df,
+                                            stim_ev_df.iloc[ev_dict[run_key][ev_name]['idx']['preserved']],
                                             glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
                                         )
                 dms &= reduce(operator.and_, [stim_dm])
