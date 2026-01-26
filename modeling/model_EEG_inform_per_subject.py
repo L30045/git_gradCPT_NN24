@@ -14,7 +14,6 @@ git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 from utils import *
 import model
-from model import extract_n2_p3_features
 from params_setting import *
 
 #%% load HbO
@@ -152,97 +151,14 @@ for run_key in mnt_correct_idx_dict.keys():
         }
     }
 
-#%% add events to design matrix
-# # add events per run.
-# def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz']):
-#     """
-#     select_chs: select channels to add to design matrix
-#     """
-#     dm_dict = dict()
-#     for run_key in run_dict.keys():
-#         dm_dict[run_key] = dict()
-#         target_run = run_dict[run_key]['run']
-#         conc_o = run_dict[run_key]['conc_ts']
-#         chs_pruned = run_dict[run_key]['chs_pruned']
-#         ev_df = run_dict[run_key]['ev_df']
-#         # for each run, get drift and short-separation regressors (if any)
-#         if cfg_GLM['do_drift']:
-#             drift_regressors = model.get_drift_regressors([conc_o], cfg_GLM)
-#         elif cfg_GLM['do_drift_legendre']:
-#             drift_regressors = model.get_drift_legendre_regressors([conc_o], cfg_GLM)
-#         else:
-#             drift_regressors = None
-#         if cfg_GLM['do_short_sep']:
-#             ss_regressors = model.get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
-#         else:
-#             ss_regressors = None
-#         # for each event, create a dm list
-#         if not select_event:
-#             select_event = ev_dict[run_key].keys()
-#         for ev_name in select_event:
-#             match ev_name:
-#                 case 'mnt_correct':
-#                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
-#                     # rename trial_type
-#                     target_ev_df.loc[:,'trial_type'] = 'mnt-correct'
-#                 case 'mnt_incorrect':
-#                     target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
-#                     # rename trial_type
-#                     target_ev_df.loc[:,'trial_type'] = 'mnt-incorrect'
-#             # check if event exist
-#             if len(target_ev_df)==0:
-#                 # store in dm_dict
-#                 dm_dict[run_key][ev_name] = []
-#                 continue
-#             # create design matrix
-#             dm_list = []
-#             for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
-#                 dm = glm.design_matrix.hrf_regressors(
-#                                             target_run,
-#                                             target_ev_df.iloc[[event_id]],
-#                                             glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
-#                                         )
-#                 # rescale by Cz area
-#                 #TODO: allow multiple channels in DM
-#                 dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
-#                 # append
-#                 dm_list.append(dm)
-#             # Create a new design matrix object with the concatenated common regressors
-#             dms = dm_list.pop()
-#             dms_common = dms.common
-#             # merge all dms along time axis
-#             while len(dm_list)>0:
-#                 dms_common += dm_list.pop().common
-#             # assign merged common back to dms
-#             dms.common = dms_common
-#             # add drift and short-separation regressors if any
-#             if drift_regressors:
-#                 dms &= reduce(operator.and_, drift_regressors)
-#                 dms.common = dms.common.fillna(0)
-#             if ss_regressors:
-#                 dms &= reduce(operator.and_, ss_regressors)
-#                 dms.common = dms.common.fillna(0)
-#             # store in dm_dict
-#             dm_dict[run_key][ev_name] = dms
-     
-#     return dm_dict
-
 #%% Get DM
-dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], is_full_model=True)
 
 #%% combine DMs from all runs into one big DM
 Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
 
 #%% check dm
-# plt_dm = dm_dict['run01']
-def vis_dm(plt_dm):
-    # using xr.DataArray.plot
-    f, ax = plt.subplots(1,1,figsize=(12,10))
-    # plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time<600).T.plot(vmin=-2,vmax=2)
-    plt_dm.common.sel(chromo="HbO").T.plot(vmin=-2,vmax=2)
-    plt.title("Shared Regressors")
-    #p.xticks(rotation=90)
-    plt.show()
+model.vis_dm(dm_all)
 
 #%% get GLM fitting results for each subject from shank Jun 02 2025
 # 3. get betas and covariance

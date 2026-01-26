@@ -196,9 +196,9 @@ def calculate_component_area(signal, times, start_idx, end_idx):
     """
     return np.trapz(signal[start_idx:end_idx+1], times[start_idx:end_idx+1])
 
-def extract_n2_p3_features(signal, times, n2_window=(0.4, 0.7), p3_window=(0.6, 1.1)):
+def extract_comp_features(signal, times, window_list=[(0.4,0.7),(0.6,1.1)], comp_sign_list=['neg','pos']):
     """
-    Extract N2 and P3 features from ERP signal.
+    Extract component features from ERP signal.
 
     Parameters:
     -----------
@@ -206,79 +206,68 @@ def extract_n2_p3_features(signal, times, n2_window=(0.4, 0.7), p3_window=(0.6, 
         The ERP signal
     times : array
         Time vector in seconds
-    n2_window : tuple
-        Time window (start, end) in seconds to search for N2 peak
-    p3_window : tuple
-        Time window (start, end) in seconds to search for P3 peak
-
+    window_list : list of tuple
+        List of time window (start, end) in seconds to search for component peak
+    comp_sign_list : list of str
+        Sign of component of interest 
+    
     Returns:
     --------
     results : dict
         Dictionary containing:
         - zero_crossing_times: all zero crossing time points
-        - n2_peak_time: time of N2 peak
-        - n2_peak_amp: amplitude of N2 peak
-        - n2_area: area of N2 component
-        - p3_peak_time: time of P3 peak
-        - p3_peak_amp: amplitude of P3 peak
-        - p3_area: area of P3 component
+        - zero_crossing_indices: all zero crossing time index
+        - window_of_intesret_list: list of time window (start, end) in seconds to search for component peak
+        - components: componet features
     """
     # Find all zero crossings
     zero_crossing_times, zero_crossing_indices = find_zero_crossings(signal, times)
 
-    # Find N2 (negative peak in specified window)
-    n2_mask = (times >= n2_window[0]) & (times <= n2_window[1])
-    n2_idx = np.argmin(signal[n2_mask])
-    n2_global_idx = np.where(n2_mask)[0][n2_idx]
-    n2_peak_time = times[n2_global_idx]
-    n2_peak_amp = signal[n2_global_idx]
+    result_list = []
+    # For each component
+    for c_i in range(len(window_list)):
+        # Find N2 (negative peak in specified window)
+        comp_window = window_list[c_i]
+        comp_mask = (times >= comp_window[0]) & (times <= comp_window[1])
+        comp_sign = comp_sign_list[c_i]
+        if comp_sign=='pos':
+            comp_idx = np.argmax(signal[comp_mask])
+        else:
+            comp_idx = np.argmin(signal[comp_mask])
+        comp_global_idx = np.where(comp_mask)[0][comp_idx]
+        comp_peak_time = times[comp_global_idx]
+        comp_peak_amp = signal[comp_global_idx]
 
-    # Find N2 boundaries (zero crossings around N2 peak)
-    n2_start_crossings = zero_crossing_indices[zero_crossing_indices < n2_global_idx]
-    n2_end_crossings = zero_crossing_indices[zero_crossing_indices > n2_global_idx]
+        # Find component boundaries (zero crossings around N2 peak)
+        comp_start_crossings = zero_crossing_indices[zero_crossing_indices < comp_global_idx]
+        comp_end_crossings = zero_crossing_indices[zero_crossing_indices > comp_global_idx]
 
-    if len(n2_start_crossings) > 0 and len(n2_end_crossings) > 0:
-        n2_start_idx = n2_start_crossings[-1]
-        n2_end_idx = n2_end_crossings[0]
-        n2_area = calculate_component_area(signal, times, n2_start_idx, n2_end_idx)
-    else:
-        n2_area = np.nan
-        n2_start_idx = None
-        n2_end_idx = None
-
-    # Find P3 (positive peak in specified window)
-    p3_mask = (times >= p3_window[0]) & (times <= p3_window[1])
-    p3_idx = np.argmax(signal[p3_mask])
-    p3_global_idx = np.where(p3_mask)[0][p3_idx]
-    p3_peak_time = times[p3_global_idx]
-    p3_peak_amp = signal[p3_global_idx]
-
-    # Find P3 boundaries (zero crossings around P3 peak)
-    p3_start_crossings = zero_crossing_indices[zero_crossing_indices < p3_global_idx]
-    p3_end_crossings = zero_crossing_indices[zero_crossing_indices > p3_global_idx]
-
-    if len(p3_start_crossings) > 0 and len(p3_end_crossings) > 0:
-        p3_start_idx = p3_start_crossings[-1]
-        p3_end_idx = p3_end_crossings[0]
-        p3_area = calculate_component_area(signal, times, p3_start_idx, p3_end_idx)
-    else:
-        p3_area = np.nan
-        p3_start_idx = None
-        p3_end_idx = None
+        if len(comp_start_crossings) > 0 and len(comp_end_crossings) > 0:
+            comp_start_idx = comp_start_crossings[-1]
+            comp_end_idx = comp_end_crossings[0]
+            comp_area = calculate_component_area(signal, times, comp_start_idx, comp_end_idx)
+        else:
+            # use the area within the time window
+            comp_area = calculate_component_area(signal, times, np.argwhere(comp_mask)[0][0], np.argwhere(comp_mask)[-1][0])
+            comp_start_idx = comp_window[0]
+            comp_end_idx = comp_window[1]
+        # save results
+        result = {
+            'comp_peak_time': comp_peak_time,
+            'comp_peak_amp': comp_peak_amp,
+            'comp_area': comp_area,
+            'comp_sign': comp_sign,
+            'comp_start_idx': comp_start_idx,
+            'comp_end_idx': comp_end_idx,
+            'window_of_interest': comp_window
+        }
+        result_list.append(result)
 
     results = {
         'zero_crossing_times': zero_crossing_times,
         'zero_crossing_indices': zero_crossing_indices,
-        'n2_peak_time': n2_peak_time,
-        'n2_peak_amp': n2_peak_amp,
-        'n2_area': n2_area,
-        'n2_start_idx': n2_start_idx,
-        'n2_end_idx': n2_end_idx,
-        'p3_peak_time': p3_peak_time,
-        'p3_peak_amp': p3_peak_amp,
-        'p3_area': p3_area,
-        'p3_start_idx': p3_start_idx,
-        'p3_end_idx': p3_end_idx
+        'window_of_intesret_list': window_list,
+        'components': result_list
     }
 
     return results
@@ -307,11 +296,11 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
     erp_area_dict = dict()
     # define ERP period of interest
     if ev_name.endswith('response'):
-        n2_window=(0,0.2)
-        p3_window=(0,0.2)
+        window_list=[(0,0.2)]
+        comp_sign_list = ['neg']
     else:
-        n2_window=(0.4, 0.7)
-        p3_window=(0.6, 1.1)
+        window_list=[(0.4, 0.7),(0.6, 1.1)]
+        comp_sign_list = ['neg', 'pos']
     # for each run
     for run_key in single_subj_epoch_dict.keys():
         erp_area_dict[run_key]=dict()
@@ -321,18 +310,13 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
             ev_eeg = single_subj_epoch_dict[run_key][ev_name].pick(picks='eeg')
             for ch_name in ev_eeg.ch_names:
                 ev_ch_eeg = ev_eeg.get_data()[:,ev_eeg.ch_names.index(ch_name),:]            
-                # Extract N2 and P3 features
+                # Extract component features
                 area_list = []
                 for eeg_i in range(len(ev_ch_eeg)):
-                    n2_p3_features = extract_n2_p3_features(ev_ch_eeg[eeg_i], t_vector,
-                                                            n2_window=n2_window,
-                                                            p3_window=p3_window)
-                    n2_area = np.abs(n2_p3_features['n2_area'])
-                    p3_area = np.abs(n2_p3_features['p3_area'])
-                    if ev_name.endswith('respons'):
-                        area_list.append(n2_area)
-                    else:
-                        area_list.append(n2_area+p3_area)
+                    comp_results = extract_comp_features(ev_ch_eeg[eeg_i], t_vector, window_list=window_list, comp_sign_list=comp_sign_list)
+                    # summing up all component area
+                    comp_area = np.sum([np.abs(x['comp_area']) for x in comp_results['components']])
+                    area_list.append(comp_area)
                 # rescale area to range 0 to 1. (0 as 0, 1 as max(area))
                 area_list = np.array(area_list)
                 if is_norm:
@@ -440,6 +424,16 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
         dm_dict[run_key] = combined_dm
     
     return dm_dict
+
+# visualize DM
+def vis_dm(plt_dm):
+    # using xr.DataArray.plot
+    f, ax = plt.subplots(1,1,figsize=(12,10))
+    # plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time<600).T.plot(vmin=-2,vmax=2)
+    plt_dm.common.sel(chromo="HbO").T.plot(vmin=-2,vmax=2)
+    #p.xticks(rotation=90)
+    plt.show()
+
 
 # GLM model from pf.GLM()
 # Unknown pf.GLM() loaded. Required only 4 inputs (no geo3d).
