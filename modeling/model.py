@@ -544,7 +544,7 @@ def concatenate_runs_dms(run_dict, dm_dict):
 
         ts_new = ts.copy(deep=True)
         ts_new = ts_new.pint.dequantify().pint.quantify('molar')
-        ts_new.assign_coords(time=new_time)
+        ts_new = ts_new.assign_coords(time=new_time)
 
         dm_new = copy.deepcopy(dm)
         dm_new.common = dm_new.common.assign_coords(time=new_time)

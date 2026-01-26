@@ -108,61 +108,65 @@ for subj_id in tqdm(subj_id_array):
     print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
     glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
     result_dict['resid'] = glm_results.sm.resid
+    betas = glm_results.sm.params
+    cov_params = glm_results.sm.cov_params()
+    result_dict['betas']=betas
+    result_dict['cov_params']=cov_params
 
     #%% get HRF and MSE for each run
     # 4. estimate HRF and MSE
-    trial_type_list = ['mnt_correct','mnt_incorrect']
+    # trial_type_list = ['mnt_correct','mnt_incorrect']
 
-    betas = glm_results.sm.params
-    cov_params = glm_results.sm.cov_params()
-    run_unit = Y_all.pint.units
-    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+    # betas = glm_results.sm.params
+    # cov_params = glm_results.sm.cov_params()
+    # run_unit = Y_all.pint.units
+    # basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
-    hrf_mse_list = []
-    hrf_estimate_list = []
+    # hrf_mse_list = []
+    # hrf_estimate_list = []
 
-    for trial_type in trial_type_list:
-        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+    # for trial_type in trial_type_list:
+    #     betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+    #     hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
         
-        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
-                                    )
-        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+    #     cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+    #                         regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+    #                                 )
+    #     hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+    #     hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+    #     hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
 
-        hrf_estimate_list.append(hrf_estimate)
-        hrf_mse_list.append(hrf_mse)
+    #     hrf_estimate_list.append(hrf_estimate)
+    #     hrf_mse_list.append(hrf_mse)
 
-    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
-    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+    # hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+    # hrf_estimate = hrf_estimate.pint.quantify(run_unit)
 
-    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
-    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+    # hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+    # hrf_mse = hrf_mse.pint.quantify(run_unit**2)
 
-    # set universal time so that all hrfs have the same time base 
-    fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
-    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+    # # set universal time so that all hrfs have the same time base 
+    # fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+    # before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+    # after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
 
-    dT = np.round(1 / fs, 3)  # millisecond precision
-    n_timepoints = len(hrf_estimate.time)
-    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+    # dT = np.round(1 / fs, 3)  # millisecond precision
+    # n_timepoints = len(hrf_estimate.time)
+    # reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
 
-    hrf_mse = hrf_mse.assign_coords({'time': reltime})
-    hrf_mse.time.attrs['units'] = 'second'
+    # hrf_mse = hrf_mse.assign_coords({'time': reltime})
+    # hrf_mse.time.attrs['units'] = 'second'
 
-    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
-    hrf_estimate.time.attrs['units'] = 'second'
+    # hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+    # hrf_estimate.time.attrs['units'] = 'second'
 
-    result_dict['hrf_estimate'] = hrf_estimate
-    result_dict['hrf_mse'] = hrf_mse
+    # result_dict['hrf_estimate'] = hrf_estimate
+    # result_dict['hrf_mse'] = hrf_mse
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full_no_hrf_est.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
     #%% get Laura's HRF estimate, MSE, and model residual
