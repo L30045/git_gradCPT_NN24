@@ -123,6 +123,9 @@ for subj_id in tqdm(subj_id_array):
     # check if it is a full model
     if betas.shape[-1]>30:
         # TODO: find an elegant way to check if _stim regressor is presented
+        """
+        NOTE: The number of regressors is fixed.
+        """
         basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
         basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
     else:
