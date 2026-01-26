@@ -173,7 +173,13 @@ trial_type_list = ['mnt_correct','mnt_incorrect']
 betas = glm_results.sm.params
 cov_params = glm_results.sm.cov_params()
 run_unit = Y_all.pint.units
-basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+# check if it is a full model
+if betas.shape[-1]>30:
+    # TODO: find an elegant way to check if _stim regressor is presented
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+    basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
+else:
+    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
 hrf_mse_list = []
 hrf_estimate_list = []
