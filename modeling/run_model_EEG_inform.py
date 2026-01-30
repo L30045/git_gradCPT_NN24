@@ -16,7 +16,7 @@ import model
 from params_setting import *
 
 #%%
-subj_id_array = [723]
+subj_id_array = [670,695,721,723]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -96,12 +96,35 @@ for subj_id in tqdm(subj_id_array):
             }
         }
 
-    #%% Get DM
-    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], model_mode='full')
-    # dm_dict = model.create_no_info_dm(run_dict, cfg_GLM)
+    #%% Get reduced model DM
+    run_list = []
+    pruned_chans_list = []
+    stim_list = []
+    for run_key in run_dict.keys():
+        run_list.append(run_dict[run_key]['run'])
+        pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
+        ev_df = run_dict[run_key]['ev_df'].copy()
+        # rename trial_type
+        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct'
+        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect'
+        stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct')|(ev_df['trial_type']=='mnt-incorrect')])
+    reduced_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
 
-    #%% combine DMs from all runs into one big DM
-    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
+    #%% get drift and ss
+    basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    dm_all = basis_dm
+
+    #%% Get EEG DM
+    # dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], model_mode='full')
+    # dm_dict = model.create_no_info_dm(run_dict, cfg_GLM)
+    # eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+
+    # combine EEG DMs from all runs into one big DM
+    # Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
+
+    #%% Combine EEG DM with Reduced DM to get full model
+    # dm_all = model.combine_dm(dm_all, reduced_dm)
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     # 3. get betas and covariance
@@ -177,7 +200,7 @@ for subj_id in tqdm(subj_id_array):
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full_noReduced.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_drift_ss.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
     #%% get Laura's HRF estimate, MSE, and model residual

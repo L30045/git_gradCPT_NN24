@@ -438,7 +438,39 @@ def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'
     
     return dm_dict
 
-def create_no_info_dm(run_dict, cfg_GLM):
+def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
+    # 1. need to concatenate runs 
+    if len(runs) > 1:
+        Y_all, stim_df, runs_updated = concatenate_runs(runs, stim_list)
+    else:
+        Y_all = runs[0]
+        stim_df = stim_list[0]
+        runs_updated = runs
+        
+    run_unit = Y_all.pint.units
+
+    # Combine drift and short-separation regressors (if any)
+    if cfg_GLM['do_drift']:
+        drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
+
+    if cfg_GLM['do_drift_legendre']:
+        drift_regressors = get_drift_legendre_regressors(runs_updated, cfg_GLM)
+
+    if cfg_GLM['do_short_sep']:
+        ss_regressors = get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+
+    # merge all DMs
+    dms = ss_regressors.pop()
+    if len(ss_regressors)>1:
+        dms &= reduce(operator.and_, ss_regressors)
+    elif len(ss_regressors)>0:
+        dms &= reduce(operator.and_, [ss_regressors])
+    dms &= reduce(operator.and_, drift_regressors)
+    dms.common = dms.common.fillna(0)
+
+    return dms
+
+def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz']):
     """
     select_chs: select channels to add to design matrix
     """
@@ -449,25 +481,103 @@ def create_no_info_dm(run_dict, cfg_GLM):
         conc_o = run_dict[run_key]['conc_ts']
         chs_pruned = run_dict[run_key]['chs_pruned']
         ev_df = run_dict[run_key]['ev_df']
-        # for each run, get drift and short-separation regressors (if any)
-        if cfg_GLM['do_drift']:
-            drift_regressors = get_drift_regressors([conc_o], cfg_GLM)
-        elif cfg_GLM['do_drift_legendre']:
-            drift_regressors = get_drift_legendre_regressors([conc_o], cfg_GLM)
-        else:
-            drift_regressors = None
-        if cfg_GLM['do_short_sep']:
-            ss_regressors = get_short_regressors([conc_o], [chs_pruned], cfg_GLM['geo3d'], cfg_GLM)
-        else:
-            ss_regressors = None
         
-        # add drift and short-separation regressors if any
-        ss_regressors[0] &= reduce(operator.and_, drift_regressors)
-        ss_regressors[0].common = ss_regressors[0].common.fillna(0)
+        # for each event, create a dm list
+        if not select_event:
+            select_event = ev_dict[run_key].keys()
+        ev_dms = []
+        for ev_name in select_event:
+            if ev_name=='mnt_correct':
+                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
+                # rename trial_type
+                target_ev_df.loc[:,'trial_type'] = 'mnt_correct'
+            elif ev_name=='mnt_incorrect':
+                target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
+                # rename trial_type
+                target_ev_df.loc[:,'trial_type'] = 'mnt_incorrect'
+            # check if event exist
+            if len(target_ev_df)==0:
+                # store in dm_dict
+                dm_dict[run_key][ev_name] = []
+                continue
+            
+            # EEG-informed regressors
+            
+            # create design matrix
+            dm_list = []
+            # for each event, rescale and create a dm
+            for ev_i, event_id in enumerate(ev_dict[run_key][ev_name]['idx']['preserved']):
+                dm = glm.design_matrix.hrf_regressors(
+                                            target_run,
+                                            target_ev_df.iloc[[event_id]],
+                                            glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                        )
+                # rescale by Cz area
+                #TODO: allow multiple channels in DM
+                dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
+                # append
+                dm_list.append(dm)
+            # Create a new design matrix object with the concatenated common regressors
+            dms = dm_list.pop()
+            dms_common = dms.common
+            # merge all dms along time axis
+            while len(dm_list)>0:
+                dms_common += dm_list.pop().common
+            # assign merged common back to dms
+            dms.common = dms_common
+            
+            # store event DM
+            ev_dms.append(dms)
+        # combine all event DMs into one big DM
+        combined_dm = ev_dms.pop()
+        while len(ev_dms)>0:
+            ev_dm = ev_dms.pop()
+            combined_dm &= reduce(operator.and_, [ev_dm])
+            combined_dm.common = combined_dm.common.fillna(0)
+        
         # store in dm_dict
-        dm_dict[run_key] = ss_regressors[0]
+        dm_dict[run_key] = combined_dm
     
     return dm_dict
+
+def get_GLM_copy_from_pf_DM(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
+    # 1. need to concatenate runs 
+    if len(runs) > 1:
+        Y_all, stim_df, runs_updated = concatenate_runs(runs, stim_list)
+    else:
+        Y_all = runs[0]
+        stim_df = stim_list[0]
+        runs_updated = runs
+        
+    run_unit = Y_all.pint.units
+    # 2. define design matrix
+    dms = glm.design_matrix.hrf_regressors(
+                                    Y_all,
+                                    stim_df,
+                                    glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                )
+
+
+    # Combine drift and short-separation regressors (if any)
+    if cfg_GLM['do_drift']:
+        drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_drift_legendre']:
+        drift_regressors = get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        dms &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_short_sep']:
+        ss_regressors = get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+        dms &= reduce(operator.and_, ss_regressors)
+
+    dms.common = dms.common.fillna(0)
+
+    return dms
+
+def combine_dm(eeg_dm, reduced_dm):
+    eeg_dm &= reduce(operator.and_, [reduced_dm])
+    return eeg_dm
 
 # visualize DM
 def vis_dm(plt_dm):
