@@ -152,7 +152,8 @@ for run_key in mnt_correct_idx_dict.keys():
     }
 
 #%% Get DM
-dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], is_full_model=True)
+# dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], is_full_model=True)
+dm_dict = model.create_no_info_dm(run_dict, cfg_GLM)
 
 #%% combine DMs from all runs into one big DM
 Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)

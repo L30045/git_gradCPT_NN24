@@ -15,18 +15,9 @@ from utils import *
 import model
 from params_setting import *
 
-#%% For each subject,run a F-test
-subj_id = 695
-filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
-
-# load full model
-with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
-    full_model_result = pickle.load(f)
-# load stim only results
-with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_stim-only.pkl"), 'rb') as f:
-    stim_only_result = pickle.load(f)
-
-#%% subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
+#%%
+subj_id_array = [723]
+# subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
     print(f"Start processing sub-{subj_id}")
@@ -106,7 +97,8 @@ for subj_id in tqdm(subj_id_array):
         }
 
     #%% Get DM
-    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], is_full_model=False)
+    dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], model_mode='full')
+    # dm_dict = model.create_no_info_dm(run_dict, cfg_GLM)
 
     #%% combine DMs from all runs into one big DM
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, dm_dict)
@@ -185,7 +177,7 @@ for subj_id in tqdm(subj_id_array):
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_eeg-informed.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full_noReduced.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
     #%% get Laura's HRF estimate, MSE, and model residual
