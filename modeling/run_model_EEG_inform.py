@@ -105,26 +105,25 @@ for subj_id in tqdm(subj_id_array):
         pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
         ev_df = run_dict[run_key]['ev_df'].copy()
         # rename trial_type
-        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct'
-        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect'
-        stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct')|(ev_df['trial_type']=='mnt-incorrect')])
+        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct-stim'
+        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
+        stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
     reduced_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
     Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
 
     #%% get drift and ss
-    basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    dm_all = basis_dm
+    # basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    # dm_all = basis_dm
 
     #%% Get EEG DM
     # dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], model_mode='full')
-    # dm_dict = model.create_no_info_dm(run_dict, cfg_GLM)
-    # eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+    eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
     # combine EEG DMs from all runs into one big DM
-    # Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
+    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
 
-    #%% Combine EEG DM with Reduced DM to get full model
-    # dm_all = model.combine_dm(dm_all, reduced_dm)
+    # Combine EEG DM with Reduced DM to get full model
+    dm_all = model.combine_dm(dm_all, reduced_dm)
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     # 3. get betas and covariance
@@ -145,7 +144,7 @@ for subj_id in tqdm(subj_id_array):
     cov_params = glm_results.sm.cov_params()
     run_unit = Y_all.pint.units
     # check if it is a full model
-    if betas.shape[-1]>30:
+    if betas.shape[-1]>40:
         # TODO: find an elegant way to check if _stim regressor is presented
         """
         NOTE: The number of regressors is fixed.
@@ -200,30 +199,23 @@ for subj_id in tqdm(subj_id_array):
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_drift_ss.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
     #%% get Laura's HRF estimate, MSE, and model residual
-    # result_dict_stim = dict()
-    # run_list = []
-    # pruned_chans_list = []
-    # stim_list = []
-    # for run_key in run_dict.keys():
-    #     run_list.append(run_dict[run_key]['run'])
-    #     pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
-    #     ev_df = run_dict[run_key]['ev_df'].copy()
-    #     # rename trial_type
-    #     ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)].loc[:,'trial_type'] = 'mnt-correct'
-    #     ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)].loc[:,'trial_type'] = 'mnt-incorrect'
-    #     stim_list.append(ev_df[ev_df['trial_type']=='mnt'])
-    
-    # print(f"Start Stim-only GLM fitting (sub-{subj_id})")
-    # results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    # result_dict_stim['resid'] = results.sm.resid
-    # result_dict_stim['hrf_estimate'] = hrf_estimate
-    # result_dict_stim['hrf_mse'] = hrf_mse
+    result_dict_stim = dict()
 
-    # # save dict
-    # save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only.pkl'),'wb') as f:
-    #     pickle.dump(result_dict_stim,f)
+    print(f"Start Stim-only GLM fitting (sub-{subj_id})")
+    results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    result_dict_stim['resid'] = results.sm.resid
+    result_dict_stim['hrf_estimate'] = hrf_estimate
+    result_dict_stim['hrf_mse'] = hrf_mse
+    betas = results.sm.params
+    cov_params = results.sm.cov_params()
+    result_dict_stim['betas']=betas
+    result_dict_stim['cov_params']=cov_params
+
+    # save dict
+    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only_correct_trial_type.pkl'),'wb') as f:
+        pickle.dump(result_dict_stim,f)

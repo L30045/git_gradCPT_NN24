@@ -490,11 +490,11 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
             if ev_name=='mnt_correct':
                 target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0)]
                 # rename trial_type
-                target_ev_df.loc[:,'trial_type'] = 'mnt_correct'
+                target_ev_df.loc[:,'trial_type'] = 'mnt-correct-eeg'
             elif ev_name=='mnt_incorrect':
                 target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
                 # rename trial_type
-                target_ev_df.loc[:,'trial_type'] = 'mnt_incorrect'
+                target_ev_df.loc[:,'trial_type'] = 'mnt-incorrect-eeg'
             # check if event exist
             if len(target_ev_df)==0:
                 # store in dm_dict
@@ -775,3 +775,58 @@ def concatenate_runs(runs, stim):
     stim_df = pd.concat(stim_updated, ignore_index = True)
 
     return Y_all, stim_df, runs_updated
+
+def calculate_ar_loglikelihood(y, X, beta, ar_coefs, sigma2):
+    """
+    Calculate log-likelihood for AR-IRLS model.
+    
+    Parameters:
+    -----------
+    y : array
+        Observed data
+    X : array
+        Design matrix
+    beta : array
+        Regression coefficients
+    ar_coefs : array
+        AR coefficients [φ₁, φ₂, ..., φₚ]
+    sigma2 : float
+        Error variance
+    
+    Returns:
+    --------
+    ll : float
+        Log-likelihood
+    """
+    n = len(y)
+    p = len(ar_coefs)
+    
+    # Compute residuals
+    residuals = y - X @ beta
+    
+    # Apply AR transformation to residuals
+    # (This is simplified - actual implementation depends on AR order)
+    transformed_resid = np.zeros(n)
+    transformed_resid[:p] = residuals[:p]  # First p observations
+    
+    for t in range(p, n):
+        ar_term = sum(ar_coefs[i] * residuals[t-i-1] for i in range(p))
+        transformed_resid[t] = residuals[t] - ar_term
+    
+    # Calculate log-likelihood
+    # For AR(p) errors: y ~ N(Xβ, Σ) where Σ depends on AR structure
+    
+    # Simplified version (assumes transformed residuals ~ N(0, σ²))
+    ss_transformed = np.sum(transformed_resid**2)
+    
+    ll = -n/2 * np.log(2 * np.pi * sigma2) - ss_transformed / (2 * sigma2)
+    
+    # Add correction for Jacobian of AR transformation
+    # (This term depends on AR coefficients)
+    ar_poly = np.poly1d([1] + (-ar_coefs).tolist())
+    roots = np.roots(ar_poly)
+    if np.all(np.abs(roots) > 1):  # Check stationarity
+        jacobian_term = n * np.log(1 - np.sum(ar_coefs**2)) / 2
+        ll += jacobian_term
+    
+    return ll
