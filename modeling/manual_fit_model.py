@@ -14,6 +14,9 @@ sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 from utils import *
 import model
 from params_setting import *
+import cedalion.xrutils as xrutils
+import scipy
+
 
 #%%
 subj_id = 723
@@ -118,6 +121,107 @@ model.vis_dm(dm_all)
 Y_all = Y_all.sel(chromo=['HbO'],channel=[select_ch])
 dm_all.common = dm_all.common.sel(chromo=['HbO'])
 
+#%% Define my AR-IRLS
+def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
+    mask = np.isfinite(y.values)
+
+    yorg : pd.Series = pd.Series(y.values[mask].copy())
+    xorg : pd.DataFrame = x[mask].reset_index(drop=True)
+
+    y = yorg.copy()
+    x = xorg.copy()
+
+    rlm_model = sm.RLM(y, x, M=M)
+    params = rlm_model.fit()
+
+    resid = pd.Series(y - x @ params.params)
+    for _ in range(4):  # TODO - check convergence
+        y = yorg.copy()
+        x = xorg.copy()
+
+        # Update the AR whitening filter
+        arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
+        wf = np.hstack([1, -arcoef.params[1:]])
+
+        # Apply the AR filter to the lhs and rhs of the model
+        a = y[0]
+        yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
+        xf = np.zeros(x.shape)
+        xx = x.to_numpy()
+        for i in range(xx.shape[1]):
+            b = xx[0, i]
+            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i] - b) + b
+
+        xf = pd.DataFrame(xf)
+        xf.columns = x.columns
+
+        rlm_model = sm.RLM(yf, xf, M=M)
+        params = rlm_model.fit()
+
+        resid = pd.Series(yorg - xorg @ params.params)
+
+    return params, wf
+
+def fit(
+    ts: cdt.NDTimeSeries,
+    design_matrix: DesignMatrix,
+    noise_model: str = "ols",
+    ar_order: int = 30,
+    max_jobs: int = -1,
+    verbose: bool = False,
+):
+    # FIXME: unit handling?
+    # shoud the design matrix be dimensionless? -> thetas will have units
+    ts = ts.pint.dequantify()
+
+    dim3_name = xrutils.other_dim(design_matrix.common, "time", "regressor")
+
+
+    reg_results = xr.DataArray(
+        np.empty((ts.sizes["channel"], ts.sizes[dim3_name]), dtype=object),
+        dims=("channel", dim3_name),
+        coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
+    )
+
+    for (
+        dim3,
+        group_channels,
+        group_design_matrix,
+    ) in design_matrix.iter_computational_groups(ts):
+        group_y = ts.sel({"channel": group_channels, dim3_name: dim3}).transpose(
+            "time", "channel"
+        )
+
+        # pass x as a DataFrame to statsmodel to make it aware of regressor names
+        x = pd.DataFrame(
+            group_design_matrix.values, columns=group_design_matrix.regressor.values
+        )
+
+        if(max_jobs==1):
+            for chan in tqdm(group_y.channel.values, disable=not verbose):
+                result = my_ar_irls_GLM(group_y.loc[:, chan], x, noise_model, ar_order)
+                reg_results.loc[chan, dim3] = result
+        else:
+            args_list=[]
+            for chan in group_y.channel.values:
+                args_list.append([group_y.loc[:, chan], x, noise_model, ar_order])
+
+            with parallel_config(backend='threading', n_jobs=max_jobs):
+                batch_results = tqdm(
+                    Parallel(return_as="generator")(
+                        delayed(my_ar_irls_GLM)(*args) for args in args_list
+                    ),
+                    total=len(args_list)
+                )
+
+            for chan, result in zip(group_y.channel.values, batch_results):
+                reg_results.loc[chan, dim3] = result
+
+    description='AR_IRLS' # FIXME
+    reg_results.attrs["description"] = description
+
+    return reg_results
+
 #%% get GLM fitting results for each subject from shank Jun 02 2025
 # 3. get betas and covariance
 result_dict = dict()
@@ -130,13 +234,8 @@ result_dict['betas']=betas
 result_dict['cov_params']=cov_params
 
 #%% from solve.fit
-import cedalion.xrutils as xrutils
-import scipy
 
 # Timing for rlm.fit() calls
-rlm_fit_times = []
-total_start = time.time()
-
 nb_test = 4 # default 4
 Y_all = Y_all.pint.dequantify()
 
@@ -172,9 +271,7 @@ for (
     x = xorg.copy()
 
     rlm_model = sm.RLM(y, x, M=M)
-    t0 = time.time()
     params = rlm_model.fit()
-    rlm_fit_times.append(('initial rlm.fit()', time.time() - t0))
 
     resid = pd.Series(y - x @ params.params)
     for iter_i in range(nb_test):  # TODO - check convergence
@@ -198,24 +295,9 @@ for (
         xf.columns = x.columns
 
         rlm_model = sm.RLM(yf, xf, M=M)
-        t0 = time.time()
         params = rlm_model.fit()
-        rlm_fit_times.append((f'rlm.fit() iter {iter_i}', time.time() - t0))
 
         resid = pd.Series(yorg - xorg @ params.params)
-
-total_time = time.time() - total_start
-
-# Print timing results
-print("\n" + "="*60)
-print("RLM.FIT() TIMING RESULTS")
-print("="*60)
-for label, elapsed in rlm_fit_times:
-    print(f"{label}: {elapsed*1000:.4f} ms")
-print("="*60)
-print(f"Total rlm.fit() time: {sum(t for _, t in rlm_fit_times)*1000:.4f} ms")
-print(f"Total time: {total_time*1000:.4f} ms")
-print("="*60 + "\n")
 
 #%% Residuals
 my_x = np.squeeze(dm_all.common.values)
@@ -242,70 +324,3 @@ ax[1].legend()
 ax[2].plot(resid,label='resid in original space')
 ax[2].plot(params.resid.values, label='resid in whitten space')
 ax[2].legend()
-"""
-fittedvalues: ndarray
-The linear predicted values. dot(exog, params)
-"""
-
-
-#%% get HRF and MSE for each run
-# 4. estimate HRF and MSE
-trial_type_list = ['mnt_correct','mnt_incorrect']
-
-betas = glm_results.sm.params
-cov_params = glm_results.sm.cov_params()
-run_unit = Y_all.pint.units
-# check if it is a full model
-if betas.shape[-1]>40:
-    # TODO: find an elegant way to check if _stim regressor is presented
-    """
-    NOTE: The number of regressors is fixed.
-    """
-    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-    basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
-else:
-    basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-
-
-hrf_mse_list = []
-hrf_estimate_list = []
-
-for trial_type in trial_type_list:
-    betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-    hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
-    
-    cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                        regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
-                                )
-    hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
-
-    hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-    hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
-
-    hrf_estimate_list.append(hrf_estimate)
-    hrf_mse_list.append(hrf_mse)
-
-hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
-hrf_estimate = hrf_estimate.pint.quantify(run_unit)
-
-hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
-hrf_mse = hrf_mse.pint.quantify(run_unit**2)
-
-# set universal time so that all hrfs have the same time base 
-fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
-before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
-
-dT = np.round(1 / fs, 3)  # millisecond precision
-n_timepoints = len(hrf_estimate.time)
-reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
-
-hrf_mse = hrf_mse.assign_coords({'time': reltime})
-hrf_mse.time.attrs['units'] = 'second'
-
-hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
-hrf_estimate.time.attrs['units'] = 'second'
-
-result_dict['hrf_estimate'] = hrf_estimate
-result_dict['hrf_mse'] = hrf_mse
-
