@@ -25,6 +25,11 @@ import cedalion.sigproc.motion_correct as motion
 from cedalion.plots import scalp_plot
 from scipy.signal import filtfilt, windows
 import xarray as xr
+import cedalion.xrutils as xrutils
+import scipy
+import cedalion.typing as cdt
+from cedalion.models.glm.design_matrix import DesignMatrix
+from joblib import Parallel, delayed, parallel_config
 
 from functools import reduce
 import operator
@@ -830,3 +835,119 @@ def calculate_ar_loglikelihood(y, X, beta, ar_coefs, sigma2):
         ll += jacobian_term
     
     return ll
+
+
+#%% Define my AR-IRLS
+def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
+    mask = np.isfinite(y.values)
+
+    yorg : pd.Series = pd.Series(y.values[mask].copy())
+    xorg : pd.DataFrame = x[mask].reset_index(drop=True)
+
+    y = yorg.copy()
+    x = xorg.copy()
+
+    rlm_model = sm.RLM(y, x, M=M)
+    params = rlm_model.fit()
+
+    resid = pd.Series(y - x @ params.params)
+    for _ in range(4):  # TODO - check convergence
+        y = yorg.copy()
+        x = xorg.copy()
+
+        # Update the AR whitening filter
+        arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
+        wf = np.hstack([1, -arcoef.params[1:]])
+
+        # Apply the AR filter to the lhs and rhs of the model
+        a = y[0]
+        yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
+        xf = np.zeros(x.shape)
+        xx = x.to_numpy()
+        for i in range(xx.shape[1]):
+            b = xx[0, i]
+            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i] - b) + b
+
+        xf = pd.DataFrame(xf)
+        xf.columns = x.columns
+
+        rlm_model = sm.RLM(yf, xf, M=M)
+        params = rlm_model.fit()
+
+        resid = pd.Series(yorg - xorg @ params.params)
+
+    return params, wf
+
+def my_fit(
+    ts: cdt.NDTimeSeries,
+    design_matrix: DesignMatrix,
+    ar_order: int = 30,
+    max_jobs: int = -1,
+    verbose: bool = False,
+):
+    # FIXME: unit handling?
+    # shoud the design matrix be dimensionless? -> thetas will have units
+    ts = ts.pint.dequantify()
+
+    dim3_name = xrutils.other_dim(design_matrix.common, "time", "regressor")
+
+
+    reg_results = xr.DataArray(
+        np.empty((ts.sizes["channel"], ts.sizes[dim3_name]), dtype=object),
+        dims=("channel", dim3_name),
+        coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
+    )
+    wf_dict = dict()
+
+    for (
+        dim3,
+        group_channels,
+        group_design_matrix,
+    ) in design_matrix.iter_computational_groups(ts):
+        group_y = ts.sel({"channel": group_channels, dim3_name: dim3}).transpose(
+            "time", "channel"
+        )
+
+        # pass x as a DataFrame to statsmodel to make it aware of regressor names
+        x = pd.DataFrame(
+            group_design_matrix.values, columns=group_design_matrix.regressor.values
+        )
+
+        if(max_jobs==1):
+            for chan in tqdm(group_y.channel.values, disable=not verbose):
+                result = my_ar_irls_GLM(group_y.loc[:, chan], x, ar_order)
+                reg_results.loc[chan, dim3] = result[0]
+                wf_dict[chan] = result[1]
+        else:
+            args_list=[]
+            for chan in group_y.channel.values:
+                args_list.append([group_y.loc[:, chan], x, ar_order])
+
+            with parallel_config(backend='threading', n_jobs=max_jobs):
+                batch_results = tqdm(
+                    Parallel(return_as="generator")(
+                        delayed(my_ar_irls_GLM)(*args) for args in args_list
+                    ),
+                    total=len(args_list)
+                )
+
+            for chan, result in zip(group_y.channel.values, batch_results):
+                reg_results.loc[chan, dim3] = result[0]
+                wf_dict[chan] = result[1]
+
+
+    description='AR_IRLS' # FIXME
+    reg_results.attrs["description"] = description
+
+    return reg_results, wf_dict
+
+def whiten_yx(y, x, wf):
+    # Apply the AR filter to the lhs and rhs of the model
+    a = y[0]
+    yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
+    xf = np.zeros(x.shape)
+    for i in range(x.shape[1]):
+        b = x[0, i]
+        xf[:, i] = scipy.signal.lfilter(wf, 1, x[:, i] - b) + b
+
+    return yf, xf

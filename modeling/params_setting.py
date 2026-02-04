@@ -22,7 +22,8 @@ from cedalion.plots import scalp_plot
 from scipy.signal import filtfilt, windows
 
 # import my own functions from a different directory
-sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_help_funcs/')
+# sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_help_funcs/')
+sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
 import processing_func as pf
 import image_recon_func as irf
 

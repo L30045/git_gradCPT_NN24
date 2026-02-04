@@ -19,6 +19,9 @@ import scipy
 import cedalion.typing as cdt
 from cedalion.models.glm.design_matrix import DesignMatrix
 from joblib import Parallel, delayed, parallel_config
+import processing_func as pf
+
+
 #%% get DM
 subj_id = 695
 print(f"Start processing sub-{subj_id}")
@@ -31,7 +34,8 @@ all_chs_pruned = results['chs_pruned']
 all_stims = results['stims']
 geo3d = results['geo3d']
 cfg_GLM['geo3d'] = geo3d
-# get epoched concentration
+
+#%% get epoched concentration
 run_dict = dict()
 # Find all event files in project_path
 event_files = glob.glob(os.path.join(project_path, f"sub-{subj_id}", 'nirs', f"sub-{subj_id}_task-gradCPT_run-*_events.tsv"))
@@ -67,7 +71,7 @@ t_conc_ts = run['conc_o'].time
 sfreq_conc = 1/np.diff(t_conc_ts)[0]
 len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
 
-# get epoched EEG
+#%% get epoched EEG
 # load eeg to match the time
 single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(subj_id, preproc_params)
 single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(f"sub-{subj_id}", single_subj_EEG_dict, preproc_params)
@@ -95,7 +99,7 @@ for run_key in mnt_correct_idx_dict.keys():
         }
     }
 
-# Get reduced model DM
+#%% Get reduced model DM
 run_list = []
 pruned_chans_list = []
 stim_list = []
@@ -108,12 +112,60 @@ for run_key in run_dict.keys():
     ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
     stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
 reduced_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+model.vis_dm(reduced_dm)
+
+#%% Get stim DM from Laura's code directly (Do this after sorting runs since this code changes run.stim)
+REC_STR = 'conc_o'
+stims_pruned_list = []
+for stim, run in zip(all_stims, all_runs):
+    mnt_trials = stim[stim['trial_type'] == 'mnt'].copy()
+    mnt_trials.loc[mnt_trials['response_code'] == 0, 'trial_type'] = 'mnt-correct'
+    mnt_trials.loc[mnt_trials['response_code'] == -2, 'trial_type'] = 'mnt-incorrect'
+
+    # city_trials = stim[(stim['trial_type'] == 'city') & (stim['response_code'] == -1)]
+    # city_trials['trial_type'] = 'city-incorrect'
+
+    # Combine the filtered trials
+    # stims_pruned = pd.concat([mnt_trials, city_trials], ignore_index=True)
+    stims_pruned = mnt_trials
+    run.stim = stims_pruned
+    stims_pruned_list.append(stims_pruned)
+
+run_ts_list = [run[REC_STR] for run in all_runs]
+reduced_dm_laura = model.get_GLM_copy_from_pf_DM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
+model.vis_dm(reduced_dm_laura)
+
+#%% Compare Stim-only DM to make sure they are the same
+drift_laura = reduced_dm_laura.common.sel(regressor=reduced_dm_laura.common.regressor.str.startswith(f"Drift")).values
+drift_mine = reduced_dm.common.sel(regressor=reduced_dm_laura.common.regressor.str.startswith(f"Drift")).values
+drift_diff = drift_laura-drift_mine
+short_laura = reduced_dm_laura.common.sel(regressor=reduced_dm_laura.common.regressor.str.startswith(f"short")).values
+short_mine = reduced_dm.common.sel(regressor=reduced_dm_laura.common.regressor.str.startswith(f"short")).values
+short_diff = short_laura-short_mine
+# different from first regressors HbO
+plt.figure()
+plt.plot(drift_diff[:,0,0],linewidth=5,label='Drift Diff')
+plt.plot(short_diff[:,0,0],linewidth=5,label='Short Diff')
+plt.axvline(run_list[0].shape[-1], color='r',linestyle='--', label='Mine Run Boundary')
+plt.axvline(len(drift_diff)-run_list[-1].shape[-1], color='r',linestyle='--')
+plt.axvline(run_ts_list[0].shape[-1], color='g', label='Laura''s Run Boundary',linestyle='--')
+plt.axvline(len(drift_diff)-run_ts_list[-1].shape[-1], color='g',linestyle='--')
+plt.legend()
+
+#%% Train by pf.GLM
+results_laura, hrf_estimate, hrf_mse = pf.GLM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
+
+#%% Get Basis DM, EEG DM, and Full DM
 Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
 eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
 dm_all = model.combine_dm(dm_all, reduced_dm)
 basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 print("Done loading")
+
+#%% start my fitting
+
+
 
 #%% check saved models
 filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
