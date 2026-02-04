@@ -154,6 +154,30 @@ plt.legend()
 
 #%% Train by pf.GLM
 results_laura, hrf_estimate, hrf_mse = pf.GLM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
+result_dict_laura = dict()
+result_dict_laura['resid'] = results_laura.sm.resid
+betas = results_laura.sm.params
+cov_params = results_laura.sm.cov_params()
+result_dict_laura['betas']=betas
+result_dict_laura['cov_params']=cov_params
+
+#%% Use mine run and fit pf.GLM
+results_mine, _, _ = pf.GLM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+#%% start my fitting
+Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
+results_myfit = glm.fit(Y_all, reduced_dm, noise_model=cfg_GLM['noise_model'])
+
+#%% Check residual
+plt.figure()
+# plt.plot(np.squeeze(result_dict_laura['resid'].sel(chromo='HbO',channel='S10D127').values),label='Laura''s')
+# plt.plot(np.squeeze(results_mine.sm.resid.sel(chromo='HbO',channel='S10D127').values),label='My Run')
+plt.plot(np.squeeze(results_myfit.sm.resid.sel(chromo='HbO',channel='S10D127').values),label='My Fit')
+plt.axvline(run_list[0].shape[-1], color='r',linestyle='--', label='My Run Boundary')
+plt.axvline(np.sum([run_list[0].shape[-1],run_list[1].shape[-1]]), color='r',linestyle='--')
+# plt.axvline(run_ts_list[0].shape[-1], color='g', label='Laura''s Run Boundary',linestyle='--')
+# plt.axvline(len(drift_diff)-run_ts_list[-1].shape[-1], color='g',linestyle='--')
+plt.legend()
 
 #%% Get Basis DM, EEG DM, and Full DM
 Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
@@ -163,33 +187,29 @@ dm_all = model.combine_dm(dm_all, reduced_dm)
 basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 print("Done loading")
 
-#%% start my fitting
-
-
-
 #%% check saved models
 filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
 # load full model
 with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
     full_model_result = pickle.load(f)
-resid=full_model_result['resid']
+resid_full=full_model_result['resid']
 betas_full=full_model_result['betas']
 
 # load stim only results
 with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_stim-only_correct_trial_type.pkl"), 'rb') as f:
     reduced_model_result = pickle.load(f)
+resid_reduced=reduced_model_result['resid']
 betas_reduced=reduced_model_result['betas']
 
 # load drift results
 with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_drift_ss.pkl"), 'rb') as f:
     basis_model_result = pickle.load(f)
+resid_basis=basis_model_result['resid']
 betas_basis=basis_model_result['betas']
 
-#%% load laura's model
+# load laura's model
 with open("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-695/sub-695_conc_o_glm_residual_ar_irls.pkl", 'rb') as f:
     resid_laura = pickle.load(f)
-
-        
 
 #%% visualize
 x_full = np.squeeze(dm_all.common.values[:,:,0])
@@ -199,23 +219,30 @@ y = np.squeeze(Y_all.values[0,0,:])
 beta_full=np.squeeze(betas_full.values[0,0,:])
 beta_reduced=np.squeeze(betas_reduced.values[0,0,:])
 beta_basis=np.squeeze(betas_basis.values[0,0,:])
+beta_laura=np.squeeze(results_mine.sm.params.values[0,0,:])
 fit_full = x_full@beta_full
 fit_reduced = x_reduced@beta_reduced
 fit_basis = x_basis@beta_basis
-resid_full = y-fit_full
-resid_reduced = y-fit_reduced
-resid_basis = y-fit_basis
+fit_laura = x_reduced@beta_laura
 
-fig, ax = plt.subplots(2,1)
+fig, ax = plt.subplots(3,1, figsize=(12,8))
 ax[0].plot(fit_full,label='Xorg @ beta (full)')
 ax[0].plot(fit_reduced,label='Xorg @ beta (reduced)')
-ax[0].plot(fit_basis,label='Xorg @ beta (reduced)')
+ax[0].plot(fit_basis,label='Xorg @ beta (basis)')
+ax[0].plot(fit_laura,label='Xorg @ beta (Laura)')
 ax[0].plot(y, label='Y')
 ax[0].legend()
-ax[1].plot(resid_full,label='resid (full)')
-ax[1].plot(resid_reduced,label='resid (reduced)')
-ax[1].plot(resid_basis,label='resid (basis)')
+ax[1].plot(y-fit_full,label='y-Xorg@beta (full)')
+ax[1].plot(y-fit_reduced,label='y-Xorg@beta (reduced)')
+ax[1].plot(y-fit_basis,label='y-Xorg@beta (basis)')
+ax[1].plot(y-fit_laura,label='y-Xorg@beta (Laura)')
 ax[1].plot(np.squeeze(resid_laura.values[0,0,:]),label='resid (laura)')
 ax[1].legend()
+ax[2].plot(np.squeeze(resid_full.values[0,0,:]),label='resid (full)')
+ax[2].plot(np.squeeze(resid_reduced.values[0,0,:]),label='resid (reduced)')
+ax[2].plot(np.squeeze(resid_basis.values[0,0,:]),label='resid (basis)')
+ax[2].plot(np.squeeze(resid_laura.values[0,0,:]),label='resid (laura)')
+ax[2].legend()
+
 
 #%%
