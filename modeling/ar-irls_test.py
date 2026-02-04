@@ -247,7 +247,6 @@ fittedvalues: ndarray
 The linear predicted values. dot(exog, params)
 """
 
-
 #%% get HRF and MSE for each run
 # 4. estimate HRF and MSE
 trial_type_list = ['mnt_correct','mnt_incorrect']

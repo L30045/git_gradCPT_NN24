@@ -16,7 +16,9 @@ import model
 from params_setting import *
 import cedalion.xrutils as xrutils
 import scipy
-
+import cedalion.typing as cdt
+from cedalion.models.glm.design_matrix import DesignMatrix
+from joblib import Parallel, delayed, parallel_config
 
 #%%
 subj_id = 723
@@ -162,10 +164,9 @@ def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
 
     return params, wf
 
-def fit(
+def my_fit(
     ts: cdt.NDTimeSeries,
     design_matrix: DesignMatrix,
-    noise_model: str = "ols",
     ar_order: int = 30,
     max_jobs: int = -1,
     verbose: bool = False,
@@ -182,6 +183,7 @@ def fit(
         dims=("channel", dim3_name),
         coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
     )
+    wf_dict = dict()
 
     for (
         dim3,
@@ -199,12 +201,13 @@ def fit(
 
         if(max_jobs==1):
             for chan in tqdm(group_y.channel.values, disable=not verbose):
-                result = my_ar_irls_GLM(group_y.loc[:, chan], x, noise_model, ar_order)
-                reg_results.loc[chan, dim3] = result
+                result = my_ar_irls_GLM(group_y.loc[:, chan], x, ar_order)
+                reg_results.loc[chan, dim3] = result[0]
+                wf_dict[chan] = result[1]
         else:
             args_list=[]
             for chan in group_y.channel.values:
-                args_list.append([group_y.loc[:, chan], x, noise_model, ar_order])
+                args_list.append([group_y.loc[:, chan], x, ar_order])
 
             with parallel_config(backend='threading', n_jobs=max_jobs):
                 batch_results = tqdm(
@@ -215,112 +218,54 @@ def fit(
                 )
 
             for chan, result in zip(group_y.channel.values, batch_results):
-                reg_results.loc[chan, dim3] = result
+                reg_results.loc[chan, dim3] = result[0]
+                wf_dict[chan] = result[1]
+
 
     description='AR_IRLS' # FIXME
     reg_results.attrs["description"] = description
 
-    return reg_results
+    return reg_results, wf_dict
+
+def whiten_yx(y, x, wf):
+    # Apply the AR filter to the lhs and rhs of the model
+    a = y[0]
+    yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
+    xf = np.zeros(x.shape)
+    for i in range(x.shape[1]):
+        b = x[0, i]
+        xf[:, i] = scipy.signal.lfilter(wf, 1, x[:, i] - b) + b
+
+    return yf, xf
 
 #%% get GLM fitting results for each subject from shank Jun 02 2025
 # 3. get betas and covariance
 result_dict = dict()
 print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
-glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'], max_jobs=1)
+glm_results, wf_dict = my_fit(Y_all, dm_all)
 result_dict['resid'] = glm_results.sm.resid
 betas = glm_results.sm.params
 cov_params = glm_results.sm.cov_params()
 result_dict['betas']=betas
 result_dict['cov_params']=cov_params
 
-#%% from solve.fit
-
-# Timing for rlm.fit() calls
-nb_test = 4 # default 4
-Y_all = Y_all.pint.dequantify()
-
-dim3_name = xrutils.other_dim(dm_all.common, "time", "regressor")
-
-reg_results = xr.DataArray(
-    np.empty((Y_all.sizes["channel"], Y_all.sizes[dim3_name]), dtype=object),
-    dims=("channel", dim3_name),
-    coords=xrutils.coords_from_other(Y_all.isel(time=0), dims=("channel", dim3_name))
-)
-
-for (
-    dim3,
-    group_channels,
-    group_design_matrix,
-) in dm_all.iter_computational_groups(Y_all):
-    group_y = Y_all.sel({"channel": group_channels, dim3_name: dim3}).transpose(
-        "time", "channel"
-    )
-
-    # pass x as a DataFrame to statsmodel to make it aware of regressor names
-    x = pd.DataFrame(
-        group_design_matrix.values, columns=group_design_matrix.regressor.values
-    )
-    y = group_y.loc[:,select_ch]
-    M=sm.robust.norms.HuberT()
-    mask = np.isfinite(y.values)
-
-    yorg : pd.Series = pd.Series(y.values[mask].copy())
-    xorg : pd.DataFrame = x[mask].reset_index(drop=True)
-
-    y = yorg.copy()
-    x = xorg.copy()
-
-    rlm_model = sm.RLM(y, x, M=M)
-    params = rlm_model.fit()
-
-    resid = pd.Series(y - x @ params.params)
-    for iter_i in range(nb_test):  # TODO - check convergence
-        y = yorg.copy()
-        x = xorg.copy()
-
-        # Update the AR whitening filter
-        arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=30)
-        wf = np.hstack([1, -arcoef.params[1:]])
-
-        # Apply the AR filter to the lhs and rhs of the model
-        a = y[0]
-        yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
-        xf = np.zeros(x.shape)
-        xx = x.to_numpy()
-        for i in range(xx.shape[1]):
-            b = xx[0, i]
-            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i] - b) + b
-
-        xf = pd.DataFrame(xf)
-        xf.columns = x.columns
-
-        rlm_model = sm.RLM(yf, xf, M=M)
-        params = rlm_model.fit()
-
-        resid = pd.Series(yorg - xorg @ params.params)
-
 #%% Residuals
 my_x = np.squeeze(dm_all.common.values)
 my_y = np.squeeze(Y_all.values)
-whiten_fit = (xf@params.params.values).values
-whiten_y = yf
-my_fit = my_x@params.params.values
+yf, xf = whiten_yx(my_y, my_x, wf_dict['S10D127'])
+whiten_fit = xf@np.squeeze(betas.values)
+my_fit = my_x@np.squeeze(betas.values)
 my_resid = my_y-my_fit
-my_y_fitted_val = whiten_y-params.fittedvalues
-print(f"Y_Diff={np.sum(my_y-yorg.values)}")
-print(f"X_Diff={np.sum(my_x-xorg.values)}")
-print(f"Betas Diff = {np.sum(betas.values-params.params.values)}")
-print(f"Resid Diff in original space = {np.sum(resid.values-my_resid)}")
-print(f"Resid Diff in whitten space = {np.sum(params.resid-my_y_fitted_val)}")
 
 fig, ax = plt.subplots(3,1)
-ax[0].plot(xorg@params.params,label='Xorg @ beta')
-ax[0].plot(yorg, label='Y')
+ax[0].plot(dm_all.common@betas,label='Xorg @ beta')
+ax[0].plot(my_y, label='Y')
 ax[0].legend()
 ax[1].plot(whiten_fit,label='whitten Fit')
-ax[1].plot(whiten_y, label='whitten y')
-ax[1].plot(params.fittedvalues,label='fittedvalues')
+ax[1].plot(yf, label='whitten y')
 ax[1].legend()
-ax[2].plot(resid,label='resid in original space')
-ax[2].plot(params.resid.values, label='resid in whitten space')
+ax[2].plot(my_y-my_fit,label='resid in original space')
+ax[2].plot(yf-whiten_fit, label='resid in whitten space')
 ax[2].legend()
+
+
