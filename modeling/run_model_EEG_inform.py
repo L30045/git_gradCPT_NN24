@@ -16,7 +16,7 @@ import model
 from params_setting import *
 
 #%%
-subj_id_array = [670,695,721,723]
+subj_id_array = [670,721,723]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -74,7 +74,7 @@ for subj_id in tqdm(subj_id_array):
     single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(f"sub-{subj_id}", single_subj_EEG_dict, preproc_params)
 
     
-    #%% get mnt_correct trials 
+    # get mnt_correct trials 
     mnt_correct_idx_dict = model.get_valid_event_idx('mnt_correct',single_subj_epoch_dict)
     mnt_correct_area_dict = model.get_ERP_area('mnt_correct', single_subj_epoch_dict)
 
@@ -116,7 +116,6 @@ for subj_id in tqdm(subj_id_array):
     # dm_all = basis_dm
 
     #%% Get EEG DM
-    # dm_dict = model.add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'], model_mode='full')
     eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
     # combine EEG DMs from all runs into one big DM
@@ -129,22 +128,32 @@ for subj_id in tqdm(subj_id_array):
     # 3. get betas and covariance
     result_dict = dict()
     print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
-    glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
+    glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
     result_dict['resid'] = glm_results.sm.resid
     betas = glm_results.sm.params
     cov_params = glm_results.sm.cov_params()
     result_dict['betas']=betas
     result_dict['cov_params']=cov_params
+    result_dict['autoReg_dict']=autoReg_dict
+
+    #%% f test
+    param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+    # Create hypothesis strings
+    hypotheses = [f'{name} = 0' for name in param_names]
+
+    # Run F-test
+    f_test_result = glm_results.sm.f_test(hypotheses)
+    result_dict['f_test'] = f_test_result
 
     #%% get HRF and MSE for each run
     # 4. estimate HRF and MSE
-    trial_type_list = ['mnt_correct','mnt_incorrect']
+    trial_type_list = ['mnt-correct','mnt-incorrect']
 
     betas = glm_results.sm.params
     cov_params = glm_results.sm.cov_params()
     run_unit = Y_all.pint.units
     # check if it is a full model
-    if betas.shape[-1]>40:
+    if np.any(betas.regressor.str.find('eeg')>0):
         # TODO: find an elegant way to check if _stim regressor is presented
         """
         NOTE: The number of regressors is fixed.
@@ -202,20 +211,20 @@ for subj_id in tqdm(subj_id_array):
     with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
 
-    #%% get Laura's HRF estimate, MSE, and model residual
-    result_dict_stim = dict()
+    # #%% get Laura's HRF estimate, MSE, and model residual
+    # result_dict_stim = dict()
 
-    print(f"Start Stim-only GLM fitting (sub-{subj_id})")
-    results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    result_dict_stim['resid'] = results.sm.resid
-    result_dict_stim['hrf_estimate'] = hrf_estimate
-    result_dict_stim['hrf_mse'] = hrf_mse
-    betas = results.sm.params
-    cov_params = results.sm.cov_params()
-    result_dict_stim['betas']=betas
-    result_dict_stim['cov_params']=cov_params
+    # print(f"Start Stim-only GLM fitting (sub-{subj_id})")
+    # results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    # result_dict_stim['resid'] = results.sm.resid
+    # result_dict_stim['hrf_estimate'] = hrf_estimate
+    # result_dict_stim['hrf_mse'] = hrf_mse
+    # betas = results.sm.params
+    # cov_params = results.sm.cov_params()
+    # result_dict_stim['betas']=betas
+    # result_dict_stim['cov_params']=cov_params
 
-    # save dict
-    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only_correct_trial_type.pkl'),'wb') as f:
-        pickle.dump(result_dict_stim,f)
+    # # save dict
+    # save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only_correct_trial_type.pkl'),'wb') as f:
+    #     pickle.dump(result_dict_stim,f)

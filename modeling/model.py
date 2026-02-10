@@ -1006,16 +1006,12 @@ def prewhiten_design_matrix_lfilter(X, rho_coefficients):
     
     return X_white
 
-def vis_fit(y, x, params):
-    resid = y-x@params.params
-    arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=30)
-    wf = np.hstack([1, -arcoef.params[1:]])
-    fig, ax = plt.subplots(2,1)
-    ax[0].plot(y,label='y')
-    ax[0].plot(x@params.params,label='x@beta')
-    ax[1].plot(resid,label=f'resid:{wf}')
-    ax[0].legend()
-    ax[1].legend()
+def vis_fit(y, x, beta):
+    resid = y-x@beta
+    fig, ax = plt.subplots(1,1)
+    ax.plot(y,label='y')
+    ax.plot(x@beta,label='x@beta')
+    ax.legend()
     plt.show()
 
 def check_if_whiten(yf):
@@ -1040,4 +1036,12 @@ def check_if_whiten(yf):
     plt.title('Whitened Series')
     plt.tight_layout()
     plt.show()
+
+def extract_val_across_channels(f_test_result, chromo='HbO', stat_val='p'):
+    val = np.zeros(len(f_test_result.sel(chromo=chromo)))
+    for ch_i, ch_result in enumerate(f_test_result.sel(chromo=chromo)):
+        tmp_result = ch_result.values.item().summary()
+        val[ch_i] = float(tmp_result.split(stat_val)[1].split(',')[0][1:])
+    return val
+
 
