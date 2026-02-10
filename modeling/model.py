@@ -15,6 +15,7 @@ import pandas as pd
 from patsy import dmatrices
 import copy
 
+from tqdm import tqdm
 import cedalion
 import cedalion.nirs
 from cedalion import units
@@ -23,10 +24,12 @@ from cedalion.sigproc import quality
 from cedalion import units
 import cedalion.sigproc.motion_correct as motion
 from cedalion.plots import scalp_plot
-from scipy.signal import filtfilt, windows
+from scipy.signal import filtfilt, windows, lfilter
+from statsmodels.tsa.stattools import acf, pacf
 import xarray as xr
 import cedalion.xrutils as xrutils
 import scipy
+from statsmodels.stats.stattools import durbin_watson
 import cedalion.typing as cdt
 from cedalion.models.glm.design_matrix import DesignMatrix
 from joblib import Parallel, delayed, parallel_config
@@ -857,26 +860,17 @@ def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
 
         # Update the AR whitening filter
         arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
-        wf = np.hstack([1, -arcoef.params[1:]])
 
         # Apply the AR filter to the lhs and rhs of the model
-        a = y[0]
-        yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
-        xf = np.zeros(x.shape)
-        xx = x.to_numpy()
-        for i in range(xx.shape[1]):
-            b = xx[0, i]
-            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i] - b) + b
-
-        xf = pd.DataFrame(xf)
-        xf.columns = x.columns
+        yf = prewhiten_arp_lfilter(y, arcoef.params[1:])
+        xf = prewhiten_design_matrix_lfilter(x, arcoef.params[1:])
 
         rlm_model = sm.RLM(yf, xf, M=M)
         params = rlm_model.fit()
 
         resid = pd.Series(yorg - xorg @ params.params)
 
-    return params, wf
+    return params, arcoef.params
 
 def my_fit(
     ts: cdt.NDTimeSeries,
@@ -897,7 +891,7 @@ def my_fit(
         dims=("channel", dim3_name),
         coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
     )
-    wf_dict = dict()
+    autoReg_dict = dict()
 
     for (
         dim3,
@@ -917,7 +911,7 @@ def my_fit(
             for chan in tqdm(group_y.channel.values, disable=not verbose):
                 result = my_ar_irls_GLM(group_y.loc[:, chan], x, ar_order)
                 reg_results.loc[chan, dim3] = result[0]
-                wf_dict[chan] = result[1]
+                autoReg_dict[chan] = result[1]
         else:
             args_list=[]
             for chan in group_y.channel.values:
@@ -933,21 +927,117 @@ def my_fit(
 
             for chan, result in zip(group_y.channel.values, batch_results):
                 reg_results.loc[chan, dim3] = result[0]
-                wf_dict[chan] = result[1]
+                autoReg_dict[chan] = result[1]
 
 
     description='AR_IRLS' # FIXME
     reg_results.attrs["description"] = description
 
-    return reg_results, wf_dict
+    return reg_results, autoReg_dict
 
-def whiten_yx(y, x, wf):
-    # Apply the AR filter to the lhs and rhs of the model
-    a = y[0]
-    yf = pd.Series(scipy.signal.lfilter(wf, 1, y - a)) + a
-    xf = np.zeros(x.shape)
-    for i in range(x.shape[1]):
-        b = x[0, i]
-        xf[:, i] = scipy.signal.lfilter(wf, 1, x[:, i] - b) + b
+def prewhiten_arp_lfilter(data, rho_coefficients):
+    """
+    Pre-whiten AR(p) data using lfilter
+    
+    For AR(p): y(t) = ρ₁×y(t-1) + ρ₂×y(t-2) + ... + ρₚ×y(t-p) + ε(t)
+    
+    To recover ε(t): ε(t) = y(t) - ρ₁×y(t-1) - ρ₂×y(t-2) - ... - ρₚ×y(t-p)
+    
+    Parameters:
+    -----------
+    data : array (n,)
+        Time series data
+    rho_coefficients : array (p,)
+        AR coefficients [ρ₁, ρ₂, ..., ρₚ]
+    
+    Returns:
+    --------
+    data_white : array (n,)
+        Pre-whitened data
 
-    return yf, xf
+    NOTE:
+    -------
+    Mathematically, we should scale the first element to keep the variance
+    structure. However, the importance of scaling is small when there are 
+    more than 500 samples.
+
+    To keep things simple, I ignore the scaling issue here.
+    - Chi 2026-02-10
+    """
+        
+    # Filter coefficients 
+    b = np.array([1.0]) 
+    a = np.concatenate([[1.0], -rho_coefficients])
+    
+    # Apply filter (using IIR as FIR, lfilter(a,b,data) instead of lfilter(b,a,data))
+    data_white = lfilter(a, b, data)
+    
+    return data_white
+
+def prewhiten_design_matrix_lfilter(X, rho_coefficients):
+    """
+    Pre-whiten design matrix using lfilter
+    
+    Parameters:
+    -----------
+    X : dataFrame
+
+    rho_coefficients : array (ar_order,) or float
+        AR coefficients
+    
+    Returns:
+    --------
+    X_white : dataFrame
+    """
+    # Handle scalar rho (AR(1))
+    if np.isscalar(rho_coefficients):
+        rho_coefficients = np.array([rho_coefficients])
+    
+    # Handle 1D array
+    if X.ndim == 1:
+        return prewhiten_arp_lfilter(X, rho_coefficients)
+    
+    # Handle 2D array (multiple regressors)
+    X_white = pd.DataFrame(np.zeros_like(X),
+                            columns=X.columns)
+    
+    for col in X.columns:
+        X_white[col] = prewhiten_arp_lfilter(X[col], rho_coefficients)
+    
+    return X_white
+
+def vis_fit(y, x, params):
+    resid = y-x@params.params
+    arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=30)
+    wf = np.hstack([1, -arcoef.params[1:]])
+    fig, ax = plt.subplots(2,1)
+    ax[0].plot(y,label='y')
+    ax[0].plot(x@params.params,label='x@beta')
+    ax[1].plot(resid,label=f'resid:{wf}')
+    ax[0].legend()
+    ax[1].legend()
+    plt.show()
+
+def check_if_whiten(yf):
+    # Quick Check 1: ACF at lag 1
+    print(f"ACF[1] of yf: {acf(yf, nlags=1, fft=False)[1]:.6f}")
+    print(f"Should be < {1.96/np.sqrt(len(yf)):.6f}")
+
+    # Quick Check 2: Durbin-Watson
+    print(f"DW statistic: {durbin_watson(yf):.4f} (should be between 1.5 and 2.5)")
+
+    # Quick Check 3: Visual
+    plt.figure(figsize=(12, 4))
+    plt.subplot(121)
+    plt.plot(acf(y, nlags=20, fft=False), 'o-', label='y')
+    plt.plot(acf(yf, nlags=20, fft=False), 'o-', label='yf')
+    plt.axhline(1.96/np.sqrt(len(y)), color='r', linestyle='--')
+    plt.axhline(-1.96/np.sqrt(len(y)), color='r', linestyle='--')
+    plt.legend()
+    plt.title('ACF Comparison')
+    plt.subplot(122)
+    plt.plot(yf[:200])
+    plt.title('Whitened Series')
+    plt.tight_layout()
+    plt.show()
+
