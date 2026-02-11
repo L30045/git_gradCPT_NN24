@@ -841,7 +841,7 @@ def calculate_ar_loglikelihood(y, X, beta, ar_coefs, sigma2):
 
 
 #%% Define my AR-IRLS
-def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
+def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.HuberT()):
     mask = np.isfinite(y.values)
 
     yorg : pd.Series = pd.Series(y.values[mask].copy())
@@ -849,6 +849,18 @@ def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
 
     y = yorg.copy()
     x = xorg.copy()
+
+    # check if autocorrelation sturcture exist
+    if autoReg:
+        # use autoReg to prewhiten data and fit reduced model
+        # Apply the AR filter to the lhs and rhs of the model
+        yf = prewhiten_arp_lfilter(y, autoReg[1:])
+        xf = prewhiten_design_matrix_lfilter(x, autoReg[1:])
+
+        rlm_model = sm.RLM(yf, xf, M=M)
+        params = rlm_model.fit()
+
+        return params, autoReg
 
     rlm_model = sm.RLM(y, x, M=M)
     params = rlm_model.fit()
@@ -875,6 +887,7 @@ def my_ar_irls_GLM(y, x, pmax=30, M=sm.robust.norms.HuberT()):
 def my_fit(
     ts: cdt.NDTimeSeries,
     design_matrix: DesignMatrix,
+    autoReg: None,
     ar_order: int = 30,
     max_jobs: int = -1,
     verbose: bool = False,
@@ -909,13 +922,19 @@ def my_fit(
 
         if(max_jobs==1):
             for chan in tqdm(group_y.channel.values, disable=not verbose):
-                result = my_ar_irls_GLM(group_y.loc[:, chan], x, ar_order)
+                if autoReg:
+                    result = my_ar_irls_GLM(group_y.loc[:, chan], x, autoReg=autoReg[chan])
+                else:    
+                    result = my_ar_irls_GLM(group_y.loc[:, chan], x, pmax=ar_order)
                 reg_results.loc[chan, dim3] = result[0]
                 autoReg_dict[chan] = result[1]
         else:
             args_list=[]
             for chan in group_y.channel.values:
-                args_list.append([group_y.loc[:, chan], x, ar_order])
+                if autoReg:
+                    args_list.append([group_y.loc[:, chan], x, ar_order, autoReg[chan]])
+                else:
+                    args_list.append([group_y.loc[:, chan], x, ar_order])
 
             with parallel_config(backend='threading', n_jobs=max_jobs):
                 batch_results = tqdm(

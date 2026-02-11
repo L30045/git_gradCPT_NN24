@@ -17,6 +17,7 @@ from params_setting import *
 
 #%%
 subj_id_array = [670,721,723]
+model_type='reduced'
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -111,24 +112,37 @@ for subj_id in tqdm(subj_id_array):
     reduced_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
     Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
 
-    #%% get drift and ss
-    # basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    # dm_all = basis_dm
+    # get drift and ss
+    basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 
-    #%% Get EEG DM
+    # Get EEG DM
     eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
     # combine EEG DMs from all runs into one big DM
-    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
+    Y_all, eeg_dm, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
 
-    # Combine EEG DM with Reduced DM to get full model
-    dm_all = model.combine_dm(dm_all, reduced_dm)
+    #%% assign DM
+    if model_type=='full':
+        # Combine EEG DM with Reduced DM to get full model
+        dm_all = model.combine_dm(eeg_dm, reduced_dm)
+    elif model_type=='reduced':
+        dm_all = reduced_dm
+    else:
+        dm_all = basis_dm
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
+    print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
+    if model_type=='full':
+        glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
+    else:
+        file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'rb') as f:
+            full_result = pickle.load(f)
+            autoReg_dict = full_result['autoReg']
+        glm_results = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
+
     # 3. get betas and covariance
     result_dict = dict()
-    print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
-    glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
     result_dict['resid'] = glm_results.sm.resid
     betas = glm_results.sm.params
     cov_params = glm_results.sm.cov_params()
@@ -208,23 +222,5 @@ for subj_id in tqdm(subj_id_array):
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
-
-    # #%% get Laura's HRF estimate, MSE, and model residual
-    # result_dict_stim = dict()
-
-    # print(f"Start Stim-only GLM fitting (sub-{subj_id})")
-    # results, hrf_estimate, hrf_mse = model.GLM_copy_from_pf(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    # result_dict_stim['resid'] = results.sm.resid
-    # result_dict_stim['hrf_estimate'] = hrf_estimate
-    # result_dict_stim['hrf_mse'] = hrf_mse
-    # betas = results.sm.params
-    # cov_params = results.sm.cov_params()
-    # result_dict_stim['betas']=betas
-    # result_dict_stim['cov_params']=cov_params
-
-    # # save dict
-    # save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_stim-only_correct_trial_type.pkl'),'wb') as f:
-    #     pickle.dump(result_dict_stim,f)
