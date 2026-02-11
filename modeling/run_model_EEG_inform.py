@@ -16,7 +16,7 @@ import model
 from params_setting import *
 
 #%%
-subj_id_array = [670,721,723]
+subj_id_array = [670,695,721,723]
 model_type='reduced'
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
@@ -138,7 +138,7 @@ for subj_id in tqdm(subj_id_array):
         file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
         with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'rb') as f:
             full_result = pickle.load(f)
-            autoReg_dict = full_result['autoReg']
+            autoReg_dict = full_result['autoReg_dict']
         glm_results = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
 
     # 3. get betas and covariance

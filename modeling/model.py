@@ -851,7 +851,7 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.HuberT()):
     x = xorg.copy()
 
     # check if autocorrelation sturcture exist
-    if autoReg:
+    if autoReg is not None:
         # use autoReg to prewhiten data and fit reduced model
         # Apply the AR filter to the lhs and rhs of the model
         yf = prewhiten_arp_lfilter(y, autoReg[1:])
@@ -922,7 +922,7 @@ def my_fit(
 
         if(max_jobs==1):
             for chan in tqdm(group_y.channel.values, disable=not verbose):
-                if autoReg:
+                if autoReg is not None:
                     result = my_ar_irls_GLM(group_y.loc[:, chan], x, autoReg=autoReg[chan])
                 else:    
                     result = my_ar_irls_GLM(group_y.loc[:, chan], x, pmax=ar_order)
@@ -931,7 +931,7 @@ def my_fit(
         else:
             args_list=[]
             for chan in group_y.channel.values:
-                if autoReg:
+                if autoReg is not None:
                     args_list.append([group_y.loc[:, chan], x, ar_order, autoReg[chan]])
                 else:
                     args_list.append([group_y.loc[:, chan], x, ar_order])
