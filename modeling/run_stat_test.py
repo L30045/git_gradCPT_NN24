@@ -39,7 +39,7 @@ for subj_id in subj_id_array:
     with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
     # load stim only results
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_drift_ss.pkl"), 'rb') as f:
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
         reduced_model_result = pickle.load(f)
 
     # For each channel, run a F-test
@@ -99,16 +99,16 @@ for subj_id in subj_id_array:
 # else:
 #     print("✗ Additional regressors do NOT significantly improve the model")
 
-#%% Calculate Log-likelihood
-# Use this if your AR-IRLS provides beta, ar_coefs, and sigma2
-ll_reduced = model.calculate_ar_loglikelihood(
-    y, X_reduced, 
-    beta_reduced, ar_coefs_reduced, sigma2_reduced
-)
-ll_full = model.calculate_ar_loglikelihood(
-    y, X_full,
-    beta_full, ar_coefs_full, sigma2_full
-)
+# #%% Calculate Log-likelihood
+# # Use this if your AR-IRLS provides beta, ar_coefs, and sigma2
+# ll_reduced = model.calculate_ar_loglikelihood(
+#     y, X_reduced, 
+#     beta_reduced, ar_coefs_reduced, sigma2_reduced
+# )
+# ll_full = model.calculate_ar_loglikelihood(
+#     y, X_full,
+#     beta_full, ar_coefs_full, sigma2_full
+# )
 
 #%% visualize channel significance ratio for each subject
 plt.figure()
@@ -186,3 +186,36 @@ for ch in check_chs:
         print(f"  → Possibly numerical precision error (< 1e-8 relative)")
     else:
         print(f"  → Real problem (not just precision error)")
+
+
+#%% f test from model results
+subj_id_array = [670, 695, 721, 723]
+sig_list = []
+
+for subj_id in subj_id_array:
+    filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
+    # load full model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
+        full_model_result = pickle.load(f)
+    # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
+    p_val_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='p')
+    sig_list.append(np.sum(p_val_full_reduced<=0.05)/len(p_val_full_reduced))
+
+#%%
+plt.figure()
+ratios = np.array(sig_list)*100
+bars = plt.bar(np.arange(len(subj_id_array)), ratios)
+
+# Add text labels on top of bars
+for i, (bar, ratio) in enumerate(zip(bars, ratios)):
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+             f'{ratio:.2f}%',  # Format to 3 decimal places
+             ha='center', va='bottom', fontsize=14)
+
+plt.xlabel("Subject ID", fontsize=14)
+plt.ylabel("Proportion of significant channels (FDR p ≤ 0.05)", fontsize=12)
+plt.xticks(np.arange(len(subj_id_array)), subj_id_array, ha='center')
+plt.ylim([0,100])
+plt.grid()
+plt.tight_layout()
+

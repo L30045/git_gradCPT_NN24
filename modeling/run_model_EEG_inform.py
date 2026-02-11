@@ -17,7 +17,7 @@ from params_setting import *
 
 #%%
 subj_id_array = [670,695,721,723]
-model_type='reduced'
+model_type='full'
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -139,7 +139,7 @@ for subj_id in tqdm(subj_id_array):
         with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'rb') as f:
             full_result = pickle.load(f)
             autoReg_dict = full_result['autoReg_dict']
-        glm_results = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
+        glm_results, autoReg_dict = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
 
     # 3. get betas and covariance
     result_dict = dict()
@@ -151,74 +151,97 @@ for subj_id in tqdm(subj_id_array):
     result_dict['autoReg_dict']=autoReg_dict
 
     #%% f test
-    param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
-    # Create hypothesis strings
-    hypotheses = [f'{name} = 0' for name in param_names]
-
-    # Run F-test
-    f_test_result = glm_results.sm.f_test(hypotheses)
-    result_dict['f_test'] = f_test_result
+    if model_type=='full':
+        # full vs stim
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = glm_results.sm.f_test(hypotheses)
+        result_dict['f_test_full_stim'] = f_test_result
+        # full vs basis
+        param_names = [name for name in glm_results.sm.params.regressor.values if ('eeg' in name) or ('stim' in name)]
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = glm_results.sm.f_test(hypotheses)
+        result_dict['f_test_full_basis'] = f_test_result
+        # full vs eeg
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = glm_results.sm.f_test(hypotheses)
+        result_dict['f_test_full_eeg'] = f_test_result
+    elif model_type=='reduced':
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = glm_results.sm.f_test(hypotheses)
+        result_dict['f_test_stim_basis'] = f_test_result
 
     #%% get HRF and MSE for each run
-    # 4. estimate HRF and MSE
-    trial_type_list = ['mnt-correct','mnt-incorrect']
+    if model_type!='basis':
+        # 4. estimate HRF and MSE
+        trial_type_list = ['mnt-correct','mnt-incorrect']
 
-    betas = glm_results.sm.params
-    cov_params = glm_results.sm.cov_params()
-    run_unit = Y_all.pint.units
-    # check if it is a full model
-    if np.any(betas.regressor.str.find('eeg')>0):
-        # TODO: find an elegant way to check if _stim regressor is presented
-        """
-        NOTE: The number of regressors is fixed.
-        """
-        basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-        basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
-    else:
-        basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+        betas = glm_results.sm.params
+        cov_params = glm_results.sm.cov_params()
+        run_unit = Y_all.pint.units
+        # check if it is a full model
+        if np.any(betas.regressor.str.find('eeg')>0):
+            # TODO: find an elegant way to check if _stim regressor is presented
+            """
+            NOTE: The number of regressors is fixed.
+            """
+            basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+            basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
+        else:
+            basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
 
-    hrf_mse_list = []
-    hrf_estimate_list = []
+        hrf_mse_list = []
+        hrf_estimate_list = []
 
-    for trial_type in trial_type_list:
-        betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
-        hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
-        
-        cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                            regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
-                                    )
-        hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
+        for trial_type in trial_type_list:
+            betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+            hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
+            
+            cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
+                                regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
+                                        )
+            hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-        hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-        hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+            hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
+            hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
 
-        hrf_estimate_list.append(hrf_estimate)
-        hrf_mse_list.append(hrf_mse)
+            hrf_estimate_list.append(hrf_estimate)
+            hrf_mse_list.append(hrf_mse)
 
-    hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
-    hrf_estimate = hrf_estimate.pint.quantify(run_unit)
+        hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+        hrf_estimate = hrf_estimate.pint.quantify(run_unit)
 
-    hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
-    hrf_mse = hrf_mse.pint.quantify(run_unit**2)
+        hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+        hrf_mse = hrf_mse.pint.quantify(run_unit**2)
 
-    # set universal time so that all hrfs have the same time base 
-    fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
-    before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-    after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
+        # set universal time so that all hrfs have the same time base 
+        fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+        before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
+        after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
 
-    dT = np.round(1 / fs, 3)  # millisecond precision
-    n_timepoints = len(hrf_estimate.time)
-    reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
+        dT = np.round(1 / fs, 3)  # millisecond precision
+        n_timepoints = len(hrf_estimate.time)
+        reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
 
-    hrf_mse = hrf_mse.assign_coords({'time': reltime})
-    hrf_mse.time.attrs['units'] = 'second'
+        hrf_mse = hrf_mse.assign_coords({'time': reltime})
+        hrf_mse.time.attrs['units'] = 'second'
 
-    hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
-    hrf_estimate.time.attrs['units'] = 'second'
+        hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
+        hrf_estimate.time.attrs['units'] = 'second'
 
-    result_dict['hrf_estimate'] = hrf_estimate
-    result_dict['hrf_mse'] = hrf_mse
+        result_dict['hrf_estimate'] = hrf_estimate
+        result_dict['hrf_mse'] = hrf_mse
 
     
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")

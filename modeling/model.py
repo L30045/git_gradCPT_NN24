@@ -33,6 +33,7 @@ from statsmodels.stats.stattools import durbin_watson
 import cedalion.typing as cdt
 from cedalion.models.glm.design_matrix import DesignMatrix
 from joblib import Parallel, delayed, parallel_config
+import typing
 
 from functools import reduce
 import operator
@@ -887,7 +888,7 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.HuberT()):
 def my_fit(
     ts: cdt.NDTimeSeries,
     design_matrix: DesignMatrix,
-    autoReg: None,
+    autoReg: typing.Any = None,
     ar_order: int = 30,
     max_jobs: int = -1,
     verbose: bool = False,
@@ -1060,7 +1061,7 @@ def extract_val_across_channels(f_test_result, chromo='HbO', stat_val='p'):
     val = np.zeros(len(f_test_result.sel(chromo=chromo)))
     for ch_i, ch_result in enumerate(f_test_result.sel(chromo=chromo)):
         tmp_result = ch_result.values.item().summary()
-        val[ch_i] = float(tmp_result.split(stat_val)[1].split(',')[0][1:])
+        val[ch_i] = float(tmp_result.split(stat_val+'=')[1].split(',')[0])
     return val
 
 
