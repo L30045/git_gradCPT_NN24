@@ -17,7 +17,7 @@ from params_setting import *
 
 #%%
 subj_id_array = [670,695,721,723]
-model_type='reduced'
+model_type='basis'
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
