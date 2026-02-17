@@ -17,7 +17,7 @@ from params_setting import *
 
 #%%
 subj_id_array = [670,695,721,723]
-model_type='full'
+model_type='reduced'
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -243,7 +243,7 @@ for subj_id in tqdm(subj_id_array):
         result_dict['hrf_estimate'] = hrf_estimate
         result_dict['hrf_mse'] = hrf_mse
 
-    
+    #%%
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
     with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
         pickle.dump(result_dict,f)

@@ -162,7 +162,7 @@ for ch_i in range(full_model_result['resid'].shape[0]):
         check_chs.append(ch_i)
 
 # For each channel showing the problem
-for ch in check_chs:
+for ch_i in check_chs:
     # Get residual (compare HbO only)
     resid_full = full_model_result['resid'][ch_i,0,:].values
     resid_reduced = reduced_model_result['resid'][ch_i,0,:].values
@@ -173,7 +173,7 @@ for ch in check_chs:
     difference = rss_reduced - rss_full
     relative_diff = difference / rss_reduced
     
-    print(f"\nChannel {ch}:")
+    print(f"\nChannel {ch_i}:")
     print(f"  RSS reduced: {rss_reduced:.15e}")
     print(f"  RSS full:    {rss_full:.15e}")
     print(f"  Difference:  {difference:.15e}")
