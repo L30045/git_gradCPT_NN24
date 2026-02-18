@@ -11,7 +11,7 @@ import mne
 import os
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
-from utils import *
+import utils
 import model
 from params_setting import *
 
@@ -72,8 +72,8 @@ for subj_id in tqdm(subj_id_array):
 
     #%% get epoched EEG
     # load eeg to match the time
-    single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(subj_id, preproc_params)
-    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(f"sub-{subj_id}", single_subj_EEG_dict, preproc_params)
+    single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
+    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = utils.eeg_epoch_subj_level(f"sub-{subj_id}", single_subj_EEG_dict, preproc_params)
 
     
     # get mnt_correct trials 

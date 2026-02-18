@@ -504,8 +504,8 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
                 target_ev_df = ev_df[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0)]
                 # rename trial_type
                 target_ev_df.loc[:,'trial_type'] = 'mnt-incorrect-eeg'
-            # check if event exist
-            if len(target_ev_df)==0:
+            # check if event exist or if any event preserved
+            if len(target_ev_df)==0 or len(ev_dict[run_key][ev_name]['idx']['preserved'])==0:
                 # store in dm_dict
                 dm_dict[run_key][ev_name] = []
                 continue

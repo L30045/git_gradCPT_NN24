@@ -274,10 +274,10 @@ def tsv_to_events(event_file, sfreq):
     # create events array (onset, stim_channel_voltage, event_id)
     events_stim_onset = np.column_stack(((events_df["onset"]*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
-                        event_ids))
+                        event_ids.astype(int)))
     events_response = np.column_stack((((events_df["onset"]+events_df["reaction_time"])*sfreq).astype(int),
                         np.zeros(len(events_df), dtype=int),
-                        event_ids+10*((event_ids>=0).astype(int)*2-1)))
+                        (event_ids+10*((event_ids>=0).astype(int)*2-1)).astype(int)))
     # stack together
     events = np.vstack([events_stim_onset,events_response])
     # extract VTC
