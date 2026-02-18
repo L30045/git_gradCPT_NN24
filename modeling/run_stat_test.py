@@ -187,18 +187,23 @@ geo3d_695 = results['geo3d']
 #     else:
 #         print(f"  → Real problem (not just precision error)")
 
-
 #%% f test from model results
 subj_id_array = [670, 695, 721, 723]
 sig_list = []
 model_type = 'full'
-model_cmp = 'f_test_full_eeg'
+model_cmp = 'f_test_full_stim'
 
-for subj_id in subj_id_array:
+fig, axs = plt.subplots(2,2,figsize=(10,8))
+axs = axs.flatten()
+
+for s_i, subj_id in enumerate(subj_id_array):
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
     # load full model
     with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
+    # load reduced model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
+        reduced_model_result = pickle.load(f)
     # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
     p_val_full_reduced = model.extract_val_across_channels(full_model_result[model_cmp],
                                                            chromo='HbO', stat_val='p')
@@ -206,6 +211,25 @@ for subj_id in subj_id_array:
     rejected, p_values_fdr = fdrcorrection(p_val_full_reduced, alpha=0.05)
     sig_list.append(np.sum(rejected)/len(rejected))
 
+    # RSS
+    rss_all = np.sum(full_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
+    rss_reduced = np.sum(reduced_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
+    rss_ratio = np.log(rss_reduced)- np.log(rss_all)
+
+    # visualize RSS scalp plot (log scale)
+    scalp_plot(
+        all_runs[0]['conc_o'],
+        geo3d_695,
+        rss_ratio,
+        ax = axs[s_i],
+        cmap='RdBu_r',
+        vmin=-1.5,        
+        vmax=1.5,
+        optode_labels=False,
+        optode_size=6,
+    )
+
+#%%
 plt.figure()
 ratios = np.array(sig_list)*100
 bars = plt.bar(np.arange(len(subj_id_array)), ratios)

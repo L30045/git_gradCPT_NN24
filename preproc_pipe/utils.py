@@ -252,6 +252,15 @@ def tsv_to_events(event_file, sfreq):
         if not os.path.exists(event_file):
             raise FileNotFoundError("Event.tsv not found.")
     events_df = pd.read_csv(event_file,sep='\t')
+    event_ids = np.ones(len(events_df))*np.nan
+    # mnt-correct
+    event_ids[(events_df['trial_type']=='mnt')&(events_df['response_code']==0)] = 0
+    # mnt-incorrect
+    event_ids[(events_df['trial_type']=='mnt')&(events_df['response_code']!=0)] = -2
+    # city-correct
+    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']!=0)] = 1
+    # city-incorrect
+    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']==0)] = -1
     event_ids = events_df["response_code"].astype(int)
     event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
                             mnt_incorrect=-2, mnt_correct=0,
