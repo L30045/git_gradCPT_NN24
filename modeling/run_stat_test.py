@@ -191,14 +191,16 @@ geo3d_695 = results['geo3d']
 #%% f test from model results
 subj_id_array = [670, 695, 721, 723]
 sig_list = []
+model_type = 'full'
+model_cmp = 'f_test_full_eeg'
 
 for subj_id in subj_id_array:
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
     # load full model
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
     # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
-    p_val_full_reduced = model.extract_val_across_channels(full_model_result['f_test_full_eeg'],
+    p_val_full_reduced = model.extract_val_across_channels(full_model_result[model_cmp],
                                                            chromo='HbO', stat_val='p')
     # correct p-values using FDR
     rejected, p_values_fdr = fdrcorrection(p_val_full_reduced, alpha=0.05)
@@ -220,4 +222,3 @@ plt.xticks(np.arange(len(subj_id_array)), subj_id_array, ha='center')
 plt.ylim([0,100])
 plt.grid()
 plt.tight_layout()
-
