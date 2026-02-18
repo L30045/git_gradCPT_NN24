@@ -261,7 +261,7 @@ def tsv_to_events(event_file, sfreq):
     event_ids[(events_df['trial_type']=='city')&(events_df['response_code']!=0)] = 1
     # city-incorrect
     event_ids[(events_df['trial_type']=='city')&(events_df['response_code']==0)] = -1
-    event_ids = events_df["response_code"].astype(int)
+    
     event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
                             mnt_incorrect=-2, mnt_correct=0,
                             city_incorrect_response=-11, city_correct_response=11,
