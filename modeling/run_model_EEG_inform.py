@@ -15,11 +15,12 @@ sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 import utils
 import model
 from params_setting import *
+from tqdm import tqdm
 
 #%%
-# subj_id_array = [670,695,721,723]
-model_type='basis'
-subj_id_array =[726, 730]
+# subj_id_array = [670,695,721,723,726, 730]
+model_type='reduced'
+subj_id_array =[695]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -197,10 +198,10 @@ for subj_id in tqdm(subj_id_array):
             """
             NOTE: The number of regressors is fixed.
             """
-            basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-            basis_hrf = xr.concat([basis_hrf,basis_hrf],dim='component')
+            basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+            basis_hrf = model.xr.concat([basis_hrf,basis_hrf],dim='component')
         else:
-            basis_hrf = glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+            basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
 
 
         hrf_mse_list = []
@@ -221,10 +222,10 @@ for subj_id in tqdm(subj_id_array):
             hrf_estimate_list.append(hrf_estimate)
             hrf_mse_list.append(hrf_mse)
 
-        hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type')
+        hrf_estimate = model.xr.concat(hrf_estimate_list, dim='trial_type')
         hrf_estimate = hrf_estimate.pint.quantify(run_unit)
 
-        hrf_mse = xr.concat(hrf_mse_list, dim='trial_type')
+        hrf_mse = model.xr.concat(hrf_mse_list, dim='trial_type')
         hrf_mse = hrf_mse.pint.quantify(run_unit**2)
 
         # set universal time so that all hrfs have the same time base 
@@ -247,31 +248,35 @@ for subj_id in tqdm(subj_id_array):
 
     #%%
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
+    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
+    #     pickle.dump(result_dict,f)
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
-
 
 #%% Sanity check
 subj_id = 695
+subject = 'sub-695'
+root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
+import re
 DO_TDDR = False
 DO_DRIFT = False
 DO_DRIFT_LEGENDRE = True
 DRIFT_ORDER = 3
 F_MAX = 0
 F_MIN = 0
-cfg_GLM = {
-    'do_drift': DO_DRIFT,
-    'do_drift_legendre': DO_DRIFT_LEGENDRE,
-    'do_short_sep': True,
-    'drift_order' : DRIFT_ORDER,
-    'distance_threshold' : 20*units.mm, # for ssr
-    'short_channel_method' : 'mean',
-    'noise_model' : NOISE_MODEL,
-    't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
-    't_std' : 1*units.s ,  
-    't_pre' : 2*units.s,
-    't_post' : 18*units.s
-    }
+# cfg_GLM = {
+#     'do_drift': DO_DRIFT,
+#     'do_drift_legendre': DO_DRIFT_LEGENDRE,
+#     'do_short_sep': True,
+#     'drift_order' : DRIFT_ORDER,
+#     'distance_threshold' : 20*units.mm, # for ssr
+#     'short_channel_method' : 'mean',
+#     'noise_model' : NOISE_MODEL,
+#     't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
+#     't_std' : 1*units.s ,  
+#     't_pre' : 2*units.s,
+#     't_post' : 18*units.s
+#     }
 
 run_files = glob.glob(os.path.join(root_dir,  subject, 'nirs',  f"{subject}_task-gradCPT_run-*_nirs.snirf"))
 runs_with_events = []
@@ -376,7 +381,7 @@ for stim, run in zip(all_stims, all_runs):
 
 run_ts_list = [run[REC_STR] for run in all_runs]
 results, hrf_estimate, hrf_mse = pf.GLM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
-residual = results.sm.resid
+# residual = results.sm.resid
 
 # reset the values for bad channels 
 amp = all_runs[0]['amp'].mean('time').min('wavelength') # take the minimum across wavelengths
@@ -403,10 +408,20 @@ hrf_per_subj = hrf_per_subj.assign_coords(subj=subject)
 hrf_mse_per_subj = hrf_mse.expand_dims('subj')
 hrf_mse_per_subj = hrf_mse_per_subj.assign_coords(subj=subject)
 
-trial_presence_mask = xr.DataArray(trial_presence_list, 
+trial_presence_mask = model.xr.DataArray(trial_presence_list, 
                                 dims = ['subj', 'trial_type'],
                                 coords = {'subj': subject,
                                         'trial_type': possible_trial_types}
                                         )
 
 print('HRF estimation complete')
+
+result_dict = dict()
+result_dict['hrf_per_subj'] = hrf_per_subj
+result_dict['hrf_mse_per_subj'] = hrf_mse_per_subj
+result_dict['bad_indices'] = bad_indices
+save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+with open(os.path.join(save_file_path,f'sub-{subj_id}_hrf_dev_Laura_code.pkl'),'wb') as f:
+    pickle.dump(result_dict,f)
+
+#%%

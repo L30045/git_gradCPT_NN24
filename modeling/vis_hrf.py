@@ -305,21 +305,35 @@ with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
 # load reduced model
 with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
     reduced_model_result = pickle.load(f)
+# load dev branch laura code
+with open(os.path.join(filepath,f'sub-{subj_id}_hrf_dev_Laura_code.pkl'),'rb') as f:
+    result_dict = pickle.load(f)
+    hrf_dev_Laura_code = result_dict['hrf_per_subj']
+    coords_fixed = {k: v for k, v in hrf_dev_Laura_code._coords.items() if k != 'subj'}
+    hrf_per_subj_fixed_dev = model.xr.DataArray(hrf_dev_Laura_code.variable, coords=coords_fixed)
 
+with open(os.path.join(filepath,f'sub-{subj_id}_dev_reduced.pkl'),'rb') as f:
+    reduced_model_result_dev = pickle.load(f)
+    
 #%% compare at 10 random channels
 clean_chs = hrf_per_subj.channel.values.copy()
 clean_chs = np.delete(clean_chs,bad_indices)
 pick_chs = np.random.choice(clean_chs,size=10)
 coords_fixed = {k: v for k, v in hrf_per_subj._coords.items() if k != 'subj'}
-hrf_per_subj_fixed = xr.DataArray(hrf_per_subj.variable, coords=coords_fixed)
+hrf_per_subj_fixed = model.xr.DataArray(hrf_per_subj.variable, coords=coords_fixed)
+
 
 fig, axes = plt.subplots(2, 5, figsize=(20, 8))
 axes = axes.flatten()
 for i, pick_ch in enumerate(pick_chs):
     hrf_laura = hrf_per_subj_fixed.sel(chromo='HbO',trial_type='mnt-correct',channel=pick_ch).values.reshape(-1)
+    hrf_dev_laura = hrf_per_subj_fixed_dev.sel(chromo='HbO',trial_type='mnt-correct',channel=pick_ch).values.reshape(-1)
     hrf_estimate_full = full_model_result['hrf_estimate'].sel(chromo='HbO',trial_type='mnt-correct',channel=pick_ch).values
     hrf_estimate_reduced = reduced_model_result['hrf_estimate'].sel(chromo='HbO',trial_type='mnt-correct',channel=pick_ch).values
-    axes[i].plot(hrf_laura,'b',label='Laura')
+    hrf_estimate_reduced_dev = reduced_model_result_dev['hrf_estimate'].sel(chromo='HbO',trial_type='mnt-correct',channel=pick_ch).values
+    axes[i].plot(hrf_laura,'k',label='Laura')
+    axes[i].plot(hrf_dev_laura,'b',label='Dev (Laura)')
+    # axes[i].plot(hrf_estimate_reduced_dev,'m-o',label='Dev (Mine)')
     axes[i].plot(hrf_estimate_full,'g',label='Full')
     axes[i].plot(hrf_estimate_reduced,'r',label='Reduced')
     axes[i].legend()

@@ -6,9 +6,9 @@ from cedalion import units
 project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/'
 sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
 import processing_func as pf
-import image_recon_func as irf
-sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion-pipeline/workflow/scripts/modules')
-import module_preprocess as mpf
+# import image_recon_func as irf
+# sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion-pipeline/workflow/scripts/modules')
+# import module_preprocess as mpf
 
 #%%
 ch_names = ['fz','cz','pz','oz']
