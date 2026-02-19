@@ -15,6 +15,7 @@ import copy
 from spectral_connectivity import Multitaper, Connectivity
 from tqdm import tqdm
 import pickle
+import gzip
 
 #%% path setting
 # Add the parent directory and src directory to sys.path

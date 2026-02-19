@@ -22,8 +22,7 @@ from cedalion import units
 import cedalion.models.glm as glm
 from cedalion.sigproc import quality
 from cedalion import units
-import cedalion.sigproc.motion_correct as motion
-from cedalion.plots import scalp_plot
+from cedalion.vis.anatomy import scalp_plot
 from scipy.signal import filtfilt, windows, lfilter
 from statsmodels.tsa.stattools import acf, pacf
 import xarray as xr

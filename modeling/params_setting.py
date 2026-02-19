@@ -1,39 +1,14 @@
 #%% libraries
 import sys
-from tqdm import tqdm
-import statsmodels.api as sm
-from patsy import dmatrices
-from scipy.optimize import fmin
-from sklearn.decomposition import PCA
-
-##############################################################################
-import gzip
-import re 
-import xarray as xr
-
-import cedalion
-import cedalion.nirs
 from cedalion import units
-import cedalion.models.glm as glm
-from cedalion.sigproc import quality
-from cedalion import units
-import cedalion.sigproc.motion_correct as motion
-from cedalion.plots import scalp_plot
-from scipy.signal import filtfilt, windows
-
-# import my own functions from a different directory
-# sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion_help_funcs/')
-sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
-import processing_func as pf
-import image_recon_func as irf
-
-sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion-pipeline/workflow/scripts/modules')
-import module_preprocess as mpf
 
 #%% path setting
 project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/'
-
-
+sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
+import processing_func as pf
+import image_recon_func as irf
+sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion-pipeline/workflow/scripts/modules')
+import module_preprocess as mpf
 
 #%%
 ch_names = ['fz','cz','pz','oz']
