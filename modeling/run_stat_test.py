@@ -191,13 +191,22 @@ geo3d_695 = results['geo3d']
 subj_id_array = [670, 695, 721, 723]
 sig_list = []
 model_type = 'full'
-model_cmp = 'f_test_full_stim'
+model_cmp = 'f_test_full_eeg'
 
 fig, axs = plt.subplots(2,2,figsize=(10,8))
 axs = axs.flatten()
 
 for s_i, subj_id in enumerate(subj_id_array):
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
+    fnirs_result_path = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-{subj_id}"
+    with gzip.open(os.path.join(fnirs_result_path, f"sub-{subj_id}_conc_o_hrf_estimates_ar_irls.pkl.gz"), 'rb') as f:
+        results = pickle.load(f)
+        hrf_per_subj = results['hrf_per_subj']
+        hrf_mse_per_subj = results['hrf_mse_per_subj']
+        bad_indices = results['bad_indices']
+    clean_chs_idx = np.arange(len(hrf_per_subj.channel.values))
+    clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
+
     # load full model
     with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
@@ -207,6 +216,8 @@ for s_i, subj_id in enumerate(subj_id_array):
     # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
     p_val_full_reduced = model.extract_val_across_channels(full_model_result[model_cmp],
                                                            chromo='HbO', stat_val='p')
+    # remove bad channels from analysis
+    p_val_full_reduced = p_val_full_reduced[clean_chs_idx]
     # correct p-values using FDR
     rejected, p_values_fdr = fdrcorrection(p_val_full_reduced, alpha=0.05)
     sig_list.append(np.sum(rejected)/len(rejected))
@@ -215,9 +226,10 @@ for s_i, subj_id in enumerate(subj_id_array):
     rss_all = np.sum(full_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
     rss_reduced = np.sum(reduced_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
     rss_ratio = np.log(rss_reduced)- np.log(rss_all)
+    rss_ratio[bad_indices] = np.nan
 
     # visualize RSS scalp plot (log scale)
-    scalp_plot(
+    model.scalp_plot(
         all_runs[0]['conc_o'],
         geo3d_695,
         rss_ratio,
