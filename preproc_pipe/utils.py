@@ -401,7 +401,7 @@ def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: n
     if is_return_data:
         return plt_center, plt_shade, plt_time
 
-def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None, ref_onset=None):
+def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None, ref_onset=None, sort_label='VTC'):
     """
     Plot ERPImage for a 2D matrix (trial, times) and the average ERP across all trials.
 
@@ -413,6 +413,7 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
         clim: color limit in ERPImage.
         title_txt: title.
         ref_onset: 1d array. The time series relative to the onset (e.g. stim vs response)
+        sort_label: str. sorting varaiable
     
     Return:
         fig: fig object.
@@ -457,7 +458,7 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
 
     plt.colorbar(im, ax=axes[0], label='Amplitude (µV)')
     axes[0].set_xlabel('Time (s)')
-    axes[0].set_ylabel('VTC')
+    axes[0].set_ylabel(sort_label)
     axes[0].set_title(f'ERP Image - {title_txt}')
     axes[0].legend(loc='upper right')
 

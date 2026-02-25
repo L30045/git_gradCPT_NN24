@@ -258,3 +258,34 @@ plt.xticks(np.arange(len(subj_id_array)), subj_id_array, ha='center')
 plt.ylim([0,100])
 plt.grid()
 plt.tight_layout()
+
+#%% Check if all F are larger in Full vs Basis than in Reduced vs Basis
+for s_i, subj_id in enumerate(subj_id_array):
+    filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
+    fnirs_result_path = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-{subj_id}"
+    with gzip.open(os.path.join(fnirs_result_path, f"sub-{subj_id}_conc_o_hrf_estimates_ar_irls.pkl.gz"), 'rb') as f:
+        results = pickle.load(f)
+        hrf_per_subj = results['hrf_per_subj']
+        hrf_mse_per_subj = results['hrf_mse_per_subj']
+        bad_indices = results['bad_indices']
+    clean_chs_idx = np.arange(len(hrf_per_subj.channel.values))
+    clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
+
+    # load full model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
+        full_model_result = pickle.load(f)
+    # load reduced model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
+        reduced_model_result = pickle.load(f)
+    # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
+    f_full_basis = model.extract_val_across_channels(full_model_result['f_test_full_basis'],
+                                                           chromo='HbO', stat_val='F')
+    f_full_stim= model.extract_val_across_channels(full_model_result['f_test_full_stim'],
+                                                           chromo='HbO', stat_val='F')                                                           
+    f_reduced_basis = model.extract_val_across_channels(reduced_model_result['f_test_stim_basis'],
+                                                           chromo='HbO', stat_val='F')
+    # remove bad channels from analysis
+    check_f = np.all(f_full_basis[clean_chs_idx]>=f_full_stim[clean_chs_idx])
+    print(f"sub-{subj_id}: All F in Full vs. Basis >= in Full vs. Reduced: {check_f}")
+    check_f = np.all(f_full_basis[clean_chs_idx]>=f_reduced_basis[clean_chs_idx])
+    print(f"sub-{subj_id}: All F in Full vs. Basis >= in Reduced vs. Basis: {check_f}")
