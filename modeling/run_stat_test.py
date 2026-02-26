@@ -18,6 +18,7 @@ import statsmodels.api as sm
 from scipy import stats
 from statsmodels.stats.multitest import fdrcorrection
 
+subj_id_array = [670, 695, 721, 723, 726, 730]
 # load template run and geo3d
 subj_id = 695
 hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
@@ -188,13 +189,12 @@ geo3d_695 = results['geo3d']
 #         print(f"  → Real problem (not just precision error)")
 
 #%% f test from model results
-subj_id_array = [670, 695, 721, 723]
 sig_list = []
 model_type = 'full'
 model_cmp = 'f_test_full_eeg'
 
-fig, axs = plt.subplots(2,2,figsize=(10,8))
-axs = axs.flatten()
+# fig, axs = plt.subplots(3,2,figsize=(10,8))
+# axs = axs.flatten()
 
 for s_i, subj_id in enumerate(subj_id_array):
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
@@ -229,19 +229,19 @@ for s_i, subj_id in enumerate(subj_id_array):
     rss_ratio[bad_indices] = np.nan
 
     # visualize RSS scalp plot (log scale)
-    model.scalp_plot(
-        all_runs[0]['conc_o'],
-        geo3d_695,
-        rss_ratio,
-        ax = axs[s_i],
-        cmap='RdBu_r',
-        vmin=-1.5,        
-        vmax=1.5,
-        optode_labels=False,
-        optode_size=6,
-    )
+    # model.scalp_plot(
+    #     all_runs[0]['conc_o'],
+    #     geo3d_695,
+    #     rss_ratio,
+    #     ax = axs[s_i],
+    #     cmap='RdBu_r',
+    #     vmin=-1.5,        
+    #     vmax=1.5,
+    #     optode_labels=False,
+    #     optode_size=6,
+    # )
 
-#%%
+#
 plt.figure()
 ratios = np.array(sig_list)*100
 bars = plt.bar(np.arange(len(subj_id_array)), ratios)
