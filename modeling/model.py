@@ -510,7 +510,6 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
                 continue
             
             # EEG-informed regressors
-            
             # create design matrix
             dm_list = []
             # for each event, rescale and create a dm
@@ -525,6 +524,18 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
                 dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
                 # append
                 dm_list.append(dm)
+            # for missing event, set the scale to mean EEG scale factor
+            if len(ev_dict[run_key][ev_name]['idx']['rejected'])!=0:
+                mean_area = np.mean(ev_dict[run_key][ev_name]['area']['cz'])
+                dm = glm.design_matrix.hrf_regressors(
+                                                target_run,
+                                                target_ev_df.iloc[ev_dict[run_key][ev_name]['idx']['rejected']],
+                                                glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])
+                                            )
+                # rescale by mean area
+                dm.common = dm.common*mean_area
+                # append
+                dm_list.append(dm)
             # Create a new design matrix object with the concatenated common regressors
             dms = dm_list.pop()
             dms_common = dms.common
@@ -533,7 +544,6 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
                 dms_common += dm_list.pop().common
             # assign merged common back to dms
             dms.common = dms_common
-            
             # store event DM
             ev_dms.append(dms)
         # combine all event DMs into one big DM
@@ -1063,4 +1073,31 @@ def extract_val_across_channels(f_test_result, chromo='HbO', stat_val='p'):
         val[ch_i] = float(tmp_result.split(stat_val+'=')[1].split(',')[0])
     return val
 
-
+def logit_transform(r_squared):
+    """
+    Logit transform with standard error calculation.
+    
+    Parameters:
+    -----------
+    r_squared : float or array
+        R-squared values
+    n : int
+        Sample size
+    method : str
+        Method for SE calculation: 'delta', 'bootstrap', 'beta'
+    
+    Returns:
+    --------
+    logit_r2 : float or array
+        Transformed values
+    """
+    
+    # Handle boundary cases
+    epsilon = 1e-10
+    r2_clipped = np.clip(r_squared, epsilon, 1 - epsilon)
+    
+    # Logit transform
+    logit_r2 = np.log(r2_clipped / (1 - r2_clipped))
+    
+        
+    return logit_r2

@@ -191,7 +191,7 @@ geo3d_695 = results['geo3d']
 #%% f test from model results
 sig_list = []
 model_type = 'full'
-model_cmp = 'f_test_full_eeg'
+model_cmp = 'f_test_full_stim'
 
 # fig, axs = plt.subplots(3,2,figsize=(10,8))
 # axs = axs.flatten()
@@ -208,7 +208,7 @@ for s_i, subj_id in enumerate(subj_id_array):
     clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
 
     # load full model
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}.pkl"), 'rb') as f:
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}_noEEG_rejected.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
     # load reduced model
     with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
@@ -272,7 +272,7 @@ for s_i, subj_id in enumerate(subj_id_array):
     clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
 
     # load full model
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full.pkl"), 'rb') as f:
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full_noEEG_rejected.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
     # load reduced model
     with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
@@ -289,3 +289,105 @@ for s_i, subj_id in enumerate(subj_id_array):
     print(f"sub-{subj_id}: All F in Full vs. Basis >= in Full vs. Reduced: {check_f}")
     check_f = np.all(f_full_basis[clean_chs_idx]>=f_reduced_basis[clean_chs_idx])
     print(f"sub-{subj_id}: All F in Full vs. Basis >= in Reduced vs. Basis: {check_f}")
+
+#%% R-squared between stim-only vs EEG-only models
+stim_r_list = []
+eeg_r_list = []
+stim_r_z_list = []
+eeg_r_z_list = []
+stim_r_z_squared_list = []
+eeg_r_z_squared_list = []
+stim_r_squared_logit_list = []
+eeg_r_squared_logit_list = []
+clean_chs_list = []
+
+for s_i, subj_id in enumerate(subj_id_array):
+    filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
+    # load eeg model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_onlyEEG.pkl"), 'rb') as f:
+        eeg_model_result = pickle.load(f)
+        betas_eeg = eeg_model_result['betas']
+    # load stim model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
+        stim_model_result = pickle.load(f)
+        betas_stim = stim_model_result['betas']
+    # load clean channels
+    fnirs_result_path = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-{subj_id}"
+    with gzip.open(os.path.join(fnirs_result_path, f"sub-{subj_id}_conc_o_hrf_estimates_ar_irls.pkl.gz"), 'rb') as f:
+        results = pickle.load(f)
+        hrf_per_subj = results['hrf_per_subj']
+        bad_indices = results['bad_indices']
+    clean_chs_idx = np.arange(len(hrf_per_subj.channel.values))
+    clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
+    clean_chs_list.append(clean_chs_idx)
+    # load and DM
+    with open(os.path.join(filepath,'dm_dict.pkl'),'rb') as f:
+        dm_dict = pickle.load(f)
+        eeg_dm = dm_dict['onlyEEG']
+        stim_dm = dm_dict['onlyStim']
+        Y_all = dm_dict['Y_all']
+    # estimate HbO
+    eeg_HbO_estimate = model.xr.dot(betas_eeg, eeg_dm.common, dims='regressor')
+    stim_HbO_estimate = model.xr.dot(betas_stim, stim_dm.common, dims='regressor')
+    # calculate correlation coefficient
+    eeg_r = model.xr.corr(eeg_HbO_estimate, Y_all, dim='time')
+    stim_r = model.xr.corr(stim_HbO_estimate, Y_all, dim='time')
+    eeg_r_list.append(eeg_r)
+    stim_r_list.append(stim_r)
+    # Fisher z-transform correlation coefficient
+    eeg_r_z = np.arctanh(eeg_r)
+    stim_r_z = np.arctanh(stim_r)
+    eeg_r_z_list.append(eeg_r_z)
+    stim_r_z_list.append(stim_r_z)
+    # R-squared as square of z-transformed correlation coefficient (is this valid?)
+    eeg_r_z_squared = eeg_r_z **2
+    stim_r_z_squared = stim_r_z **2
+    eeg_r_z_squared_list.append(eeg_r_z_squared)
+    stim_r_z_squared_list.append(stim_r_z_squared)
+    # logit transform R-squared
+    eeg_r_squared = eeg_r **2
+    stim_r_squared = stim_r **2
+    eeg_r_squared_logit = model.logit_transform(eeg_r_squared)
+    stim_r_squared_logit = model.logit_transform(stim_r_squared)
+    eeg_r_squared_logit_list.append(eeg_r_squared_logit)
+    stim_r_squared_logit_list.append(stim_r_squared_logit)
+
+eeg_r_squared_z_list = [np.arctanh(x**2) for x in eeg_r_list]
+stim_r_squared_z_list = [np.arctanh(x**2) for x in stim_r_list]
+
+"""
+TODO: Comparison of R-squared between two models will be very difficult:
+    1. The distribution is not normal.
+    2. Our data is autocorrelated.
+    If we want to logit transform R-squared to approximate normal distribution, our samples need to be
+    independent to do the transform. When we have two AR-IRLS models, it is difficult to decide which 
+    whiten-space to be in.
+
+    For now, I'll run pairwise ttest.
+"""
+
+#%% Pairwise ttest for each subject
+def pairwise_ttest_per_subj(eeg_r_list, stim_r_list, clean_chs_list):
+    t_stat_list = []
+    p_val_list = []
+    is_higher_list = []
+    for eeg_r, stim_r, clean_chs in zip(eeg_r_list, stim_r_list, clean_chs_list):
+        # get only clean channels
+        eeg_r_clean = eeg_r.sel(chromo='HbO').values[clean_chs]
+        stim_r_clean = stim_r.sel(chromo='HbO').values[clean_chs]
+        # pairwise ttest
+        t_stat, p_val = stats.ttest_rel(eeg_r_clean, stim_r_clean)
+        t_stat_list.append(t_stat)
+        p_val_list.append(p_val)
+        is_higher_list.append(np.mean(eeg_r_clean)>np.mean(stim_r_clean))
+    return t_stat_list, p_val_list, is_higher_list
+
+#%%
+t_stat_list, p_val_list, is_higher_list = pairwise_ttest_per_subj(eeg_r_squared_z_list,
+                                                                stim_r_squared_z_list,
+                                                                clean_chs_list)
+for s_i, subj_id in enumerate(subj_id_array):
+    if p_val_list[s_i]<=0.05:
+        print(f"sub-{subj_id}: R-squared (EEG) is significantly {'higher' if is_higher_list[s_i] else 'lower'}.")
+    else:
+        print(f"sub-{subj_id}: No siginificance found between two models.")

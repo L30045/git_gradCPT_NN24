@@ -18,9 +18,9 @@ from params_setting import *
 from tqdm import tqdm
 
 #%%
-# subj_id_array = [670,695,721,723,726, 730]
-model_type='reduced'
-subj_id_array =[695]
+subj_id_array = [670, 695,721,723,726, 730]
+model_type='full_noEEG_rejected_ttest'
+# subj_id_array =[730]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
 for subj_id in tqdm(subj_id_array):
@@ -124,22 +124,37 @@ for subj_id in tqdm(subj_id_array):
     # combine EEG DMs from all runs into one big DM
     Y_all, eeg_dm, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
 
+    # save DMs
+    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+    save_dm_name = os.path.join(save_file_path, 'dm_dict.pkl')
+    if not os.path.exists(save_dm_name):
+        dm_dict = dict()
+        dm_dict['basis']=basis_dm
+        dm_dict['onlyEEG']=model.combine_dm(eeg_dm, basis_dm)
+        dm_dict['onlyStim']=reduced_dm
+        dm_dict['full']=model.combine_dm(eeg_dm, reduced_dm)
+        dm_dict['Y_all']=Y_all
+        with open(save_dm_name,'wb') as f:
+            pickle.dump(dm_dict,f)
+
     #%% assign DM
-    if model_type=='full':
+    if model_type.startswith('full'):
         # Combine EEG DM with Reduced DM to get full model
         dm_all = model.combine_dm(eeg_dm, reduced_dm)
     elif model_type=='reduced':
         dm_all = reduced_dm
+    elif model_type=='onlyEEG':
+        dm_all = model.combine_dm(eeg_dm, basis_dm)
     else:
         dm_all = basis_dm
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
-    if model_type=='full':
+    if model_type.startswith('full'):
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
     else:
         file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full.pkl'),'rb') as f:
+        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full_noEEG_rejected.pkl'),'rb') as f:
             full_result = pickle.load(f)
             autoReg_dict = full_result['autoReg_dict']
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
@@ -154,7 +169,7 @@ for subj_id in tqdm(subj_id_array):
     result_dict['autoReg_dict']=autoReg_dict
 
     #%% f test
-    if model_type=='full':
+    if model_type.startswith('full'):
         # full vs stim
         param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
         # Create hypothesis strings
@@ -183,6 +198,51 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_stim_basis'] = f_test_result
+    elif model_type=='onlyEEG':
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = glm_results.sm.f_test(hypotheses)
+        result_dict['f_test_eeg_basis'] = f_test_result
+        
+    #%% contrast t test
+    if model_type.startswith('full'):
+        # full vs stim
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+        # Create hypothesis strings
+        hypotheses = param_names.join('+')+'=0'
+        # Run F-test
+        t_test_result = glm_results.sm.t_test(hypotheses)
+        result_dict['t_test_0_eeg'] = t_test_result
+        # full vs basis
+        param_names = [name for name in glm_results.sm.params.regressor.values if ('eeg' in name) or ('stim' in name)]
+        # Create hypothesis strings
+        hypotheses = param_names.join('+')+'=0'
+        # Run F-test
+        t_test_result = glm_results.sm.t_test(hypotheses)
+        result_dict['t_test_0_eeg_stim'] = t_test_result
+        # full vs eeg
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
+        # Create hypothesis strings
+        hypotheses = param_names.join('+')+'=0'
+        # Run F-test
+        t_test_result = glm_results.sm.t_test(hypotheses)
+        result_dict['t_test_0_stim'] = t_test_result
+    elif model_type=='reduced':
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
+        # Create hypothesis strings
+        hypotheses = param_names.join('+')+'=0'
+        # Run F-test
+        t_test_result = glm_results.sm.t_test(hypotheses)
+        result_dict['t_test_0_stim'] = t_test_result
+    elif model_type=='onlyEEG':
+        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+        # Create hypothesis strings
+        hypotheses = param_names.join('+')+'=0'
+        # Run F-test
+        t_test_result = glm_results.sm.t_test(hypotheses)
+        result_dict['f_test_0_eeg'] = t_test_result
 
     #%% get HRF and MSE for each run
     if model_type!='basis':
@@ -193,7 +253,7 @@ for subj_id in tqdm(subj_id_array):
         cov_params = glm_results.sm.cov_params()
         run_unit = Y_all.pint.units
         # check if it is a full model
-        if np.any(betas.regressor.str.find('eeg')>0):
+        if model_type.startswith('full'):
             # TODO: find an elegant way to check if _stim regressor is presented
             """
             NOTE: The number of regressors is fixed.
@@ -248,180 +308,179 @@ for subj_id in tqdm(subj_id_array):
 
     #%%
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    # with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
-    #     pickle.dump(result_dict,f)
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
+    # with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
+    #     pickle.dump(result_dict,f)
 
 #%% Sanity check
-subj_id = 695
-subject = 'sub-695'
-root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
-import re
-DO_TDDR = False
-DO_DRIFT = False
-DO_DRIFT_LEGENDRE = True
-DRIFT_ORDER = 3
-F_MAX = 0
-F_MIN = 0
-# cfg_GLM = {
-#     'do_drift': DO_DRIFT,
-#     'do_drift_legendre': DO_DRIFT_LEGENDRE,
-#     'do_short_sep': True,
-#     'drift_order' : DRIFT_ORDER,
-#     'distance_threshold' : 20*units.mm, # for ssr
-#     'short_channel_method' : 'mean',
-#     'noise_model' : NOISE_MODEL,
-#     't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
-#     't_std' : 1*units.s ,  
-#     't_pre' : 2*units.s,
-#     't_post' : 18*units.s
+# subj_id = 695
+# subject = 'sub-695'
+# root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
+# import re
+# DO_TDDR = False
+# DO_DRIFT = False
+# DO_DRIFT_LEGENDRE = True
+# DRIFT_ORDER = 3
+# F_MAX = 0
+# F_MIN = 0
+# # cfg_GLM = {
+# #     'do_drift': DO_DRIFT,
+# #     'do_drift_legendre': DO_DRIFT_LEGENDRE,
+# #     'do_short_sep': True,
+# #     'drift_order' : DRIFT_ORDER,
+# #     'distance_threshold' : 20*units.mm, # for ssr
+# #     'short_channel_method' : 'mean',
+# #     'noise_model' : NOISE_MODEL,
+# #     't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
+# #     't_std' : 1*units.s ,  
+# #     't_pre' : 2*units.s,
+# #     't_post' : 18*units.s
+# #     }
+
+# run_files = glob.glob(os.path.join(root_dir,  subject, 'nirs',  f"{subject}_task-gradCPT_run-*_nirs.snirf"))
+# runs_with_events = []
+# for run_file in run_files:
+#     # extract run number using regex
+#     match = re.search(r"run-(\d+)", os.path.basename(run_file))
+#     if match:
+#         run_num = match.group(1)
+#         events_file = os.path.join(root_dir, subject, 'nirs',  f"{subject}_task-gradCPT_run-{run_num}_events.tsv")
+
+#         if os.path.exists(events_file):
+#             runs_with_events.append(run_num)
+
+# print(f"{subject}: runs with events = {runs_with_events}")
+
+# cfg_dataset = {
+
+#     'root_dir' : root_dir,
+#     'subj_ids' : [subject],
+#     'file_ids' : [f'gradCPT_run-{run}' for run in runs_with_events], 
+#     'subj_id_exclude' :[]
+# }
+
+# cfg_prune = {
+#     'snr_thresh' : 5, # the SNR (std/mean) of a channel. 
+#     'sd_thresh' : [1, 40]*units.mm, # defines the lower and upper bounds for the source-detector separation that we would like to keep
+#     'amp_thresh' : [1e-3, 0.84]*units.V, # define whether a channel's amplitude is within a certain range
+#     'perc_time_clean_thresh' : 0.6,
+#     'sci_threshold' : 0.6,
+#     'psp_threshold' : 0.1,
+#     'window_length' : 5 * units.s,
+#     'flag_use_sci' : False,
+#     'flag_use_psp' : False,
+#     'channel_sel': None
+# }
+
+
+# cfg_motion_correct = {
+#     'flag_do_splineSG' : False, # if True, will do splineSG motion correction
+#     'splineSG_p' : 0.99, 
+#     'splineSG_frame_size' : 10 * units.s,
+#     'flag_do_tddr' : DO_TDDR,
+#     'flag_do_imu_glm' : False,
+#     'cfg_imu_glm' : False,
+# }
+
+# cfg_bandpass = { 
+#     'fmin' : F_MIN,
+#     'fmax' : F_MAX
+# }
+
+
+# cfg_preprocess = {
+#     'median_filt' : 1, # set to 1 if you don't want to do median filtering
+#     'cfg_prune' : cfg_prune,
+#     'cfg_motion_correct' : cfg_motion_correct,
+#     'cfg_bandpass' : cfg_bandpass,
+#     'cfg_GLM': cfg_GLM
+# }
+
+
+# # if block averaging on OD:
+# cfg_mse = {
+#     'mse_val_for_bad_data' : 1e1, 
+#     'mse_amp_thresh' : 1e-3*units.V,
+#     'blockaverage_val' : 0 ,
+#      'mse_min_thresh' : 1e-6
 #     }
 
-run_files = glob.glob(os.path.join(root_dir,  subject, 'nirs',  f"{subject}_task-gradCPT_run-*_nirs.snirf"))
-runs_with_events = []
-for run_file in run_files:
-    # extract run number using regex
-    match = re.search(r"run-(\d+)", os.path.basename(run_file))
-    if match:
-        run_num = match.group(1)
-        events_file = os.path.join(root_dir, subject, 'nirs',  f"{subject}_task-gradCPT_run-{run_num}_events.tsv")
+# n_files_per_subject = len(cfg_dataset['file_ids'])
 
-        if os.path.exists(events_file):
-            runs_with_events.append(run_num)
+# print(f"Start processing sub-{subj_id}")
+# # load HbO
+# hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+# with gzip.open(hbo_file, 'rb') as f:
+#     results = pickle.load(f)
 
-print(f"{subject}: runs with events = {runs_with_events}")
+# all_runs = results['runs']
+# all_chs_pruned = results['chs_pruned']
+# all_stims = results['stims']
+# geo3d = results['geo3d']
+# cfg_GLM['geo3d'] = geo3d
 
-cfg_dataset = {
+# REC_STR = 'conc_o'
+# possible_trial_types = ['mnt-correct', 'mnt-incorrect', 'city-incorrect']    
 
-    'root_dir' : root_dir,
-    'subj_ids' : [subject],
-    'file_ids' : [f'gradCPT_run-{run}' for run in runs_with_events], 
-    'subj_id_exclude' :[]
-}
+# trial_presence_list = []
+# stims_pruned_list = []
 
-cfg_prune = {
-    'snr_thresh' : 5, # the SNR (std/mean) of a channel. 
-    'sd_thresh' : [1, 40]*units.mm, # defines the lower and upper bounds for the source-detector separation that we would like to keep
-    'amp_thresh' : [1e-3, 0.84]*units.V, # define whether a channel's amplitude is within a certain range
-    'perc_time_clean_thresh' : 0.6,
-    'sci_threshold' : 0.6,
-    'psp_threshold' : 0.1,
-    'window_length' : 5 * units.s,
-    'flag_use_sci' : False,
-    'flag_use_psp' : False,
-    'channel_sel': None
-}
+# for stim, run in zip(all_stims, all_runs):
+#     mnt_trials = stim[stim['trial_type'] == 'mnt'].copy()
+#     mnt_trials.loc[mnt_trials['response_code'] == 0, 'trial_type'] = 'mnt-correct'
+#     mnt_trials.loc[mnt_trials['response_code'] == -2, 'trial_type'] = 'mnt-incorrect'
 
-
-cfg_motion_correct = {
-    'flag_do_splineSG' : False, # if True, will do splineSG motion correction
-    'splineSG_p' : 0.99, 
-    'splineSG_frame_size' : 10 * units.s,
-    'flag_do_tddr' : DO_TDDR,
-    'flag_do_imu_glm' : False,
-    'cfg_imu_glm' : False,
-}
-
-cfg_bandpass = { 
-    'fmin' : F_MIN,
-    'fmax' : F_MAX
-}
-
-
-cfg_preprocess = {
-    'median_filt' : 1, # set to 1 if you don't want to do median filtering
-    'cfg_prune' : cfg_prune,
-    'cfg_motion_correct' : cfg_motion_correct,
-    'cfg_bandpass' : cfg_bandpass,
-    'cfg_GLM': cfg_GLM
-}
-
-
-# if block averaging on OD:
-cfg_mse = {
-    'mse_val_for_bad_data' : 1e1, 
-    'mse_amp_thresh' : 1e-3*units.V,
-    'blockaverage_val' : 0 ,
-     'mse_min_thresh' : 1e-6
-    }
-
-n_files_per_subject = len(cfg_dataset['file_ids'])
-
-print(f"Start processing sub-{subj_id}")
-# load HbO
-hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
-with gzip.open(hbo_file, 'rb') as f:
-    results = pickle.load(f)
-
-all_runs = results['runs']
-all_chs_pruned = results['chs_pruned']
-all_stims = results['stims']
-geo3d = results['geo3d']
-cfg_GLM['geo3d'] = geo3d
-
-REC_STR = 'conc_o'
-possible_trial_types = ['mnt-correct', 'mnt-incorrect', 'city-incorrect']    
-
-trial_presence_list = []
-stims_pruned_list = []
-
-for stim, run in zip(all_stims, all_runs):
-    mnt_trials = stim[stim['trial_type'] == 'mnt'].copy()
-    mnt_trials.loc[mnt_trials['response_code'] == 0, 'trial_type'] = 'mnt-correct'
-    mnt_trials.loc[mnt_trials['response_code'] == -2, 'trial_type'] = 'mnt-incorrect'
-
-    city_trials = stim[(stim['trial_type'] == 'city') & (stim['response_code'] == -1)]
-    city_trials['trial_type'] = 'city-incorrect'
+#     city_trials = stim[(stim['trial_type'] == 'city') & (stim['response_code'] == -1)]
+#     city_trials['trial_type'] = 'city-incorrect'
     
-    # Combine the filtered trials
-    stims_pruned = pd.concat([mnt_trials, city_trials], ignore_index=True)
-    run.stim = stims_pruned
-    stims_pruned_list.append(stims_pruned)
+#     # Combine the filtered trials
+#     stims_pruned = pd.concat([mnt_trials, city_trials], ignore_index=True)
+#     run.stim = stims_pruned
+#     stims_pruned_list.append(stims_pruned)
 
-run_ts_list = [run[REC_STR] for run in all_runs]
-results, hrf_estimate, hrf_mse = pf.GLM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
-# residual = results.sm.resid
+# run_ts_list = [run[REC_STR] for run in all_runs]
+# results, hrf_estimate, hrf_mse = pf.GLM(run_ts_list, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
+# # residual = results.sm.resid
 
-# reset the values for bad channels 
-amp = all_runs[0]['amp'].mean('time').min('wavelength') # take the minimum across wavelengths
-n_chs = len(amp.channel)
-idx_amp = np.where(amp < cfg_mse['mse_amp_thresh'])[0]
-idx_sat = np.where(all_chs_pruned[0] == 0.0)[0]
-bad_indices = np.unique(np.concat([idx_amp, idx_sat]))
+# # reset the values for bad channels 
+# amp = all_runs[0]['amp'].mean('time').min('wavelength') # take the minimum across wavelengths
+# n_chs = len(amp.channel)
+# idx_amp = np.where(amp < cfg_mse['mse_amp_thresh'])[0]
+# idx_sat = np.where(all_chs_pruned[0] == 0.0)[0]
+# bad_indices = np.unique(np.concat([idx_amp, idx_sat]))
 
-hrf_estimate = hrf_estimate.transpose('channel', 'time', 'chromo', 'trial_type')
-hrf_estimate = hrf_estimate - hrf_estimate.sel(time=(hrf_estimate.time < 0)).mean('time')
+# hrf_estimate = hrf_estimate.transpose('channel', 'time', 'chromo', 'trial_type')
+# hrf_estimate = hrf_estimate - hrf_estimate.sel(time=(hrf_estimate.time < 0)).mean('time')
 
-hrf_mse = hrf_mse.transpose('channel', 'time', 'chromo', 'trial_type')
+# hrf_mse = hrf_mse.transpose('channel', 'time', 'chromo', 'trial_type')
 
-present_trial_types = hrf_estimate.trial_type.values.tolist()
-presence = [tt in present_trial_types for tt in possible_trial_types] # creates bool mask
-trial_presence_list.append(presence)
+# present_trial_types = hrf_estimate.trial_type.values.tolist()
+# presence = [tt in present_trial_types for tt in possible_trial_types] # creates bool mask
+# trial_presence_list.append(presence)
 
-hrf_estimate = hrf_estimate.reindex({'trial_type': possible_trial_types})
-hrf_mse = hrf_mse.reindex({'trial_type': possible_trial_types})
+# hrf_estimate = hrf_estimate.reindex({'trial_type': possible_trial_types})
+# hrf_mse = hrf_mse.reindex({'trial_type': possible_trial_types})
 
-hrf_per_subj = hrf_estimate.expand_dims('subj')
-hrf_per_subj = hrf_per_subj.assign_coords(subj=subject)
+# hrf_per_subj = hrf_estimate.expand_dims('subj')
+# hrf_per_subj = hrf_per_subj.assign_coords(subj=subject)
 
-hrf_mse_per_subj = hrf_mse.expand_dims('subj')
-hrf_mse_per_subj = hrf_mse_per_subj.assign_coords(subj=subject)
+# hrf_mse_per_subj = hrf_mse.expand_dims('subj')
+# hrf_mse_per_subj = hrf_mse_per_subj.assign_coords(subj=subject)
 
-trial_presence_mask = model.xr.DataArray(trial_presence_list, 
-                                dims = ['subj', 'trial_type'],
-                                coords = {'subj': subject,
-                                        'trial_type': possible_trial_types}
-                                        )
+# trial_presence_mask = model.xr.DataArray(trial_presence_list, 
+#                                 dims = ['subj', 'trial_type'],
+#                                 coords = {'subj': subject,
+#                                         'trial_type': possible_trial_types}
+#                                         )
 
-print('HRF estimation complete')
+# print('HRF estimation complete')
 
-result_dict = dict()
-result_dict['hrf_per_subj'] = hrf_per_subj
-result_dict['hrf_mse_per_subj'] = hrf_mse_per_subj
-result_dict['bad_indices'] = bad_indices
-save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-with open(os.path.join(save_file_path,f'sub-{subj_id}_hrf_dev_Laura_code.pkl'),'wb') as f:
-    pickle.dump(result_dict,f)
+# result_dict = dict()
+# result_dict['hrf_per_subj'] = hrf_per_subj
+# result_dict['hrf_mse_per_subj'] = hrf_mse_per_subj
+# result_dict['bad_indices'] = bad_indices
+# save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
+# with open(os.path.join(save_file_path,f'sub-{subj_id}_hrf_dev_Laura_code.pkl'),'wb') as f:
+#     pickle.dump(result_dict,f)
 
-#%%
