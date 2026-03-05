@@ -18,7 +18,7 @@ from params_setting import *
 from tqdm import tqdm
 
 #%%
-subj_id_array = [670, 695,721,723,726, 730]
+subj_id_array = [695,721,723,726, 730]
 model_type='full_noEEG_rejected_ttest'
 # subj_id_array =[730]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
@@ -205,41 +205,41 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_eeg_basis'] = f_test_result
-        
+
     #%% contrast t test
     if model_type.startswith('full'):
         # full vs stim
         param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
         # Create hypothesis strings
-        hypotheses = param_names.join('+')+'=0'
+        hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_eeg'] = t_test_result
         # full vs basis
         param_names = [name for name in glm_results.sm.params.regressor.values if ('eeg' in name) or ('stim' in name)]
         # Create hypothesis strings
-        hypotheses = param_names.join('+')+'=0'
+        hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_eeg_stim'] = t_test_result
         # full vs eeg
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
-        hypotheses = param_names.join('+')+'=0'
+        hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
     elif model_type=='reduced':
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
-        hypotheses = param_names.join('+')+'=0'
+        hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
     elif model_type=='onlyEEG':
         param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
         # Create hypothesis strings
-        hypotheses = param_names.join('+')+'=0'
+        hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['f_test_0_eeg'] = t_test_result

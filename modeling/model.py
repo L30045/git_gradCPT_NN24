@@ -1066,11 +1066,15 @@ def check_if_whiten(yf):
     plt.tight_layout()
     plt.show()
 
-def extract_val_across_channels(f_test_result, chromo='HbO', stat_val='p'):
+def extract_val_across_channels(f_test_result, chromo='HbO', stat_val='p', is_table=False):
     val = np.zeros(len(f_test_result.sel(chromo=chromo)))
     for ch_i, ch_result in enumerate(f_test_result.sel(chromo=chromo)):
         tmp_result = ch_result.values.item().summary()
-        val[ch_i] = float(tmp_result.split(stat_val+'=')[1].split(',')[0])
+        if is_table:
+            data = tmp_result.data
+            val[ch_i] = float(data[1][data[0].index(stat_val)])
+        else:
+            val[ch_i] = float(tmp_result.split(stat_val+'=')[1].split(',')[0])
     return val
 
 def logit_transform(r_squared):

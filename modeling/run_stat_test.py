@@ -391,3 +391,62 @@ for s_i, subj_id in enumerate(subj_id_array):
         print(f"sub-{subj_id}: R-squared (EEG) is significantly {'higher' if is_higher_list[s_i] else 'lower'}.")
     else:
         print(f"sub-{subj_id}: No siginificance found between two models.")
+    
+#%% contrast ttest
+t_eeg_sig_list = []
+t_stim_sig_list = []
+t_eeg_stim_sig_list = []
+for subj_id in subj_id_array:
+    filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
+    # load full model
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_full_noEEG_rejected_ttest.pkl"), 'rb') as f:
+        full_model_result = pickle.load(f)
+    # load clean chs
+    fnirs_result_path = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/sub-{subj_id}"
+    with gzip.open(os.path.join(fnirs_result_path, f"sub-{subj_id}_conc_o_hrf_estimates_ar_irls.pkl.gz"), 'rb') as f:
+        results = pickle.load(f)
+        hrf_per_subj = results['hrf_per_subj']
+        hrf_mse_per_subj = results['hrf_mse_per_subj']
+        bad_indices = results['bad_indices']
+    clean_chs_idx = np.arange(len(hrf_per_subj.channel.values))
+    clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
+    t_0_eeg = model.extract_val_across_channels(full_model_result['t_test_0_eeg'],
+                                                            chromo='HbO', stat_val='P>|z|', is_table=True)
+    t_0_stim = model.extract_val_across_channels(full_model_result['t_test_0_stim'],
+                                                            chromo='HbO', stat_val='P>|z|', is_table=True)
+    t_0_eeg_stim = model.extract_val_across_channels(full_model_result['t_test_0_eeg_stim'],
+                                                            chromo='HbO', stat_val='P>|z|', is_table=True)# remove bad channels from analysis
+    # calculate proportion of channels show significant
+    t_eeg_sig = np.sum(t_0_eeg[clean_chs_idx]<=0.05)/len(clean_chs_idx)
+    t_stim_sig = np.sum(t_0_stim[clean_chs_idx]<=0.05)/len(clean_chs_idx)
+    t_eeg_stim_sig = np.sum(t_0_eeg_stim[clean_chs_idx]<=0.05)/len(clean_chs_idx)
+
+    t_eeg_sig_list.append(t_eeg_sig)
+    t_stim_sig_list.append(t_stim_sig)
+    t_eeg_stim_sig_list.append(t_eeg_stim_sig)
+
+#%%
+#
+fig, axes = plt.subplots(3,1, figsize=(5, 10), sharey=True)
+plot_data = [
+    (t_eeg_sig_list, "EEG regressor (t-test)"),
+    (t_stim_sig_list, "Stim regressor (t-test)"),
+    (t_eeg_stim_sig_list, "EEG+Stim regressor (t-test)"),
+]
+
+for ax, (sig_list_data, title) in zip(axes, plot_data):
+    ratios = np.array(sig_list_data) * 100
+    bars = ax.bar(np.arange(len(subj_id_array)), ratios)
+    for bar, ratio in zip(bars, ratios):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                f'{ratio:.2f}%',
+                ha='center', va='bottom', fontsize=14)
+    ax.set_xlabel("Subject ID", fontsize=14)
+    ax.set_ylabel("Proportion of significant channels (p ≤ 0.05)", fontsize=12)
+    ax.set_xticks(np.arange(len(subj_id_array)))
+    ax.set_xticklabels(subj_id_array, ha='center')
+    ax.set_ylim([0, 100])
+    ax.set_title(title, fontsize=13)
+    ax.grid()
+
+plt.tight_layout()
