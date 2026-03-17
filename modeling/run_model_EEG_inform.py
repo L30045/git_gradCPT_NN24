@@ -18,7 +18,7 @@ from params_setting import *
 from tqdm import tqdm
 
 #%%
-subj_id_array = [695,721,723,726, 730]
+subj_id_array = [670, 695,721,723,726, 730]
 model_type='full_noEEG_rejected_ttest'
 # subj_id_array =[730]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
