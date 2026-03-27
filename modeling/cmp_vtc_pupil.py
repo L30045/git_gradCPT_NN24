@@ -1,13 +1,8 @@
 #%% load library
 import numpy as np
 import scipy as sp
-import pickle
-import gzip
-import glob
-import time
 import sys
 import pandas as pd
-import matplotlib
 import matplotlib.pyplot as plt
 import os
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
@@ -18,7 +13,6 @@ sys.path.append("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking")
 from neon_to_bids_gradCPT_add_nodding import parseNeon_to_bids
 from pupil_labs import neon_recording as nr
 import re
-from cedalion import io
 from utils_eyetracking import preprocess_pupil, get_pupil_epoch, plot_pupil_epoch
 import warnings
 
@@ -73,12 +67,21 @@ def detrend_epoch(ep):
     ep[mask] = sp.signal.detrend(ep[mask])
     return ep
 
+def detrend_run(pupil_d):
+    """Quadratic detrend of a full-run pupil signal, NaN-aware.
+    Fits a least-squares parabola through valid samples and subtracts it."""
+    x = np.array(pupil_d, dtype=float)
+    valid = np.where(~np.isnan(x))[0]
+    if len(valid) < 3:
+        return x
+    t = np.arange(len(x), dtype=float)
+    coef = np.polyfit(t[valid], x[valid], 2)
+    return x - np.polyval(coef, t)
+
 def collect_rt_epochs(pupil_dict, epoch_key, vtc_key, rt_pre, rt_post):
     epochs, vtcs = [], []
     for subj, runs in pupil_dict.items():
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep, vtc_val in zip(run_data[epoch_key], run_data[vtc_key]):
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -93,8 +96,6 @@ def collect_rt_epochs_dt(pupil_dict, epoch_key, vtc_key, rt_pre, rt_post):
     epochs, vtcs = [], []
     for subj, runs in pupil_dict.items():
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep, vtc_val in zip(run_data[epoch_key], run_data[vtc_key]):
                 ep = detrend_epoch(ep)
                 if np.all(np.isnan(ep)):
@@ -138,13 +139,23 @@ for subj in sorted(subject_list):
     for run_id in range(1, 4):
         snirf_name = f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_nirs.snirf"
         physio_file = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
+        if not os.path.isfile(physio_file):
+            physio_file = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
         event_file  = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
         if snirf_name not in snirf_files or not os.path.isfile(physio_file) or not os.path.isfile(event_file):
             continue
         neon_idx = snirf_files.index(snirf_name)
         neon_data = pd.read_csv(physio_file, sep='\t')
-        rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[neon_idx]))
-        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec)
+        # check if the data is recorded by Neon
+        if neon_dirs_subj:
+            rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[neon_idx]))
+        else:
+            rec = None
+        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec=rec)
+        # check if subject missing too many data
+        if t_neon_s is None:
+            print(f"Missing too many data. Skip sub-{subj}")
+            continue
         sfreq_neon = np.round(np.median(1 / np.diff(t_neon_s)))
         print(f"{subj} run-{run_id:02d}: sfreq_neon = {sfreq_neon} Hz")
         events_df_s = pd.read_csv(event_file, sep='\t')
@@ -220,8 +231,6 @@ for subj, runs in pupil_dict.items():
         # concatenate all trials across runs with per-epoch baseline correction
         all_epochs = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep in run_data[cond]:
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -278,8 +287,6 @@ for subj, runs in pupil_dict.items():
         # Pool all VTC values within this subject to get the subject-level median
         subj_vtc_all = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             subj_vtc_all.extend(run_data[f'{cond}_vtc'].tolist())
         if not subj_vtc_all:
             continue
@@ -288,8 +295,6 @@ for subj, runs in pupil_dict.items():
         # Split trials by subject-level median
         high_epochs, low_epochs = [], []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep, vtc_val in zip(run_data[cond], run_data[f'{cond}_vtc']):
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -316,8 +321,7 @@ colors = {
 }
 linestyles = {'high': '-', 'low': '--'}
 
-n_subjects = len({subj for subj, runs in pupil_dict.items()
-                  if any(run_data['sfreq_neon'] == 125 for run_data in runs.values())})
+n_subjects = len(pupil_dict)
 
 fig, ax = plt.subplots(figsize=(10, 5))
 ax.axvline(0, color='k', linestyle='--', linewidth=1, label='Onset')
@@ -349,8 +353,7 @@ rt_vtc_specs = [
     ('city_correct_rt_epoch',  'city_correct_vtc',
      {'high': 'forestgreen', 'low': 'limegreen'}, 'city Correct'),
 ]
-n_subjects = len({subj for subj, runs in pupil_dict.items()
-                  if any(run_data['sfreq_neon'] == 125 for run_data in runs.values())})
+n_subjects = len(pupil_dict)
 
 
 for epoch_key, vtc_key, colors_rt, cond_title in rt_vtc_specs:
@@ -360,8 +363,6 @@ for epoch_key, vtc_key, colors_rt, cond_title in rt_vtc_specs:
         # Subject-level VTC median from this condition
         subj_vtc_all = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             subj_vtc_all.extend(run_data[vtc_key].tolist())
         if not subj_vtc_all:
             continue
@@ -369,8 +370,6 @@ for epoch_key, vtc_key, colors_rt, cond_title in rt_vtc_specs:
 
         high_epochs, low_epochs = [], []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep, vtc_val in zip(run_data[epoch_key], run_data[vtc_key]):
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -429,8 +428,6 @@ for cond in cond_labels:
     rt_key = f'{cond}_rt' if f'{cond}_rt' in next(iter(next(iter(pupil_dict.values())).values())) else None
     for subj, runs in pupil_dict.items():
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             rt_arr = run_data[rt_key] if rt_key else np.full(len(run_data[cond]), np.nan)
             for ep, vtc_val, rt_val in zip(run_data[cond], run_data[f'{cond}_vtc'], rt_arr):
                 ep = np.array(ep, dtype=float)
@@ -748,8 +745,6 @@ for subj, runs in pupil_dict.items():
     for cond in conditions_stim:
         all_epochs = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep in run_data[cond]:
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -799,16 +794,12 @@ for subj, runs in pupil_dict.items():
     for cond in conditions_stim:
         subj_vtc_all = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             subj_vtc_all.extend(run_data[f'{cond}_vtc'].tolist())
         if not subj_vtc_all:
             continue
         subj_median = np.median(subj_vtc_all)
         high_epochs, low_epochs = [], []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             for ep, vtc_val in zip(run_data[cond], run_data[f'{cond}_vtc']):
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
@@ -861,8 +852,6 @@ for onsets_key, cond_label in rt_cond_specs_dpp:
     for subj, runs in pupil_dict.items():
         epochs = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             rt_onsets = run_data[onsets_key]
             if len(rt_onsets) == 0:
                 continue
@@ -912,16 +901,12 @@ for onsets_key, vtc_key, colors_rt, cond_title in rt_vtc_specs_dpp:
     for subj, runs in pupil_dict.items():
         subj_vtc_all = []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             subj_vtc_all.extend(run_data[vtc_key].tolist())
         if not subj_vtc_all:
             continue
         subj_median = np.median(subj_vtc_all)
         high_epochs, low_epochs = [], []
         for run_data in runs.values():
-            if run_data['sfreq_neon'] != 125:
-                continue
             rt_onsets = run_data[onsets_key]
             if len(rt_onsets) == 0:
                 continue
@@ -970,3 +955,90 @@ for onsets_key, vtc_key, colors_rt, cond_title in rt_vtc_specs_dpp:
     ax.legend(fontsize=8)
     ax.grid()
     plt.tight_layout()
+
+#%% Correlation between pupil size and VTC
+# Re-read event files to get trial onsets; detrend the full-run pupil signal from
+# pupil_dict without modifying it.  Results are stored in corr_dict.
+
+_cond_idx_fns = {
+    'mnt_correct':   lambda df: (df['trial_type'] == 'mnt') & (df['response_code'] == 0),
+    'mnt_incorrect': lambda df: (df['trial_type'] == 'mnt') & (df['response_code'] != 0),
+    'city_correct':  lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 0),
+    'city_incorrect':lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
+}
+_cond_labels_corr = {
+    'mnt_correct':   'mnt — Correct',
+    'mnt_incorrect': 'mnt — Incorrect',
+    'city_correct':  'city — Correct',
+    'city_incorrect':'city — Incorrect',
+}
+
+corr_dict = {}   # corr_dict[subj][run_key][cond] = {'r': float, 'p': float, 'n': int}
+
+for subj, runs in pupil_dict.items():
+    subj_id   = subj.replace('sub-', '')
+    subj_nirs = os.path.join(project_path, subj, 'nirs')
+    corr_dict[subj] = {}
+    for run_key, run_data in runs.items():
+        run_id     = int(run_key.replace('run-', ''))
+        event_file = os.path.join(
+            subj_nirs,
+            f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        if not os.path.isfile(event_file):
+            continue
+        events_df  = pd.read_csv(event_file, sep='\t')
+        vtc_full   = smoothing_VTC_gaussian_array(events_df['VTC'].values, L=20)
+
+        t_neon         = run_data['t_neon']
+        pupil_detrend  = detrend_run(run_data['pupil_d'])
+
+        corr_dict[subj][run_key] = {}
+        for cond, idx_fn in _cond_idx_fns.items():
+            idx     = idx_fn(events_df)
+            onsets  = events_df[idx]['onset'].values
+            vtcs    = vtc_full[idx.values]
+            if len(onsets) == 0:
+                continue
+            trial_means = []
+            for onset in onsets:
+                mask = (t_neon >= onset) & (t_neon < onset + epoch_length)
+                ep   = pupil_detrend[mask]
+                trial_means.append(
+                    np.nanmean(ep) if (len(ep) > 0 and not np.all(np.isnan(ep)))
+                    else np.nan)
+            trial_means = np.array(trial_means)
+            valid       = ~np.isnan(trial_means) & ~np.isnan(vtcs)
+            if valid.sum() > 2:
+                r, p = sp.stats.pearsonr(trial_means[valid], vtcs[valid])
+                corr_dict[subj][run_key][cond] = {'r': r, 'p': p, 'n': int(valid.sum())}
+
+# --- Plot: per-run r values for each condition ---
+conditions_corr = list(_cond_idx_fns.keys())
+rs_by_cond = {cond: [] for cond in conditions_corr}
+for subj_runs in corr_dict.values():
+    for run_res in subj_runs.values():
+        for cond in conditions_corr:
+            if cond in run_res:
+                rs_by_cond[cond].append(run_res[cond]['r'])
+
+fig, ax = plt.subplots(figsize=(8, 5))
+x_pos = np.arange(len(conditions_corr))
+for i, cond in enumerate(conditions_corr):
+    rs = np.array(rs_by_cond[cond])
+    if len(rs) == 0:
+        continue
+    ax.scatter(np.full(len(rs), i) + np.random.uniform(-0.15, 0.15, len(rs)),
+               rs, alpha=0.5, s=20, zorder=3)
+    mean_r = rs.mean()
+    sem_r  = rs.std() / np.sqrt(len(rs))
+    ax.errorbar(i, mean_r, yerr=sem_r, fmt='D', color='k', capsize=5, zorder=4)
+ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
+ax.set_xticks(x_pos)
+ax.set_xticklabels([_cond_labels_corr[c] for c in conditions_corr],
+                   rotation=15, ha='right')
+ax.set_ylabel('Pearson r (detrended pupil vs VTC)')
+n_subj_corr = sum(1 for runs in corr_dict.values() if runs)
+ax.set_title(f'Correlation: full-run detrended pupil vs VTC '
+             f'(per run, N={n_subj_corr} subjects)')
+ax.grid(axis='y')
+plt.tight_layout()

@@ -1,5 +1,6 @@
 #%% load library
 import numpy as np
+import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 import mne
@@ -16,7 +17,7 @@ import sys
 # from spectral_connectivity.transforms import prepare_time_series
 
 
-filepath = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24_pilot/sourcedata/raw/sub-SPARK-testing")
+filepath = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24_pilot/sourcedata/raw/sub-SPARK-testing-002")
 # read replace opto location
 opt_loc_csv = pd.read_csv(os.path.join(filepath, 'Replace_optodes_list.csv'))
 nearest_1020 = opt_loc_csv['Nearest 10-20 system '].copy()
@@ -69,7 +70,7 @@ def smoothing_VTC_gaussian_array(vtc, sigma=None, alpha=2.5, L=None, radius=None
     if L:
         radius = np.ceil((L-1)/2).astype(int) # radius of gaussian filter
     # smooth VTC
-    smooth_vtc = gaussian_filter1d(vtc, sigma=sigma, radius=radius, truncate=4)
+    smooth_vtc = sp.ndimage.gaussian_filter1d(vtc, sigma=sigma, radius=radius, truncate=4)
     return smooth_vtc
 
 def tsv_to_events(event_file, sfreq):
@@ -170,6 +171,7 @@ def epoch_by_select_event(EEG, events, event_labels_lookup, select_event='mnt_co
 #%% load EEG and preprocessing
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 reref_ch = 'average' # None as No reref since system has reref to A1 already
+# reref_ch = None
 baseline_length = -0.2
 epoch_reject_crit = dict(
                         eeg=500e-6 #unit:V
@@ -191,53 +193,62 @@ for fname in filename_list:
         key_name = "gradcpt"+run_id
     else:
         continue
-    # load EEG raw
-    eeg_csv = pd.read_csv(os.path.join(filepath,'sub-SPARK-test_gradCPT_run-03.csv'), skiprows=12, index_col=False)
-    ch_cols = [c for c in eeg_csv.columns if c.strip().startswith('CH')]
-    eeg_csv = eeg_csv[['Time(s)', 'TRIGGER(DIGITAL)'] + ch_cols]
-    # truncate EEG by trigger: keep rows between first and last button press (trigger ~ 0)
-    trig = eeg_csv['TRIGGER(DIGITAL)']
-    pressed = trig[trig == 0].index
-    eeg_csv = eeg_csv.loc[pressed[0]:pressed[-1]].reset_index(drop=True)
-    # put eeg_csv into mne raw object
-    sfreq = np.round(np.median(1/np.diff(eeg_csv['Time(s)'])))  # Hz
-    ch_names = nearest_1020.tolist()
-    ch_types = ['eeg'] * len(ch_cols)
-    info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
-    data = eeg_csv[ch_cols].values.T * 1e-6  # convert uV to V
-    EEG = mne.io.RawArray(data, info)
-    # assign 10-20 system locations
-    montage = mne.channels.make_standard_montage('standard_1020')
-    EEG.set_montage(montage, on_missing='warn')
     # define savepath
     preproc_fname = os.path.join(filepath,fname.split('.')[0]+'_preproc_eeg.fif')
     ica_fname = os.path.join(filepath,fname.split('.')[0]+'_ica.fif')
     print(f"Start preprocessing {preproc_fname}")
     # =================================================
     # EEG preprocessing
-    rm_ch_list = []
-    # band-pass filtering (all channels)
-    EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
-    # check flat channels
-    rm_ch_list.extend(check_flat_channels(EEG))
-    # check variance
-    rm_ch_list.extend(check_abnormal_var_channels(EEG))
-    # drop bad channels
-    if len(rm_ch_list)>0:
-        EEG.drop_channels(rm_ch_list)
-    # re-reference to common average
-    if reref_ch=='average':
-        EEG.set_eeg_reference(ref_channels='average', ch_type='eeg',verbose=False)
-    elif reref_ch:
-        EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+    # check if preproc file exist
+    if os.path.exists(preproc_fname):
+        print(f"Preproc file exists, skipping preprocessing: {preproc_fname}")
+        EEG = mne.io.read_raw_fif(preproc_fname, preload=True, verbose=False)
+        rm_ch_list = [ch for ch in nearest_1020 if ch not in EEG.ch_names]
+    else:
+        # load EEG raw
+        eeg_csv = pd.read_csv(os.path.join(filepath,fname), skiprows=12, index_col=False)
+        ch_cols = [c for c in eeg_csv.columns if c.strip().startswith('CH')]
+        eeg_csv = eeg_csv[['Time(s)', 'TRIGGER(DIGITAL)'] + ch_cols]
+        # truncate EEG by trigger: keep rows between first and last button press (trigger ~ 0)
+        trig = eeg_csv['TRIGGER(DIGITAL)']
+        pressed = trig[trig == 0].index
+        eeg_csv = eeg_csv.loc[pressed[0]:pressed[-1]].reset_index(drop=True)
+        # put eeg_csv into mne raw object
+        sfreq = np.round(np.median(1/np.diff(eeg_csv['Time(s)'])))  # Hz
+        ch_names = nearest_1020.tolist()
+        ch_types = ['eeg'] * len(ch_cols)
+        info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
+        data = eeg_csv[ch_cols].values.T * 1e-6  # convert uV to V
+        EEG = mne.io.RawArray(data, info)
+        # assign 10-20 system locations
+        montage = mne.channels.make_standard_montage('standard_1020')
+        EEG.set_montage(montage, on_missing='warn')
+        rm_ch_list = []
+        # band-pass filtering (all channels)
+        EEG.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1],picks='all',verbose=False)
+        # check flat channels
+        rm_ch_list.extend(check_flat_channels(EEG))
+        # check variance
+        rm_ch_list.extend(check_abnormal_var_channels(EEG))
+        # drop bad channels
+        if len(rm_ch_list)>0:
+            EEG.drop_channels(rm_ch_list)
+        # re-reference to common average
+        if reref_ch=='average':
+            EEG.set_eeg_reference(ref_channels='average', ch_type='eeg',verbose=False)
+        elif reref_ch:
+            EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+        EEG.save(preproc_fname, overwrite=True)
     # ICA
-    ica = mne.preprocessing.ICA(n_components=0.99,
-            method='infomax', random_state=42,verbose=False)
-    ica.fit(EEG, picks=['eeg'],verbose=False)
+    if os.path.exists(ica_fname):
+        print(f"ICA file exists, skipping ICA: {ica_fname}")
+        ica = mne.preprocessing.read_ica(ica_fname)
+    else:
+        ica = mne.preprocessing.ICA(n_components=0.99,
+                method='infomax', random_state=42,verbose=False)
+        ica.fit(EEG, picks=['eeg'],verbose=False)
+        ica.save(ica_fname, overwrite=True)
     # =================================================
-    # save EEG
-    EEG.save(preproc_fname, overwrite=True)
-    ica.save(ica_fname, overwrite=True)
     subj_EEG_dict[key_name] = EEG    
     subj_ICA_dict[key_name] = ica
     rm_ch_dict[key_name] = rm_ch_list
@@ -260,7 +271,7 @@ for fname in filename_list:
     # get run id
     run_id = fname.lower().split("run-0")[-1][0]
     # load corresponding gradCPT
-    f_cpt = files[[i for i, x in enumerate(files) if x.split('run')[1][0]==run_id][0]]
+    f_cpt = files[[i for i, x in enumerate(files) if x.split('run-0')[1][0]==run_id][0]]
     data_cpt = sp.io.loadmat(os.path.join(filepath,f_cpt))
     # get reaction time. Remove last trial since it is a fade-out only trial.
     react_time = data_cpt['response'][:-1,4] # sec
@@ -321,7 +332,7 @@ for fname in filename_list:
     ev_df['VTC'] = original_vtc
     ev_df['VTC_smoothed'] = smoothed_vtc
     # save dataframe
-    save_filename = os.path.join(filepath, f'sub-SPARK-test_task-gradCPT_run-0{run_id}_events.tsv')
+    save_filename = os.path.join(filepath, f'{fname.split('.')[0]}_events.tsv')
     ev_df.to_csv(save_filename, sep='\t', index=False)
 
 #%% epoch by events
@@ -336,8 +347,7 @@ for run_id in np.arange(1,4):
     subj_react_dict[f"run{run_id:02d}"] = dict()
     EEG = subj_EEG_dict[f"gradcpt{run_id}"]
     # load corresponding event file
-    event_file = os.path.join(filepath,
-                            f'sub-SPARK-test_task-gradCPT_run-0{run_id}_events.tsv')
+    event_file = glob.glob(os.path.join(filepath, f'*run-0{run_id}_events.tsv'))[0]
     events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
     # for each condition
     for select_event in event_labels_lookup.keys():
@@ -493,5 +503,6 @@ for ch in vis_ch:
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
+    plt.show()
 
 # %%
