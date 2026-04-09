@@ -58,15 +58,6 @@ def diff_epoch(ep, t_ep):
         return ep
     return np.gradient(ep, t_ep)
 
-def detrend_epoch(ep):
-    """Detrend linearly, NaN-safe. Returns float array."""
-    ep = np.array(ep, dtype=float)
-    if np.all(np.isnan(ep)):
-        return ep
-    mask = ~np.isnan(ep)
-    ep[mask] = sp.signal.detrend(ep[mask])
-    return ep
-
 def detrend_run(pupil_d):
     """Quadratic detrend of a full-run pupil signal, NaN-aware.
     Fits a least-squares parabola through valid samples and subtracts it."""
@@ -92,20 +83,6 @@ def collect_rt_epochs(pupil_dict, epoch_key, vtc_key, rt_pre, rt_post):
                 vtcs.append(vtc_val)
     return epochs, vtcs
 
-def collect_rt_epochs_dt(pupil_dict, epoch_key, vtc_key, rt_pre, rt_post):
-    epochs, vtcs = [], []
-    for subj, runs in pupil_dict.items():
-        for run_data in runs.values():
-            for ep, vtc_val in zip(run_data[epoch_key], run_data[vtc_key]):
-                ep = detrend_epoch(ep)
-                if np.all(np.isnan(ep)):
-                    continue
-                t_ep = np.linspace(-rt_pre, rt_post, len(ep))
-                baseline_val = np.nanmean(ep[t_ep < 0])
-                epochs.append(ep - baseline_val)
-                vtcs.append(vtc_val)
-    return epochs, vtcs
-
 def sort_and_smooth(epochs, vtcs, vis_smooth):
     epochs = np.array(epochs)
     vtcs   = np.array(vtcs)
@@ -118,6 +95,88 @@ def sort_and_smooth(epochs, vtcs, vis_smooth):
         axis=0, arr=epochs)
     return epochs, vtcs
 
+#%% Detrend sample
+_demo_subj   = 'sub-721'
+_demo_run    = 2
+detrend_order = 2
+f_lowpass=30
+f_downsample=60
+_demo_subj_id = _demo_subj.replace('sub-', '')
+_demo_nirs_dir = os.path.join(project_path, _demo_subj, 'nirs')
+_demo_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', _demo_subj, 'eye_tracking')
+
+_physio_file = os.path.join(_demo_nirs_dir,
+    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
+if not os.path.isfile(_physio_file):
+    _physio_file = os.path.join(_demo_nirs_dir,
+        f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio.tsv")
+
+_neon_dirs = sorted([d for d in os.listdir(_demo_neon_dir) if re.match(r'\d{4}-', d)])
+_neon_data = pd.read_csv(_physio_file, sep='\t')
+_rec = nr.open(os.path.join(_demo_neon_dir, _neon_dirs[_demo_run - 1])) if _neon_dirs else None
+t_neon = _neon_data['timestamps']           # in fNIRS time
+pupil_d = (_neon_data['eyeleft_pupilDiameter'] + _neon_data['eyeright_pupilDiameter']) / 2
+# remove blink periods (t_blink_start/stop and t_neon_ori are in Neon time)
+pupil_d = pupil_d.values.copy().astype(float)
+if _rec:
+    print(f"NeonRecording is presented. Remove blink from pupil data.")
+    t_neon_arr = _neon_data['time'].values # in Neon time. no offset
+    try:
+        t_blink_start = _rec.blinks["start_time"]
+        t_blink_stop  = _rec.blinks["stop_time"]
+        for t_start, t_stop in zip(t_blink_start, t_blink_stop):
+            mask = (t_neon_arr >= t_start) & (t_neon_arr <= t_stop)
+            pupil_d[mask] = np.nan
+    except KeyError:
+        print(f"Warning: blink data unavailable for this recording, skipping blink removal.")
+else:
+    print("No recording data present. Linear interpret missing data.")
+# linear interpolation over blink periods
+valid = ~np.isnan(pupil_d)
+# check if there is too many missing data. If yes, return NaN
+if np.sum(valid)/len(valid) < 0.7:
+    print("Missing more than 30\% of data. Ignore the subject.")
+pupil_d = np.interp(t_neon, t_neon[valid], pupil_d[valid])
+# polynomial detrend (NaN-safe polyfit)
+_t_idx = np.arange(len(pupil_d), dtype=float)
+_valid = np.where(~np.isnan(pupil_d))[0]
+_coef  = np.polyfit(_t_idx[_valid], pupil_d[_valid], detrend_order)
+pupil_ori = pupil_d.copy()
+pupil_d = pupil_d - np.polyval(_coef, _t_idx)
+pupil_detrend = np.polyval(_coef, _t_idx)
+# estimate sampling frequency from timestamps
+t_neon_arr = t_neon.values
+fs = 1.0 / np.median(np.diff(t_neon_arr))
+# lowpass filter
+sos = sp.signal.butter(4, f_lowpass, btype='low', fs=fs, output='sos')
+pupil_d = sp.signal.sosfiltfilt(sos, pupil_d)
+pupil_ori = sp.signal.sosfiltfilt(sos, pupil_ori)
+pupil_detrend = sp.signal.sosfiltfilt(sos, pupil_detrend)
+# downsample
+t_new = np.arange(t_neon_arr[0], t_neon_arr[-1], 1.0 / f_downsample)
+pupil_d = np.interp(t_new, t_neon_arr, pupil_d)
+pupil_ori = np.interp(t_new, t_neon_arr, pupil_ori)
+pupil_detrend = np.interp(t_new, t_neon_arr, pupil_detrend)
+t_neon = t_new
+_t = t_neon
+_x = pupil_ori
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+axes[0].plot(_t, _x,     color='steelblue', linewidth=0.6, label='Original')
+axes[0].plot(_t, pupil_detrend, color='crimson',   linewidth=1.5, linestyle='--', label='Quadratic fit')
+axes[0].set_ylabel('Pupil diameter (mm)')
+axes[0].set_title(f'Detrend demo — {_demo_subj} run-{_demo_run:02d}: original + fitted polyline')
+axes[0].legend(fontsize=9)
+axes[0].grid()
+
+axes[1].plot(_t, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
+axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[1].set_ylabel('Pupil diameter (mm)')
+axes[1].set_xlabel('Time (s)')
+axes[1].set_title('After quadratic detrending')
+axes[1].legend(fontsize=9)
+axes[1].grid()
+plt.tight_layout()
 
 #%% cross subjects epoch analysis
 dirs = os.listdir(project_path)
@@ -529,211 +588,6 @@ if rt_data:
         plt.colorbar(im, ax=axes[1], label='Pupil diameter (mm)')
         fig.suptitle(f'Pupil epoch — {label} (RT-locked, sorted by VTC)')
         plt.tight_layout()
-
-#%% Detrend after epoching
-# # Repeat entire analysis with per-epoch linear detrending before baseline correction
-
-# # --- Cross-subject mean (detrended) ---
-# subj_mean_dt = {cond: [] for cond in conditions}
-# for subj, runs in pupil_dict.items():
-#     for cond in conditions:
-#         all_epochs = []
-#         for run_data in runs.values():
-#             if run_data['sfreq_neon'] != 125:
-#                 continue
-#             for ep in run_data[cond]:
-#                 ep = detrend_epoch(ep)
-#                 if np.all(np.isnan(ep)):
-#                     continue
-#                 t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
-#                 baseline_val = np.nanmean(ep[t_ep < 0])
-#                 all_epochs.append(ep - baseline_val)
-#         if len(all_epochs) == 0:
-#             continue
-#         try:
-#             with warnings.catch_warnings():
-#                 warnings.filterwarnings('error')
-#                 subj_mean_dt[cond].append(np.nanmean(np.array(all_epochs), axis=0))
-#         except Warning as w:
-#             print(f"Skipping {subj} {cond}: {w}")
-
-# t_epoch_dt = np.linspace(-baseline_length, epoch_length,
-#                          len(next(v for v in subj_mean_dt.values() if v)[0]))
-# fig, ax = plt.subplots(figsize=(8, 4))
-# ax.axvline(0, color='k', linestyle='--', label='Onset')
-# for cond, label in [
-#     ('mnt_correct',   'mnt — Correct'),
-#     ('mnt_incorrect', 'mnt — Incorrect'),
-#     ('city_correct',  'city — Correct'),
-#     ('city_incorrect','city — Incorrect'),
-# ]:
-#     arr = np.array(subj_mean_dt[cond])
-#     if len(arr) == 0:
-#         continue
-#     mean = arr.mean(axis=0)
-#     sem  = arr.std(axis=0) / np.sqrt(len(arr))
-#     line, = ax.plot(t_epoch_dt, mean, label=label)
-#     ax.fill_between(t_epoch_dt, mean - sem, mean + sem, alpha=0.3,
-#                     color=line.get_color(), label='_nolegend_')
-# ax.fill_between([], [], alpha=0.3, color='gray', label='SEM')
-# ax.set_title('Pupil epoch — detrended (cross-subject)')
-# ax.set_xlabel('Time (s)')
-# ax.set_ylabel('Pupil diameter (mm)')
-# ax.legend()
-# ax.grid()
-# plt.tight_layout()
-
-# # --- VTC median split (detrended) ---
-# subj_mean_vtc_dt = {cond: {'high': [], 'low': []} for cond in conditions}
-# for subj, runs in pupil_dict.items():
-#     for cond in conditions:
-#         subj_vtc_all = []
-#         for run_data in runs.values():
-#             if run_data['sfreq_neon'] != 125:
-#                 continue
-#             subj_vtc_all.extend(run_data[f'{cond}_vtc'].tolist())
-#         if not subj_vtc_all:
-#             continue
-#         subj_median = np.median(subj_vtc_all)
-#         high_epochs, low_epochs = [], []
-#         for run_data in runs.values():
-#             if run_data['sfreq_neon'] != 125:
-#                 continue
-#             for ep, vtc_val in zip(run_data[cond], run_data[f'{cond}_vtc']):
-#                 ep = detrend_epoch(ep)
-#                 if np.all(np.isnan(ep)):
-#                     continue
-#                 t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
-#                 baseline_val = np.nanmean(ep[t_ep < 0])
-#                 ep_corr = ep - baseline_val
-#                 if vtc_val >= subj_median:
-#                     high_epochs.append(ep_corr)
-#                 else:
-#                     low_epochs.append(ep_corr)
-#         if high_epochs:
-#             subj_mean_vtc_dt[cond]['high'].append(np.nanmean(high_epochs, axis=0))
-#         if low_epochs:
-#             subj_mean_vtc_dt[cond]['low'].append(np.nanmean(low_epochs, axis=0))
-
-# fig, ax = plt.subplots(figsize=(10, 5))
-# ax.axvline(0, color='k', linestyle='--', linewidth=1, label='Onset')
-# for cond in conditions:
-#     for split, ls in linestyles.items():
-#         arr = np.array(subj_mean_vtc_dt[cond][split])
-#         if len(arr) == 0:
-#             continue
-#         mean = arr.mean(axis=0)
-#         sem  = arr.std(axis=0) / np.sqrt(len(arr))
-#         label = f"{cond.replace('_', ' ')} ({split} VTC)"
-#         c = colors[cond][split]
-#         line, = ax.plot(t_epoch_dt, mean, color=c, linestyle=ls, label=label)
-#         ax.fill_between(t_epoch_dt, mean - sem, mean + sem, alpha=0.2,
-#                         color=c, label='_nolegend_')
-# ax.fill_between([], [], alpha=0.3, color='gray', label='SEM')
-# ax.set_title(f'Pupil epoch by VTC median split — detrended (cross-subject, N={n_subjects})')
-# ax.set_xlabel('Time (s)')
-# ax.set_ylabel('Pupil diameter (mm)')
-# ax.legend(fontsize=8, ncol=2)
-# ax.grid()
-# plt.tight_layout()
-
-# # --- Epoch raster sorted by VTC (detrended) ---
-# all_sorted_data_dt = {}
-# for cond in cond_labels:
-#     all_epochs_cond, all_vtc_cond, all_rt_cond = [], [], []
-#     rt_key = f'{cond}_rt' if f'{cond}_rt' in next(iter(next(iter(pupil_dict.values())).values())) else None
-#     for subj, runs in pupil_dict.items():
-#         for run_data in runs.values():
-#             if run_data['sfreq_neon'] != 125:
-#                 continue
-#             rt_arr = run_data[rt_key] if rt_key else np.full(len(run_data[cond]), np.nan)
-#             for ep, vtc_val, rt_val in zip(run_data[cond], run_data[f'{cond}_vtc'], rt_arr):
-#                 ep = detrend_epoch(ep)
-#                 if np.all(np.isnan(ep)):
-#                     continue
-#                 t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
-#                 baseline_val = np.nanmean(ep[t_ep < 0])
-#                 all_epochs_cond.append(ep - baseline_val)
-#                 all_vtc_cond.append(vtc_val)
-#                 all_rt_cond.append(rt_val)
-#     if not all_epochs_cond:
-#         continue
-#     all_epochs_cond = np.array(all_epochs_cond)
-#     all_vtc_cond    = np.array(all_vtc_cond)
-#     all_rt_cond     = np.array(all_rt_cond)
-#     sort_idx        = np.argsort(all_vtc_cond)
-#     sorted_epochs   = all_epochs_cond[sort_idx]
-#     win             = max(1, int(sorted_epochs.shape[0] / 100 * vis_smooth))
-#     sorted_epochs   = np.apply_along_axis(
-#         lambda col: np.convolve(col, np.ones(win) / win, mode='same'),
-#         axis=0, arr=sorted_epochs)
-#     all_sorted_data_dt[cond] = {'epochs': sorted_epochs, 'vtc': all_vtc_cond[sort_idx],
-#                                 'rt': all_rt_cond[sort_idx]}
-
-# global_vmax_dt = np.nanmax(
-#     np.abs(np.concatenate([d['epochs'].ravel() for d in all_sorted_data_dt.values()])))
-
-# for cond, title in cond_labels.items():
-#     if cond not in all_sorted_data_dt:
-#         continue
-#     sorted_epochs = all_sorted_data_dt[cond]['epochs']
-#     sorted_vtc    = all_sorted_data_dt[cond]['vtc']
-#     fig, axes = plt.subplots(1, 2, figsize=(12, 6),
-#                              gridspec_kw={'width_ratios': [1, 8]})
-#     axes[0].barh(np.arange(len(sorted_vtc)), sorted_vtc, color='steelblue', height=1.0)
-#     axes[0].set_ylim(-0.5, len(sorted_vtc) - 0.5)
-#     axes[0].invert_yaxis()
-#     axes[0].set_xlabel('VTC')
-#     axes[0].set_ylabel('Trial (sorted)')
-#     im = axes[1].imshow(sorted_epochs, aspect='auto', origin='upper',
-#                         extent=[t_epoch_raster[0], t_epoch_raster[-1], len(sorted_vtc), 0],
-#                         cmap='RdBu_r', vmin=-global_vmax_dt, vmax=global_vmax_dt)
-#     axes[1].axvline(0, color='k', linestyle='--', linewidth=1)
-#     rt = all_sorted_data_dt[cond]['rt']
-#     if not np.all(np.isnan(rt)):
-#         axes[1].scatter(rt, np.arange(len(rt)) + 0.5,
-#                         color='k', s=4, marker='|', linewidths=0.8,
-#                         label='Reaction time', zorder=3)
-#         axes[1].legend(loc='upper right', fontsize=8)
-#     axes[1].set_xlabel('Time (s)')
-#     axes[1].set_yticks([])
-#     plt.colorbar(im, ax=axes[1], label='Pupil diameter (mm)')
-#     fig.suptitle(f'Epoch raster sorted by VTC — detrended — {title}')
-#     plt.tight_layout()
-
-# # --- RT-locked rasters (detrended, shared color scale) ---
-# rt_data_dt = {}
-# for epoch_key, vtc_key, label in [
-#     ('mnt_incorrect_rt_epoch', 'mnt_incorrect_vtc', 'mnt Incorrect'),
-#     ('city_correct_rt_epoch',  'city_correct_vtc',  'city Correct'),
-# ]:
-#     raw_epochs, raw_vtcs = collect_rt_epochs_dt(pupil_dict, epoch_key, vtc_key, rt_pre, rt_post)
-#     if raw_epochs:
-#         s_epochs, s_vtcs = sort_and_smooth(raw_epochs, raw_vtcs, vis_smooth)
-#         rt_data_dt[label] = {'epochs': s_epochs, 'vtcs': s_vtcs}
-
-# if rt_data_dt:
-#     shared_vmax_dt = max(np.nanmax(np.abs(d['epochs'])) for d in rt_data_dt.values())
-#     for label, d in rt_data_dt.items():
-#         s_epochs, s_vtcs = d['epochs'], d['vtcs']
-#         t_axis = np.linspace(-rt_pre, rt_post, s_epochs.shape[1])
-#         fig, axes = plt.subplots(1, 2, figsize=(12, 6),
-#                                  gridspec_kw={'width_ratios': [1, 8]})
-#         axes[0].barh(np.arange(len(s_vtcs)), s_vtcs, color='steelblue', height=1.0)
-#         axes[0].set_ylim(-0.5, len(s_vtcs) - 0.5)
-#         axes[0].invert_yaxis()
-#         axes[0].set_xlabel('VTC')
-#         axes[0].set_ylabel('Trial (sorted by VTC)')
-#         im = axes[1].imshow(s_epochs, aspect='auto', origin='upper',
-#                             extent=[t_axis[0], t_axis[-1], len(s_vtcs), 0],
-#                             cmap='RdBu_r', vmin=-shared_vmax_dt, vmax=shared_vmax_dt)
-#         axes[1].axvline(0, color='k', linestyle='--', linewidth=1, label='Reaction time')
-#         axes[1].legend(loc='upper right', fontsize=8)
-#         axes[1].set_xlabel('Time relative to RT (s)')
-#         axes[1].set_yticks([])
-#         plt.colorbar(im, ax=axes[1], label='Pupil diameter (mm)')
-#         fig.suptitle(f'Pupil epoch — {label} (RT-locked, detrended, sorted by VTC)')
-#         plt.tight_layout()
 
 #%% Pupil size derivative
 # Rerun all analyses using dPupil/dt (np.gradient, mm/s) instead of raw pupil size.
