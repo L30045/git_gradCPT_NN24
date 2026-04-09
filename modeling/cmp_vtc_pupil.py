@@ -13,7 +13,8 @@ sys.path.append("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking")
 from neon_to_bids_gradCPT_add_nodding import parseNeon_to_bids
 from pupil_labs import neon_recording as nr
 import re
-from utils_eyetracking import preprocess_pupil, get_pupil_epoch, plot_pupil_epoch
+from utils_eyetracking import preprocess_pupil, get_pupil_epoch, plot_pupil_epoch, \
+    _build_gaussian_basis, _convolve_onsets
 import warnings
 
 #%% functions
@@ -176,6 +177,63 @@ axes[1].set_xlabel('Time (s)')
 axes[1].set_title('After quadratic detrending')
 axes[1].legend(fontsize=9)
 axes[1].grid()
+plt.tight_layout()
+
+# GLM regression demo: remove phasic components and visualize
+_event_file = os.path.join(_demo_nirs_dir,
+    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_events.tsv")
+_events_df = pd.read_csv(_event_file, sep='\t')
+
+_basis, _t_hrf = _build_gaussian_basis(f_downsample,
+                                        t_pre=2.0, t_post=10.0,
+                                        t_delta=1.0, t_std=1.0)
+_stim_conds = {
+    'mnt_correct':    (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] == 0),
+    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+}
+_resp_conds = {
+    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+}
+_X_blocks = []
+for _idx in _stim_conds.values():
+    _onsets = _events_df[_idx]['onset'].values
+    if len(_onsets) > 0:
+        _X_blocks.append(_convolve_onsets(_onsets, t_neon, _basis, _t_hrf, f_downsample))
+for _idx in _resp_conds.values():
+    _sub = _events_df[_idx]
+    _rt_onsets = (_sub['onset'] + _sub['reaction_time']).values
+    if len(_rt_onsets) > 0:
+        _X_blocks.append(_convolve_onsets(_rt_onsets, t_neon, _basis, _t_hrf, f_downsample))
+_X = np.hstack(_X_blocks)
+_X_int = np.hstack([_X, np.ones((len(pupil_d), 1))])
+_beta, _, _, _ = np.linalg.lstsq(_X_int, pupil_d, rcond=None)
+_pupil_phasic   = _X @ _beta[:-1]
+_pupil_residual = pupil_d - _pupil_phasic
+
+fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+axes[0].plot(t_neon, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
+axes[0].plot(t_neon, _pupil_phasic, color='crimson', linewidth=1.0, label='GLM fit (phasic)')
+axes[0].set_ylabel('Pupil diameter (mm)')
+axes[0].set_title(f'GLM regression demo — {_demo_subj} run-{_demo_run:02d}: detrended + phasic fit')
+axes[0].legend(fontsize=9)
+axes[0].grid()
+
+axes[1].plot(t_neon, _pupil_phasic, color='crimson', linewidth=0.8)
+axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[1].set_ylabel('Pupil diameter (mm)')
+axes[1].set_title('Phasic component (GLM fit)')
+axes[1].grid()
+
+axes[2].plot(t_neon, _pupil_residual, color='steelblue', linewidth=0.6)
+axes[2].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[2].set_ylabel('Pupil diameter (mm)')
+axes[2].set_xlabel('Time (s)')
+axes[2].set_title('After phasic regression')
+axes[2].grid()
 plt.tight_layout()
 
 #%% cross subjects epoch analysis
@@ -810,91 +868,14 @@ for onsets_key, vtc_key, colors_rt, cond_title in rt_vtc_specs_dpp:
     ax.grid()
     plt.tight_layout()
 
-#%% Correlation between pupil size and VTC
-# Re-read event files to get trial onsets; detrend the full-run pupil signal from
-# pupil_dict without modifying it.  Results are stored in corr_dict.
+#%% Reproduce Brink 2016 results
+"""
+For each run:
+1. Preprocess raw pupil data — blink interpolation, low-pass filter at 6 Hz, regress out phasic dilations
+Apply sliding window (50-trial width, 15-trial steps) to the residual tonic pupil time series → produces one mean diameter value (and one derivative value) per window position. This is the "downsampling" step.
+Z-score the resulting window-level time series — the paper says they "Z-scored the time series" before fitting the regression lines (this is stated in the Results section under "Performance decrements with time-on-task," and the same procedure is applied to both behavioral and pupil measures).
+Fit regression (linear and quadratic) between the z-scored pupil time series and z-scored behavioral time series.
+"""
 
-_cond_idx_fns = {
-    'mnt_correct':   lambda df: (df['trial_type'] == 'mnt') & (df['response_code'] == 0),
-    'mnt_incorrect': lambda df: (df['trial_type'] == 'mnt') & (df['response_code'] != 0),
-    'city_correct':  lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 0),
-    'city_incorrect':lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
-}
-_cond_labels_corr = {
-    'mnt_correct':   'mnt — Correct',
-    'mnt_incorrect': 'mnt — Incorrect',
-    'city_correct':  'city — Correct',
-    'city_incorrect':'city — Incorrect',
-}
-
-corr_dict = {}   # corr_dict[subj][run_key][cond] = {'r': float, 'p': float, 'n': int}
-
-for subj, runs in pupil_dict.items():
-    subj_id   = subj.replace('sub-', '')
-    subj_nirs = os.path.join(project_path, subj, 'nirs')
-    corr_dict[subj] = {}
-    for run_key, run_data in runs.items():
-        run_id     = int(run_key.replace('run-', ''))
-        event_file = os.path.join(
-            subj_nirs,
-            f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-        if not os.path.isfile(event_file):
-            continue
-        events_df  = pd.read_csv(event_file, sep='\t')
-        vtc_full   = smoothing_VTC_gaussian_array(events_df['VTC'].values, L=20)
-
-        t_neon         = run_data['t_neon']
-        pupil_detrend  = detrend_run(run_data['pupil_d'])
-
-        corr_dict[subj][run_key] = {}
-        for cond, idx_fn in _cond_idx_fns.items():
-            idx     = idx_fn(events_df)
-            onsets  = events_df[idx]['onset'].values
-            vtcs    = vtc_full[idx.values]
-            if len(onsets) == 0:
-                continue
-            trial_means = []
-            for onset in onsets:
-                mask = (t_neon >= onset) & (t_neon < onset + epoch_length)
-                ep   = pupil_detrend[mask]
-                trial_means.append(
-                    np.nanmean(ep) if (len(ep) > 0 and not np.all(np.isnan(ep)))
-                    else np.nan)
-            trial_means = np.array(trial_means)
-            valid       = ~np.isnan(trial_means) & ~np.isnan(vtcs)
-            if valid.sum() > 2:
-                r, p = sp.stats.pearsonr(trial_means[valid], vtcs[valid])
-                corr_dict[subj][run_key][cond] = {'r': r, 'p': p, 'n': int(valid.sum())}
-
-# --- Plot: per-run r values for each condition ---
-conditions_corr = list(_cond_idx_fns.keys())
-rs_by_cond = {cond: [] for cond in conditions_corr}
-for subj_runs in corr_dict.values():
-    for run_res in subj_runs.values():
-        for cond in conditions_corr:
-            if cond in run_res:
-                rs_by_cond[cond].append(run_res[cond]['r'])
-
-fig, ax = plt.subplots(figsize=(8, 5))
-x_pos = np.arange(len(conditions_corr))
-for i, cond in enumerate(conditions_corr):
-    rs = np.array(rs_by_cond[cond])
-    if len(rs) == 0:
-        continue
-    ax.scatter(np.full(len(rs), i) + np.random.uniform(-0.15, 0.15, len(rs)),
-               rs, alpha=0.5, s=20, zorder=3)
-    mean_r = rs.mean()
-    sem_r  = rs.std() / np.sqrt(len(rs))
-    ax.errorbar(i, mean_r, yerr=sem_r, fmt='D', color='k', capsize=5, zorder=4)
-ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
-ax.set_xticks(x_pos)
-ax.set_xticklabels([_cond_labels_corr[c] for c in conditions_corr],
-                   rotation=15, ha='right')
-ax.set_ylabel('Pearson r (detrended pupil vs VTC)')
-n_subj_corr = sum(1 for runs in corr_dict.values() if runs)
-ax.set_title(f'Correlation: full-run detrended pupil vs VTC '
-             f'(per run, N={n_subj_corr} subjects)')
-ax.grid(axis='y')
-plt.tight_layout()
 
 # %%
