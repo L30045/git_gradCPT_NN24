@@ -155,6 +155,8 @@ def zscore_safe(x):
 #%% For each run, get z-scored pupil time series and 4 performance measures
 f_lowpass    = 6      # Hz — Brink 2016 uses 6 Hz low-pass for tonic pupil
 f_downsample = 60     # Hz
+fit_order = 2         # For regression between pupil and measure
+detrend_order = 1     # For removing time-on-task effect
 
 perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv']
 
@@ -212,7 +214,7 @@ for subj in subject_list:
                 neon_data, rec=rec,
                 f_lowpass=f_lowpass,
                 f_downsample=f_downsample,
-                detrend_order=None,
+                detrend_order=detrend_order,
                 is_rm_phasic=True,
                 events_df=events_df,
             )
@@ -318,7 +320,7 @@ for k in perf_keys:
     py = bin_results[k]['behavior']
     c  = perf_colors[k]
     ax2.scatter(px, py, s=15, color=c, alpha=0.5, zorder=3)
-    coef  = np.polyfit(px, py, 2)
+    coef  = np.polyfit(px, py, fit_order)
     x_fit = np.linspace(px.min(), px.max(), 200)
     ax2.plot(x_fit, np.polyval(coef, x_fit), color=c, linewidth=2,
              label=perf_labels[k])
