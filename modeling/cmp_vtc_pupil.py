@@ -1042,3 +1042,5 @@ ax.set_title(f'Correlation: full-run detrended pupil vs VTC '
              f'(per run, N={n_subj_corr} subjects)')
 ax.grid(axis='y')
 plt.tight_layout()
+
+# %%

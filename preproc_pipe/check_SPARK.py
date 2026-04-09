@@ -13,11 +13,12 @@ import pickle
 import glob
 import time
 import sys
+import asrpy
 # from spectral_connectivity import Multitaper, Connectivity
 # from spectral_connectivity.transforms import prepare_time_series
 
 
-filepath = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24_pilot/sourcedata/raw/sub-SPARK-testing-002")
+filepath = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24_pilot/sourcedata/raw/sub-SPARK-testing-003")
 # read replace opto location
 opt_loc_csv = pd.read_csv(os.path.join(filepath, 'Replace_optodes_list.csv'))
 nearest_1020 = opt_loc_csv['Nearest 10-20 system '].copy()
@@ -204,6 +205,7 @@ for fname in filename_list:
         print(f"Preproc file exists, skipping preprocessing: {preproc_fname}")
         EEG = mne.io.read_raw_fif(preproc_fname, preload=True, verbose=False)
         rm_ch_list = [ch for ch in nearest_1020 if ch not in EEG.ch_names]
+        ch_names = nearest_1020.tolist()
     else:
         # load EEG raw
         eeg_csv = pd.read_csv(os.path.join(filepath,fname), skiprows=12, index_col=False)
@@ -212,6 +214,9 @@ for fname in filename_list:
         # truncate EEG by trigger: keep rows between first and last button press (trigger ~ 0)
         trig = eeg_csv['TRIGGER(DIGITAL)']
         pressed = trig[trig == 0].index
+        # check if there is no trigger pressed, skip this file
+        if len(pressed)<1:
+            continue
         eeg_csv = eeg_csv.loc[pressed[0]:pressed[-1]].reset_index(drop=True)
         # put eeg_csv into mne raw object
         sfreq = np.round(np.median(1/np.diff(eeg_csv['Time(s)'])))  # Hz
@@ -238,6 +243,11 @@ for fname in filename_list:
             EEG.set_eeg_reference(ref_channels='average', ch_type='eeg',verbose=False)
         elif reref_ch:
             EEG.set_eeg_reference(ref_channels=reref_ch, ch_type='eeg',verbose=False)
+        # ASR
+        asr = asrpy.ASR(sfreq=EEG.info["sfreq"], cutoff=15)
+        asr.fit(EEG)
+        EEG = asr.transform(EEG)
+        # save preprocessing results
         EEG.save(preproc_fname, overwrite=True)
     # ICA
     if os.path.exists(ica_fname):
@@ -248,6 +258,10 @@ for fname in filename_list:
                 method='infomax', random_state=42,verbose=False)
         ica.fit(EEG, picks=['eeg'],verbose=False)
         ica.save(ica_fname, overwrite=True)
+    #  remove potential eye components (if any) using Fz channles
+    eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['Fz'], measure='correlation', verbose=False)
+    ica.exclude = eog_inds
+    EEG = ica.apply(EEG,verbose=False)
     # =================================================
     subj_EEG_dict[key_name] = EEG    
     subj_ICA_dict[key_name] = ica
@@ -341,11 +355,12 @@ subj_epoch_dict = dict()
 subj_vtc_dict = dict()
 subj_react_dict = dict()
 # for each run
-for run_id in np.arange(1,4):
+for key_name in subj_EEG_dict.keys():
+    run_id = int(key_name.split('gradcpt')[-1])
     subj_epoch_dict[f"run{run_id:02d}"] = dict()
     subj_vtc_dict[f"run{run_id:02d}"] = dict()
     subj_react_dict[f"run{run_id:02d}"] = dict()
-    EEG = subj_EEG_dict[f"gradcpt{run_id}"]
+    EEG = subj_EEG_dict[key_name]
     # load corresponding event file
     event_file = glob.glob(os.path.join(filepath, f'*run-0{run_id}_events.tsv'))[0]
     events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
@@ -370,7 +385,7 @@ for run_id in np.arange(1,4):
                 ev_react = ev_react[[len(x)==0 for x in epochs.drop_log]]
             except:
                 print("="*20)
-                print(f"No clean trial found in {key_name}_gradCPT{run_id} ({select_event}).")    
+                print(f"No clean trial found in gradCPT{run_id} ({select_event}).")    
                 print("="*20)
                 epochs = []
         else:
@@ -393,10 +408,10 @@ combine_epoch_dict: dictionary for combined epochs from each run for subject.
                     combine_epoch_dict["select_event"]["ch"]: list of epoch of selected event and channel. (length equals to number of subjects)
 """
 # get median of the vtc for each subject
-thres_vtc = np.median(np.concatenate([subj_vtc_dict[f"run{run_id:02d}"][event]
-                                        for run_id in range(1, 4)
+thres_vtc = np.median(np.concatenate([subj_vtc_dict[key_name][event]
+                                        for key_name in subj_vtc_dict.keys()
                                         for event in event_labels_lookup.keys()
-                                        if not event.endswith("_response") and len(subj_vtc_dict[f"run{run_id:02d}"][event]) > 0]))
+                                        if not event.endswith("_response") and len(subj_vtc_dict[key_name][event]) > 0]))
 for select_event in event_labels_lookup.keys():
     epoch_dict = dict()
     vtc_dict = dict()
@@ -413,10 +428,10 @@ for select_event in event_labels_lookup.keys():
     tmp_vtc_list = []
     tmp_react_list = []
     tmp_in_out_zone_list = []
-    for run_id in np.arange(1,4):
-        loc_e = subj_epoch_dict[f"run{run_id:02d}"][select_event]
-        loc_v = subj_vtc_dict[f"run{run_id:02d}"][select_event]
-        loc_r = subj_react_dict[f"run{run_id:02d}"][select_event]
+    for key_name in subj_epoch_dict.keys():
+        loc_e = subj_epoch_dict[key_name][select_event]
+        loc_v = subj_vtc_dict[key_name][select_event]
+        loc_r = subj_react_dict[key_name][select_event]
         if len(loc_e)>0:
             tmp_epoch_list.append(loc_e)
             tmp_vtc_list.append(loc_v)
@@ -505,4 +520,322 @@ for ch in vis_ch:
     plt.tight_layout()
     plt.show()
 
-# %%
+# %% Cross-subject ERP plot (001, 002, 003)
+select_events = ['city_correct', 'mnt_correct']
+colors = ['b', 'r']
+vis_ch = ['Fz', 'Cz', 'Pz', 'Oz']
+
+base_raw_dir = os.path.dirname(filepath)
+subj_ids = ['001', '002', '003']
+
+# Collect per-subject mean ERPs: {event: {ch: [mean_erp_subj1, ...]}}
+xsubj_erp_dict = {ev: {ch: [] for ch in vis_ch} for ev in select_events}
+time_vec = None
+
+for subj_id in subj_ids:
+    subj_dir = os.path.join(base_raw_dir, f'sub-SPARK-testing-{subj_id}')
+    preproc_files = sorted(glob.glob(os.path.join(subj_dir, '*preproc_eeg.fif')))
+    subj_all_epochs = {ev: [] for ev in select_events}
+
+    for preproc_f in preproc_files:
+        run_tag = preproc_f.split('run-')[1][:2]  # e.g. '01'
+        ica_fname = preproc_f.split('_preproc_eeg')[0]+'_ica.fif'
+        event_files = glob.glob(os.path.join(subj_dir, f'*run-{run_tag}*events.tsv'))
+        if len(event_files) == 0:
+            continue
+        EEG = mne.io.read_raw_fif(preproc_f, preload=True, verbose=False)
+        ica = mne.preprocessing.read_ica(ica_fname)
+        #  remove potential eye components (if any) using Fz channles
+        eog_inds, eog_scores = ica.find_bads_eog(EEG, ch_name=['Fz'], measure='correlation', verbose=False)
+        ica.exclude = eog_inds
+        EEG = ica.apply(EEG,verbose=False)
+        events_arr, ev_labels, _, _ = tsv_to_events(event_files[0], EEG.info['sfreq'])
+
+        for select_event in select_events:
+            if not np.any(events_arr[:, -1] == ev_labels[select_event]):
+                continue
+            try:
+                ev_epochs = epoch_by_select_event(EEG, events_arr, ev_labels,
+                                                  select_event=select_event,
+                                                  baseline_length=-0.2,
+                                                  epoch_reject_crit=epoch_reject_crit,
+                                                  is_detrend=is_detrend,
+                                                  event_duration=1.8,
+                                                  verbose=False)
+                subj_all_epochs[select_event].append(ev_epochs)
+            except Exception:
+                pass
+
+    # Compute subject-level mean ERP per condition per channel
+    for select_event in select_events:
+        if len(subj_all_epochs[select_event]) == 0:
+            continue
+        # Pick only vis_ch (channels present in all runs) before concatenating
+        available_vis_ch = [ch for ch in vis_ch if all(ch in ep.ch_names for ep in subj_all_epochs[select_event])]
+        aligned = [ep.copy().pick(available_vis_ch) for ep in subj_all_epochs[select_event]]
+        concat = mne.concatenate_epochs(aligned, verbose=False)
+        if time_vec is None:
+            time_vec = concat.times * 1000
+        for ch in vis_ch:
+            if ch not in concat.ch_names:
+                continue
+            ch_data = concat.copy().pick(ch).get_data()  # (n_epochs, 1, n_times)
+            mean_erp = np.mean(ch_data[:, 0, :], axis=0)  # (n_times,)
+            xsubj_erp_dict[select_event][ch].append(mean_erp)
+
+# Plot
+fig, axes = plt.subplots(len(vis_ch), 1, figsize=(10, 3 * len(vis_ch)), sharex=True)
+for ax, ch in zip(axes, vis_ch):
+    for idx, select_event in enumerate(select_events):
+        erps = xsubj_erp_dict[select_event][ch]
+        if len(erps) == 0:
+            continue
+        erp_arr = np.vstack(erps)  # (n_subjects, n_times)
+        n_subj = erp_arr.shape[0]
+        mean_erp = np.mean(erp_arr, axis=0)
+        sem_erp = np.std(erp_arr, axis=0) / np.sqrt(n_subj)
+        label = 'City' if select_event.split('_')[0] == 'city' else 'Mountain'
+        ax.plot(time_vec, mean_erp, color=colors[idx], linewidth=2, label=f'{label} (n={n_subj})')
+        ax.fill_between(time_vec, mean_erp - sem_erp, mean_erp + sem_erp, alpha=0.3, color=colors[idx])
+    ax.axhline(0, color='k', linestyle='--', linewidth=1)
+    ax.axvline(0, color='k', linestyle='--', linewidth=1)
+    ax.set_ylabel('Amplitude (V)')
+    ax.set_title(ch.upper())
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+axes[-1].set_xlabel('Time (ms)')
+plt.suptitle('Cross-Subject ERP (sub-001, 002, 003)', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+#%% Dipole fitting
+# Fit a single equivalent current dipole (ECD) per subject per condition
+# using a sphere head model (no MRI available).
+# Strategy:
+#   1. Load preprocessed EEG + apply ICA for each subject/run
+#   2. Epoch by event, compute evoked (ERP average)
+#   3. Compute noise covariance from pre-stimulus baseline
+#   4. Fit dipole at the time of the ERP peak amplitude (Pz)
+#   5. Store dipole fit results (position, orientation, GOF) per subject
+
+dipole_select_events = ['mnt_correct']
+dipole_base_raw_dir = os.path.dirname(filepath)
+dipole_subj_ids = ['001', '002', '003']
+dipole_peak_ch = 'Pz'          # channel used to identify ERP peak time
+dipole_fit_twindow = (0.25, 0.45)  # time window (s) around the peak to fit dipole
+
+# Results: {event: [{subj, pos, ori, gof, peak_time, amplitude}]}
+dipole_results = {ev: [] for ev in dipole_select_events}
+
+for subj_id in dipole_subj_ids:
+    subj_dir = os.path.join(dipole_base_raw_dir, f'sub-SPARK-testing-{subj_id}')
+    preproc_files = sorted(glob.glob(os.path.join(subj_dir, '*preproc_eeg.fif')))
+
+    subj_epochs_per_event = {ev: [] for ev in dipole_select_events}
+
+    for preproc_f in preproc_files:
+        run_tag = preproc_f.split('run-')[1][:2]
+        ica_fname = preproc_f.split('_preproc_eeg')[0] + '_ica.fif'
+        event_files = glob.glob(os.path.join(subj_dir, f'*run-{run_tag}*events.tsv'))
+        if len(event_files) == 0:
+            continue
+        EEG = mne.io.read_raw_fif(preproc_f, preload=True, verbose=False)
+        if os.path.exists(ica_fname):
+            ica = mne.preprocessing.read_ica(ica_fname)
+            eog_inds, _ = ica.find_bads_eog(EEG, ch_name=['Fz'], measure='correlation', verbose=False)
+            ica.exclude = eog_inds
+            EEG = ica.apply(EEG, verbose=False)
+        events_arr, ev_labels, _, _ = tsv_to_events(event_files[0], EEG.info['sfreq'])
+
+        for select_event in dipole_select_events:
+            if not np.any(events_arr[:, -1] == ev_labels[select_event]):
+                continue
+            try:
+                ep = epoch_by_select_event(EEG, events_arr, ev_labels,
+                                           select_event=select_event,
+                                           baseline_length=-0.2,
+                                           epoch_reject_crit=epoch_reject_crit,
+                                           is_detrend=is_detrend,
+                                           event_duration=1.8,
+                                           verbose=False)
+                subj_epochs_per_event[select_event].append(ep)
+            except Exception as e:
+                print(f"sub-{subj_id} {select_event} run-{run_tag}: skipped ({e})")
+
+    # Fit dipole per condition for this subject
+    for select_event in dipole_select_events:
+        ep_list = subj_epochs_per_event[select_event]
+        if len(ep_list) == 0:
+            print(f"sub-{subj_id} {select_event}: no epochs, skipping dipole fit.")
+            continue
+
+        # Align channels across runs and concatenate
+        common_chs = list(set.intersection(*[set(ep.ch_names) for ep in ep_list]))
+        ep_list_aligned = [ep.copy().pick(common_chs) for ep in ep_list]
+        all_epochs = mne.concatenate_epochs(ep_list_aligned, verbose=False)
+
+        # Baseline-corrected evoked
+        evoked = all_epochs.average()
+        evoked.apply_baseline((-0.2, 0))
+
+        # Noise covariance from pre-stimulus baseline
+        noise_cov = mne.compute_covariance(all_epochs, tmin=-0.2, tmax=0.0,
+                                            method='auto', verbose=False)
+
+        # Sphere head model
+        sphere = mne.make_sphere_model(r0='auto', head_radius='auto',
+                                       info=evoked.info, verbose=False)
+
+        # Find peak time on Pz (or first available channel)
+        peak_ch = dipole_peak_ch if dipole_peak_ch in evoked.ch_names else evoked.ch_names[0]
+        peak_ch_idx = evoked.ch_names.index(peak_ch)
+        t_mask = (evoked.times >= dipole_fit_twindow[0]) & (evoked.times <= dipole_fit_twindow[1])
+        if not np.any(t_mask):
+            t_mask = np.ones(len(evoked.times), dtype=bool)
+        peak_rel_idx = np.argmax(np.abs(evoked.data[peak_ch_idx, t_mask]))
+        peak_time = evoked.times[t_mask][peak_rel_idx]
+
+        # Crop evoked to a narrow window around the peak for stable fitting
+        half_win = 0.025  # ±25 ms
+        evoked_crop = evoked.copy().crop(peak_time - half_win, peak_time + half_win)
+
+        # Fit dipole
+        dip, _ = mne.fit_dipole(evoked_crop, noise_cov, sphere, verbose=False)
+
+        # Filter dipoles: keep only those with GOF >= 80%
+        gof_mask = dip.gof >= 80.0
+        if not np.any(gof_mask):
+            print(f"sub-{subj_id} {select_event}: no dipoles with GOF>=80%, skipping.")
+            continue
+
+        # Among remaining dipoles, pick the one with the largest peak amplitude
+        best_idx = np.where(gof_mask)[0][np.argmax(np.abs(dip.amplitude[gof_mask]))]
+        result = dict(
+            subj=subj_id,
+            pos=dip.pos[best_idx],           # (x,y,z) in meters
+            ori=dip.ori[best_idx],           # unit orientation vector
+            gof=dip.gof[best_idx],           # goodness of fit (%)
+            amplitude=dip.amplitude[best_idx],  # nAm
+            peak_time=peak_time,
+        )
+        dipole_results[select_event].append(result)
+        print(f"sub-{subj_id} {select_event}: GOF={result['gof']:.1f}%, "
+              f"pos={np.round(result['pos']*1000, 1)} mm, "
+              f"peak={peak_time*1000:.0f} ms")
+
+# Print summary table
+print("\n" + "="*60)
+print("Dipole fitting summary")
+print("="*60)
+for ev in dipole_select_events:
+    print(f"\nCondition: {ev}")
+    print(f"{'Subj':<8} {'GOF%':>6} {'Peak(ms)':>10} {'Amp(nAm)':>10} {'pos_x(mm)':>10} {'pos_y(mm)':>10} {'pos_z(mm)':>10}")
+    for r in dipole_results[ev]:
+        print(f"{r['subj']:<8} {r['gof']:>6.1f} {r['peak_time']*1000:>10.0f} "
+              f"{r['amplitude']*1e9:>10.2f} "
+              f"{r['pos'][0]*1000:>10.1f} {r['pos'][1]*1000:>10.1f} {r['pos'][2]*1000:>10.1f}")
+
+#%% Plot IC activities for dipole-fitted subjects
+# For each subject that passed dipole fitting:
+#   - Reload raw + ICA, exclude EOG components as before
+#   - Get IC source epochs (all non-excluded ICs)
+#   - Average across epochs (ERP of each IC)
+#   - Plot: topomap + time course for each IC, one figure per subject
+
+for select_event in dipole_select_events:
+    subj_ids_with_dipole = [r['subj'] for r in dipole_results[select_event]]
+
+    for subj_id in subj_ids_with_dipole:
+        subj_dir = os.path.join(dipole_base_raw_dir, f'sub-SPARK-testing-{subj_id}')
+        preproc_files = sorted(glob.glob(os.path.join(subj_dir, '*preproc_eeg.fif')))
+
+        ic_epochs_list = []  # collect IC source epochs across runs
+
+        for preproc_f in preproc_files:
+            run_tag = preproc_f.split('run-')[1][:2]
+            ica_fname = preproc_f.split('_preproc_eeg')[0] + '_ica.fif'
+            event_files = glob.glob(os.path.join(subj_dir, f'*run-{run_tag}*events.tsv'))
+            if len(event_files) == 0 or not os.path.exists(ica_fname):
+                continue
+
+            EEG = mne.io.read_raw_fif(preproc_f, preload=True, verbose=False)
+            ica = mne.preprocessing.read_ica(ica_fname)
+            eog_inds, _ = ica.find_bads_eog(EEG, ch_name=['Fz'], measure='correlation', verbose=False)
+            ica.exclude = eog_inds
+
+            events_arr, ev_labels, _, _ = tsv_to_events(event_files[0], EEG.info['sfreq'])
+            if not np.any(events_arr[:, -1] == ev_labels[select_event]):
+                continue
+
+            try:
+                ep = epoch_by_select_event(EEG, events_arr, ev_labels,
+                                           select_event=select_event,
+                                           baseline_length=-0.2,
+                                           epoch_reject_crit=epoch_reject_crit,
+                                           is_detrend=is_detrend,
+                                           event_duration=1.8,
+                                           verbose=False)
+            except Exception as e:
+                print(f"IC plot sub-{subj_id} run-{run_tag}: skipped ({e})")
+                continue
+
+            # Project epochs into IC source space (excluded ICs zeroed out)
+            ic_ep = ica.get_sources(ep)  # shape: (n_epochs, n_ics, n_times)
+            ic_epochs_list.append((ica, ic_ep))
+
+        if len(ic_epochs_list) == 0:
+            print(f"sub-{subj_id}: no IC epochs available for plotting.")
+            continue
+
+        # Use ICA from first run for topomaps
+        ica_ref, ic_ep_ref = ic_epochs_list[0]
+        times_ms = ic_ep_ref.times * 1000
+        active_ics = [i for i in range(len(ica_ref.ch_names)) if i not in ica_ref.exclude]
+
+        # Average IC ERPs across runs: each run contributes its own mean (n_ics may differ
+        # across runs if ICA was fit separately, so handle per-IC averaging independently)
+        ic_erp_sum = np.zeros((len(active_ics), len(ic_ep_ref.times)))
+        ic_erp_count = np.zeros(len(active_ics))
+        for ica_run, ic_ep in ic_epochs_list:
+            run_active = [i for i in range(len(ica_run.ch_names)) if i not in ica_run.exclude]
+            run_data = ic_ep.get_data()  # (n_epochs, n_ics_run, n_times)
+            run_erp = np.mean(run_data, axis=0)  # (n_ics_run, n_times)
+            for out_row, ic_idx in enumerate(active_ics):
+                if ic_idx < len(run_active) and ic_idx in run_active:
+                    ic_erp_sum[out_row] += run_erp[ic_idx]
+                    ic_erp_count[out_row] += 1
+        # Avoid division by zero
+        ic_erp_count[ic_erp_count == 0] = np.nan
+        ic_erp_avg = ic_erp_sum / ic_erp_count[:, np.newaxis]
+
+        n_active = len(active_ics)
+
+        # One figure per subject: rows=ICs, cols=[topomap, time course]
+        fig, axes = plt.subplots(n_active, 2,
+                                 figsize=(8, max(2 * n_active, 4)),
+                                 gridspec_kw={'width_ratios': [1, 3]})
+        if n_active == 1:
+            axes = axes[np.newaxis, :]  # ensure 2-D indexing
+
+        fig.suptitle(f'IC activations — sub-SPARK-testing-{subj_id} ({select_event})', fontsize=11)
+
+        for row, ic_idx in enumerate(active_ics):
+            ax_topo = axes[row, 0]
+            ax_ts   = axes[row, 1]
+
+            # Topomap
+            mne.viz.plot_ica_components(ica_ref, picks=[ic_idx], axes=ax_topo,
+                                        show=False, colorbar=False)
+            ax_topo.set_title(f'IC {ic_idx}', fontsize=8)
+
+            # Time course (ERP averaged across runs)
+            ic_data = ic_erp_avg[row]
+            ax_ts.plot(times_ms, ic_data, lw=1)
+            ax_ts.axvline(0, color='k', lw=0.8, ls='--')
+            ax_ts.axhline(0, color='k', lw=0.5, ls=':')
+            ax_ts.set_xlabel('Time (ms)', fontsize=7)
+            ax_ts.set_ylabel('Amplitude (a.u.)', fontsize=7)
+            ax_ts.tick_params(labelsize=7)
+
+        plt.tight_layout()
+        plt.show()
