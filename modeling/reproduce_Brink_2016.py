@@ -42,7 +42,7 @@ For each bin, compute the mean behavioral value of the observations that fell in
 dirs = os.listdir(project_path)
 subject_list = sorted([d for d in dirs if 'sub' in d])
 
-#%% functions for calculating performance
+# functions for calculating performance
 # Use the same sliding window as in preprocessing pupil time series
 # (50-trial width, 15-trial steps)
 
@@ -70,8 +70,10 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
     Returns
     -------
     dict with keys:
-        'pupil_mean'  : mean tonic pupil per window (z-scored later)
-        'fa_rate'     : false alarm rate (mnt trials pressed / total mnt trials)
+        'pupil_mean'            : mean tonic pupil per window (z-scored later)
+        'pupil_derivative_mean' : mean of consecutive differences between
+                                  trial-onset pupil samples within the window
+        'fa_rate'               : false alarm rate (mnt trials pressed / total mnt trials)
         'slow_q_rt'   : slow quintile RT proportion (city trials)
         'mean_rt'     : mean RT of city correct trials
         'rtcv'        : RT coefficient of variation (city correct trials)
@@ -81,7 +83,8 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
     n_trials = len(trials)
     starts = np.arange(0, n_trials - win_trials + 1, step_trials)
 
-    pupil_mean = []
+    pupil_mean            = []
+    pupil_derivative_mean = []
     fa_rate    = []
     slow_q_rt  = []
     mean_rt    = []
@@ -103,6 +106,8 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
             idx = np.argmin(np.abs(t_pupil - onset))
             pupil_samples.append(pupil_d[idx])
         pupil_mean.append(np.nanmean(pupil_samples))
+        diffs = np.diff(pupil_samples)
+        pupil_derivative_mean.append(np.nanmean(diffs) if len(diffs) > 0 else np.nan)
 
         # --- 1. false alarm rate: mnt trials where space was pressed ---
         mnt = win[win['trial_type'] == 'mnt']
@@ -134,8 +139,9 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
         win_center.append(start + win_trials // 2)
 
     return {
-        'pupil_mean':  np.array(pupil_mean),
-        'fa_rate':     np.array(fa_rate),
+        'pupil_mean':            np.array(pupil_mean),
+        'pupil_derivative_mean': np.array(pupil_derivative_mean),
+        'fa_rate':               np.array(fa_rate),
         'slow_q_rt':   np.array(slow_q_rt),
         'mean_rt':     np.array(mean_rt),
         'rtcv':        np.array(rtcv),
@@ -157,11 +163,13 @@ f_lowpass    = 6      # Hz — Brink 2016 uses 6 Hz low-pass for tonic pupil
 f_downsample = 60     # Hz
 fit_order = 2         # For regression between pupil and measure
 detrend_order = 1     # For removing time-on-task effect
+win_trials = 35       # trial - sliding window length for calculating performance measures
+step_trials = 11      # trial - step size for sliding window
 
 perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv']
 
-# all_obs[perf_key] accumulates (pupil_z, behavior_z) pairs across all subj/runs
-all_obs = {k: {'pupil': [], 'behavior': []} for k in perf_keys}
+# all_obs[perf_key] accumulates (pupil_z, pupil_derivative_z, behavior_z) pairs across all subj/runs
+all_obs = {k: {'pupil': [], 'pupil_derivative': [], 'behavior': []} for k in perf_keys}
 included_subjects = set()
 
 for subj in subject_list:
@@ -206,8 +214,7 @@ for subj in subject_list:
             except Exception:
                 pass
 
-        # Step 1: preprocess — no polynomial detrend (detrend_order=None),
-        # 6 Hz low-pass, phasic GLM regression
+        # Step 1: preprocess — polynomial detrend (detrend_order), 6 Hz low-pass, phasic GLM regression
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             t_pupil, pupil_tonic = preprocess_pupil(
@@ -224,10 +231,10 @@ for subj in subject_list:
 
         # Step 2: sliding window → per-window pupil mean + behavioral measures
         win_data = sliding_window_trials(events_df, pupil_tonic, t_pupil,
-                                         win_trials=50, step_trials=15)
+                                         win_trials=win_trials, step_trials=step_trials)
 
         # sanity check: all outputs must have the same length
-        all_keys = ['pupil_mean'] + perf_keys
+        all_keys = ['pupil_mean', 'pupil_derivative_mean'] + perf_keys
         lengths = {k: len(win_data[k]) for k in all_keys}
         if len(set(lengths.values())) != 1:
             raise ValueError(
@@ -235,12 +242,25 @@ for subj in subject_list:
                 f"inconsistent lengths: {lengths}"
             )
 
-        # Step 3: z-score within this run
-        pupil_z = zscore_safe(win_data['pupil_mean'])
-        beh_z   = {k: zscore_safe(win_data[k]) for k in perf_keys}
+        # Step 2b: detrend performance measures using window index as time axis
+        n_wins = len(win_data['win_center'])
+        t_wins = np.arange(n_wins, dtype=float)
+        detrended_perf = {}
+        for k in perf_keys:
+            series = win_data[k].copy().astype(float)
+            valid_mask = ~np.isnan(series)
+            if valid_mask.sum() > detrend_order:
+                coef = np.polyfit(t_wins[valid_mask], series[valid_mask], detrend_order)
+                series[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
+            detrended_perf[k] = series
 
-        # single shared valid mask: window must be valid for pupil AND all measures
-        valid = ~np.isnan(pupil_z)
+        # Step 3: z-score within this run
+        pupil_z            = zscore_safe(win_data['pupil_mean'])
+        pupil_derivative_z = zscore_safe(win_data['pupil_derivative_mean'])
+        beh_z              = {k: zscore_safe(detrended_perf[k]) for k in perf_keys}
+
+        # single shared valid mask: window must be valid for pupil, derivative, AND all measures
+        valid = ~np.isnan(pupil_z) & ~np.isnan(pupil_derivative_z)
         for k in perf_keys:
             valid = valid & ~np.isnan(beh_z[k])
         if valid.sum() < 2:
@@ -249,6 +269,7 @@ for subj in subject_list:
 
         for k in perf_keys:
             all_obs[k]['pupil'].extend(pupil_z[valid].tolist())
+            all_obs[k]['pupil_derivative'].extend(pupil_derivative_z[valid].tolist())
             all_obs[k]['behavior'].extend(beh_z[k][valid].tolist())
 
         included_subjects.add(subj)
@@ -257,23 +278,40 @@ for subj in subject_list:
 n_subjects = len(included_subjects)
 print(f"Included subjects: {n_subjects} — {sorted(included_subjects)}")
 
-#%% Aggregate: sort by pupil value, divide into 30 equal bins,
+# Aggregate: sort by pupil value, divide into 30 equal bins,
 #   compute mean behavioral value per bin
 n_bins = 30
 
 bin_results = {}
 for k in perf_keys:
-    pupil_arr = np.array(all_obs[k]['pupil'])
-    beh_arr   = np.array(all_obs[k]['behavior'])
+    pupil_arr      = np.array(all_obs[k]['pupil'])
+    pupil_deriv_arr = np.array(all_obs[k]['pupil_derivative'])
+    beh_arr        = np.array(all_obs[k]['behavior'])
     if len(pupil_arr) == 0:
         continue
-    sort_idx    = np.argsort(pupil_arr)
-    pupil_sorted = pupil_arr[sort_idx]
-    beh_sorted   = beh_arr[sort_idx]
-    bin_edges = np.array_split(np.arange(len(pupil_sorted)), n_bins)
+
+    # bin by pupil mean
+    sort_idx      = np.argsort(pupil_arr)
+    pupil_sorted  = pupil_arr[sort_idx]
+    beh_sorted    = beh_arr[sort_idx]
+    bin_edges     = np.array_split(np.arange(len(pupil_sorted)), n_bins)
     bin_pupil_mean = np.array([pupil_sorted[b].mean() for b in bin_edges])
     bin_beh_mean   = np.array([beh_sorted[b].mean()   for b in bin_edges])
-    bin_results[k] = {'pupil': bin_pupil_mean, 'behavior': bin_beh_mean}
+
+    # bin by pupil derivative
+    sort_idx_d       = np.argsort(pupil_deriv_arr)
+    deriv_sorted     = pupil_deriv_arr[sort_idx_d]
+    beh_sorted_d     = beh_arr[sort_idx_d]
+    bin_edges_d      = np.array_split(np.arange(len(deriv_sorted)), n_bins)
+    bin_deriv_mean   = np.array([deriv_sorted[b].mean()   for b in bin_edges_d])
+    bin_beh_mean_d   = np.array([beh_sorted_d[b].mean()   for b in bin_edges_d])
+
+    bin_results[k] = {
+        'pupil':            bin_pupil_mean,
+        'behavior':         bin_beh_mean,
+        'pupil_derivative': bin_deriv_mean,
+        'behavior_d':       bin_beh_mean_d,
+    }
 
 #%% Plot: for each behavioral measure, scatter binned behavior vs binned pupil
 #   with quadratic fit overlaid (replicating Fig. 3/4 of Brink 2016)
@@ -293,7 +331,7 @@ for ax, k in zip(axes.flat, perf_keys):
     py = bin_results[k]['behavior']
     ax.scatter(px, py, s=20, color='steelblue', zorder=3)
     # quadratic fit
-    coef = np.polyfit(px, py, 2)
+    coef = np.polyfit(px, py, fit_order)
     x_fit = np.linspace(px.min(), px.max(), 200)
     ax.plot(x_fit, np.polyval(coef, x_fit), color='crimson', linewidth=1.5)
     ax.axhline(0, color='k', linewidth=0.6, linestyle='--')
@@ -332,6 +370,50 @@ ax2.set_title(f'Pupil diameter vs. all behavioral measures\n(binned, z-scored; N
 ax2.legend(fontsize=9)
 ax2.grid(True, alpha=0.4)
 plt.tight_layout()
+
+# --- Pupil derivative plots ---
+# 2x2: behavior vs pupil derivative, one panel per measure
+fig3, axes3 = plt.subplots(2, 2, figsize=(10, 8))
+for ax, k in zip(axes3.flat, perf_keys):
+    if k not in bin_results:
+        ax.set_title(perf_labels[k])
+        continue
+    px = bin_results[k]['pupil_derivative']
+    py = bin_results[k]['behavior_d']
+    ax.scatter(px, py, s=20, color='steelblue', zorder=3)
+    coef  = np.polyfit(px, py, fit_order)
+    x_fit = np.linspace(px.min(), px.max(), 200)
+    ax.plot(x_fit, np.polyval(coef, x_fit), color='crimson', linewidth=1.5)
+    ax.axhline(0, color='k', linewidth=0.6, linestyle='--')
+    ax.axvline(0, color='k', linewidth=0.6, linestyle='--')
+    ax.set_xlabel('Pupil derivative (z)')
+    ax.set_ylabel(f'{perf_labels[k]} (z)')
+    ax.set_title(perf_labels[k])
+    ax.grid(True, alpha=0.4)
+fig3.suptitle(f'Pupil derivative vs. behavioral performance\n(binned, z-scored; N={n_subjects})')
+plt.tight_layout()
+
+# Combined: all 4 measures vs pupil derivative
+fig4, ax4 = plt.subplots(figsize=(8, 5))
+for k in perf_keys:
+    if k not in bin_results:
+        continue
+    px = bin_results[k]['pupil_derivative']
+    py = bin_results[k]['behavior_d']
+    c  = perf_colors[k]
+    ax4.scatter(px, py, s=15, color=c, alpha=0.5, zorder=3)
+    coef  = np.polyfit(px, py, fit_order)
+    x_fit = np.linspace(px.min(), px.max(), 200)
+    ax4.plot(x_fit, np.polyval(coef, x_fit), color=c, linewidth=2,
+             label=perf_labels[k])
+ax4.axhline(0, color='k', linewidth=0.6, linestyle='--')
+ax4.axvline(0, color='k', linewidth=0.6, linestyle='--')
+ax4.set_xlabel('Pupil derivative (z)')
+ax4.set_ylabel('Behavioral measure (z)')
+ax4.set_title(f'Pupil derivative vs. all behavioral measures\n(binned, z-scored; N={n_subjects})')
+ax4.legend(fontsize=9)
+ax4.grid(True, alpha=0.4)
+plt.tight_layout()
 plt.show()
 
-#%% 
+#%% derivative of pupil
