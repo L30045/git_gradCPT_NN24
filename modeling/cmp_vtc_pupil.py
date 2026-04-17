@@ -268,13 +268,7 @@ for subj in sorted(subject_list):
             rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[neon_idx]))
         else:
             rec = None
-        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec=rec)
-        # check if subject missing too many data
-        if t_neon_s is None:
-            print(f"Missing too many data. Skip sub-{subj}")
-            continue
-        sfreq_neon = np.round(np.median(1 / np.diff(t_neon_s)))
-        print(f"{subj} run-{run_id:02d}: sfreq_neon = {sfreq_neon} Hz")
+        # load events
         events_df_s = pd.read_csv(event_file, sep='\t')
         mnt_correct_idx_s   = (events_df_s['trial_type']=='mnt') & (events_df_s['response_code']==0)
         mnt_incorrect_idx_s = (events_df_s['trial_type']=='mnt') & (events_df_s['response_code']!=0)
@@ -305,6 +299,14 @@ for subj in sorted(subject_list):
             rt_city_incorrect_all_idx = pd.Series([True] * len(events_df_rt_city_incorrect), index=events_df_rt_city_incorrect.index)
         else:
             rt_city_incorrect_all_idx = []
+        # preprocess pupil
+        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec=rec, is_rm_phasic=True, events_df=events_df_s)
+        # check if subject missing too many data
+        if t_neon_s is None:
+            print(f"Missing too many data. Skip sub-{subj}")
+            continue
+        sfreq_neon = np.round(np.median(1 / np.diff(t_neon_s)))
+        print(f"{subj} run-{run_id:02d}: sfreq_neon = {sfreq_neon} Hz")
         pupil_dict[subj][f'run-{run_id:02d}'] = {
             'mnt_correct':                  get_pupil_epoch(events_df_s, mnt_correct_idx_s,   t_neon_s, pupil_d_s, epoch_length=epoch_length),
             'mnt_incorrect':                get_pupil_epoch(events_df_s, mnt_incorrect_idx_s, t_neon_s, pupil_d_s, epoch_length=epoch_length),
