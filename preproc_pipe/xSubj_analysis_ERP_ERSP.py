@@ -20,7 +20,8 @@ from spectral_connectivity.transforms import prepare_time_series
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
-subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
+# subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
+subj_id_array = [746, 750, 751]
 ch_names = ['fz','cz','pz','oz']
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)

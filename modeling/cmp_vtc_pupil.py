@@ -9,6 +9,7 @@ git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 # import utils
 from params_setting import *
+from utils import plt_multitaper
 sys.path.append("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking")
 from neon_to_bids_gradCPT_add_nodding import parseNeon_to_bids
 from pupil_labs import neon_recording as nr
@@ -16,6 +17,8 @@ import re
 from utils_eyetracking import preprocess_pupil, get_pupil_epoch, plot_pupil_epoch, \
     _build_gaussian_basis, _convolve_onsets
 import warnings
+from spectral_connectivity import Multitaper, Connectivity
+
 
 #%% functions
 def smoothing_VTC_gaussian_array(vtc, sigma=None, alpha=2.5, L=None, radius=None, truncate=4, savepath=None):
@@ -275,10 +278,7 @@ for subj in sorted(subject_list):
         city_correct_idx_s  = (events_df_s['trial_type']=='city') & (events_df_s['response_code']!=0)
         city_incorrect_idx_s= (events_df_s['trial_type']=='city') & (events_df_s['response_code']==0)
         vtc_s = smoothing_VTC_gaussian_array(events_df_s['VTC'].values, L=20)
-        win_epoch    = int(np.round(sfreq_neon * epoch_length))
-        win_baseline = int(np.round(sfreq_neon * baseline_length))
-        t_epoch_run  = np.linspace(-baseline_length, epoch_length, win_baseline + win_epoch)
-        # RT-locked epoch for mnt_incorrect: shift onset by reaction_time
+         # RT-locked epoch for mnt_incorrect: shift onset by reaction_time
         events_df_rt_mnt = events_df_s[mnt_incorrect_idx_s].copy()
         if len(events_df_rt_mnt) > 0:
             events_df_rt_mnt['onset'] = events_df_rt_mnt['onset'] + events_df_rt_mnt['reaction_time']
@@ -307,6 +307,9 @@ for subj in sorted(subject_list):
             continue
         sfreq_neon = np.round(np.median(1 / np.diff(t_neon_s)))
         print(f"{subj} run-{run_id:02d}: sfreq_neon = {sfreq_neon} Hz")
+        win_epoch    = int(np.round(sfreq_neon * epoch_length))
+        win_baseline = int(np.round(sfreq_neon * baseline_length))
+        t_epoch_run  = np.linspace(-baseline_length, epoch_length, win_baseline + win_epoch)
         pupil_dict[subj][f'run-{run_id:02d}'] = {
             'mnt_correct':                  get_pupil_epoch(events_df_s, mnt_correct_idx_s,   t_neon_s, pupil_d_s, epoch_length=epoch_length),
             'mnt_incorrect':                get_pupil_epoch(events_df_s, mnt_incorrect_idx_s, t_neon_s, pupil_d_s, epoch_length=epoch_length),
@@ -870,14 +873,137 @@ for onsets_key, vtc_key, colors_rt, cond_title in rt_vtc_specs_dpp:
     ax.grid()
     plt.tight_layout()
 
-#%% Reproduce Brink 2016 results
-"""
-For each run:
-1. Preprocess raw pupil data — blink interpolation, low-pass filter at 6 Hz, regress out phasic dilations
-Apply sliding window (50-trial width, 15-trial steps) to the residual tonic pupil time series → produces one mean diameter value (and one derivative value) per window position. This is the "downsampling" step.
-Z-score the resulting window-level time series — the paper says they "Z-scored the time series" before fitting the regression lines (this is stated in the Results section under "Performance decrements with time-on-task," and the same procedure is applied to both behavioral and pupil measures).
-Fit regression (linear and quadratic) between the z-scored pupil time series and z-scored behavioral time series.
-"""
 
+# %% Time-frequency analysis
+import mne
+import copy
 
-# %%
+time_halfbandwidth_product = 3
+time_window_duration = 2  # sec
+time_window_step = 0.5
+
+subj_tf = 'sub-730'
+run_id_tf = 1
+conditions_tf = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
+
+run_data_tf = pupil_dict[subj_tf][f'run-{run_id_tf:02d}']
+sfreq_tf = run_data_tf['sfreq_neon']
+
+for cond_tf in conditions_tf:
+    epochs_tf = run_data_tf[cond_tf]
+    valid_epochs = []
+    for ep in epochs_tf:
+        ep = np.array(ep, dtype=float)
+        if np.all(np.isnan(ep)):
+            continue
+        ep = np.where(np.isnan(ep), 0.0, ep)
+        valid_epochs.append(ep)
+    if not valid_epochs:
+        continue
+
+    # Stack into MNE EpochsArray: (n_epochs, 1, n_times)
+    data_tf = np.array(valid_epochs)[:, np.newaxis, :]
+    info_tf = mne.create_info(ch_names=['pupil'], sfreq=sfreq_tf, ch_types=['misc'])
+    epochs_mne = mne.EpochsArray(data_tf, info_tf, tmin=-baseline_length, verbose=False)
+
+    print(f"\n--- TF: {cond_tf} ({len(valid_epochs)} epochs) ---")
+    plt_multitaper(epochs_mne,
+                   time_halfbandwidth_product=time_halfbandwidth_product,
+                   time_window_duration=time_window_duration,
+                   time_window_step=time_window_step,
+                   ratio_to='baseline',
+                   vis_f_range=[0, 15])
+    plt.suptitle(f'TF — {subj_tf} run-{run_id_tf:02d} {cond_tf.replace("_", " ")} (N={len(valid_epochs)})')
+    plt.tight_layout()
+
+#%% spectrum
+conditions_spec = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
+
+# subj_mean_spec[cond] = list of per-subject mean log power, one array per subject
+subj_mean_spec = {cond: [] for cond in conditions_spec}
+freqs_spec = None
+
+for subj, runs in pupil_dict.items():
+    for cond in conditions_spec:
+        epoch_powers = []
+        for run_data in runs.values():
+            sfreq_spec = run_data['sfreq_neon']
+            for ep in run_data[cond]:
+                ep = np.array(ep, dtype=float)
+                if np.all(np.isnan(ep)):
+                    continue
+                ep = np.where(np.isnan(ep), 0.0, ep)
+                f = np.fft.rfftfreq(len(ep), d=1.0 / sfreq_spec)
+                p = np.abs(np.fft.rfft(ep)) ** 2
+                if freqs_spec is None:
+                    freqs_spec = f
+                if len(p) == len(freqs_spec):
+                    epoch_powers.append(np.log10(p + 1e-30))
+        if epoch_powers:
+            subj_mean_spec[cond].append(np.mean(epoch_powers, axis=0))
+
+# Plot
+vis_f_mask = freqs_spec <= 15
+colors_spec = {
+    'mnt_correct':   'royalblue',
+    'mnt_incorrect': 'darkorange',
+    'city_correct':  'forestgreen',
+    'city_incorrect':'crimson',
+}
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for cond in conditions_spec:
+    arr = np.array(subj_mean_spec[cond])
+    if len(arr) == 0:
+        continue
+    mean = arr.mean(axis=0)
+    sem  = arr.std(axis=0) / np.sqrt(len(arr))
+    c = colors_spec[cond]
+    ax.plot(freqs_spec[vis_f_mask], mean[vis_f_mask], color=c,
+            label=cond.replace('_', ' '))
+    ax.fill_between(freqs_spec[vis_f_mask],
+                    (mean - sem)[vis_f_mask],
+                    (mean + sem)[vis_f_mask],
+                    alpha=0.25, color=c)
+ax.set_xlabel('Frequency (Hz)')
+ax.set_ylabel('Log Power')
+ax.set_title(f'Pupil power spectrum (cross-subject mean ± SEM, N={len(pupil_dict)})')
+ax.legend(fontsize=8)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+
+# Difference plots: mnt_correct - city_correct and mnt_incorrect - city_correct
+# Computed per-subject then averaged
+diff_specs = {
+    'mnt_correct - city_correct':   ('mnt_correct',   'city_correct'),
+    'mnt_incorrect - city_correct': ('mnt_incorrect', 'city_correct'),
+}
+
+diff_colors = {
+    'mnt_correct - city_correct':   'royalblue',
+    'mnt_incorrect - city_correct': 'darkorange',
+}
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for diff_label, (cond_a, cond_b) in diff_specs.items():
+    arr_a = np.array(subj_mean_spec[cond_a])
+    arr_b = np.array(subj_mean_spec[cond_b])
+    n = min(len(arr_a), len(arr_b))
+    if n == 0:
+        continue
+    diff = arr_a[:n] - arr_b[:n]
+    mean = diff.mean(axis=0)
+    sem  = diff.std(axis=0) / np.sqrt(n)
+    c = diff_colors[diff_label]
+    ax.plot(freqs_spec[vis_f_mask], mean[vis_f_mask], color=c, label=diff_label)
+    ax.fill_between(freqs_spec[vis_f_mask],
+                    (mean - sem)[vis_f_mask],
+                    (mean + sem)[vis_f_mask],
+                    alpha=0.25, color=c)
+ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
+ax.set_xlabel('Frequency (Hz)')
+ax.set_ylabel('Δ Log Power')
+ax.set_title(f'Pupil spectrum difference (cross-subject mean ± SEM, N={n})')
+ax.legend(fontsize=8)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()

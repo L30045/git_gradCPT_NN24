@@ -161,7 +161,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
     # load VTC information
     vtc_filename = f"sub-{subj_id}_VTC_original.pkl" 
     smooth_vtc_filename = f"sub-{subj_id}_VTC_smoothed.pkl" 
-    if os.path.join(vtc_save_path,f'sub-{subj_id}',vtc_filename):
+    if os.path.exists(os.path.join(vtc_save_path,f'sub-{subj_id}',vtc_filename)):
         with open(os.path.join(vtc_save_path,f'sub-{subj_id}',vtc_filename), 'rb') as f:
             vtc_dict = pickle.load(f)
         with open(os.path.join(vtc_save_path,f'sub-{subj_id}',smooth_vtc_filename), 'rb') as f:
