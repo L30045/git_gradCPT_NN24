@@ -9,6 +9,7 @@ git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 # import utils
 from params_setting import *
+from utils import smoothing_VTC_gaussian_array
 sys.path.append("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking")
 from pupil_labs import neon_recording as nr
 import re
@@ -72,20 +73,24 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
         'fa_rate'               : false alarm rate (mnt trials pressed / total mnt trials)
         'slow_q_rt'   : slow quintile RT proportion (city trials)
         'mean_rt'     : mean RT of city correct trials
-        'rtcv'        : RT coefficient of variation (city correct trials)
-        'win_center'  : trial index of window centre (for reference)
+        'rtcv'         : RT coefficient of variation (city correct trials)
+        'smoothed_vtc' : mean Gaussian-smoothed VTC (L=20) within each window
+        'win_center'   : trial index of window centre (for reference)
     """
     trials = events_df.reset_index(drop=True)
     n_trials = len(trials)
     starts = np.arange(0, n_trials - win_trials + 1, step_trials)
 
+    smoothed_vtc_all = smoothing_VTC_gaussian_array(events_df["VTC"], L=20)
+
     pupil_mean            = []
     pupil_derivative_mean = []
-    fa_rate    = []
-    slow_q_rt  = []
-    mean_rt    = []
-    rtcv       = []
-    win_center = []
+    fa_rate       = []
+    slow_q_rt     = []
+    mean_rt       = []
+    rtcv          = []
+    smoothed_vtc  = []
+    win_center    = []
 
     # block-level RT quintile threshold (city correct = pressed)
     city_correct = trials[(trials['trial_type'] == 'city') &
@@ -133,15 +138,17 @@ def sliding_window_trials(events_df, pupil_d, t_pupil,
             rtcv.append(np.nan)
 
         win_center.append(start + win_trials // 2)
+        smoothed_vtc.append(np.nanmean(smoothed_vtc_all[start: start + win_trials]))
 
     return {
         'pupil_mean':            np.array(pupil_mean),
         'pupil_derivative_mean': np.array(pupil_derivative_mean),
         'fa_rate':               np.array(fa_rate),
-        'slow_q_rt':   np.array(slow_q_rt),
-        'mean_rt':     np.array(mean_rt),
-        'rtcv':        np.array(rtcv),
-        'win_center':  np.array(win_center),
+        'slow_q_rt':             np.array(slow_q_rt),
+        'mean_rt':               np.array(mean_rt),
+        'rtcv':                  np.array(rtcv),
+        'smoothed_vtc':          np.array(smoothed_vtc),
+        'win_center':            np.array(win_center),
     }
 
 
@@ -182,7 +189,7 @@ def plot_fig_5(subject_list,
     step_trials : int
         Sliding window step size in trials. Default 11.
     """
-    perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv']
+    perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
 
     # all_obs[perf_key] accumulates (pupil_z, pupil_derivative_z, behavior_z) pairs across all subj/runs
     all_obs = {k: {'pupil': [], 'pupil_derivative': [], 'behavior': []} for k in perf_keys}
@@ -333,13 +340,14 @@ def plot_fig_5(subject_list,
     # Plot: for each behavioral measure, scatter binned behavior vs binned pupil
     #   with quadratic fit overlaid (replicating Fig. 3/4 of Brink 2016)
     perf_labels = {
-        'fa_rate':    'False Alarm Rate',
-        'slow_q_rt':  'Slow Quintile RT (prop.)',
-        'mean_rt':    'Mean RT (s)',
-        'rtcv':       'RT Coefficient of Variation',
+        'fa_rate':      'False Alarm Rate',
+        'slow_q_rt':    'Slow Quintile RT (prop.)',
+        'mean_rt':      'Mean RT (s)',
+        'rtcv':         'RT Coefficient of Variation',
+        'smoothed_vtc': 'Smoothed VTC',
     }
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
     for ax, k in zip(axes.flat, perf_keys):
         if k not in bin_results:
             ax.set_title(perf_labels[k])
@@ -357,15 +365,18 @@ def plot_fig_5(subject_list,
         ax.set_ylabel(f'{perf_labels[k]} (z)')
         ax.set_title(perf_labels[k])
         ax.grid(True, alpha=0.4)
+    for ax in axes.flat[len(perf_keys):]:
+        ax.set_visible(False)
     fig.suptitle(f'Tonic pupil vs. behavioral performance\n(binned, z-scored; replicating Brink 2016, N={n_subjects})')
     plt.tight_layout()
 
-    # Combined plot: all 4 measures in one axes
+    # Combined plot: all measures in one axes
     perf_colors = {
-        'fa_rate':   'steelblue',
-        'slow_q_rt': 'darkorange',
-        'mean_rt':   'forestgreen',
-        'rtcv':      'crimson',
+        'fa_rate':      'steelblue',
+        'slow_q_rt':    'darkorange',
+        'mean_rt':      'forestgreen',
+        'rtcv':         'crimson',
+        'smoothed_vtc': 'mediumorchid',
     }
     fig2, ax2 = plt.subplots(figsize=(8, 5))
     for k in perf_keys:
@@ -389,8 +400,8 @@ def plot_fig_5(subject_list,
     plt.tight_layout()
 
     # --- Pupil derivative plots ---
-    # 2x2: behavior vs pupil derivative, one panel per measure
-    fig3, axes3 = plt.subplots(2, 2, figsize=(10, 8))
+    # 2x3: behavior vs pupil derivative, one panel per measure
+    fig3, axes3 = plt.subplots(2, 3, figsize=(14, 8))
     for ax, k in zip(axes3.flat, perf_keys):
         if k not in bin_results:
             ax.set_title(perf_labels[k])
@@ -407,6 +418,8 @@ def plot_fig_5(subject_list,
         ax.set_ylabel(f'{perf_labels[k]} (z)')
         ax.set_title(perf_labels[k])
         ax.grid(True, alpha=0.4)
+    for ax in axes3.flat[len(perf_keys):]:
+        ax.set_visible(False)
     fig3.suptitle(f'Pupil derivative vs. behavioral performance\n(binned, z-scored; N={n_subjects})')
     plt.tight_layout()
 
@@ -436,10 +449,10 @@ def plot_fig_5(subject_list,
 #%% Figure 5
 f_lowpass=6
 f_downsample=60
-fit_order=2
-detrend_order=2
-win_trials=50
-step_trials=15
+fit_order=1
+detrend_order=1
+win_trials=20
+step_trials=5
 plot_fig_5(subject_list,
            f_lowpass=f_lowpass,
            f_downsample=f_downsample,
@@ -481,7 +494,7 @@ def compute_fig4_coefficients(subject_list,
         If True, include a linear time-on-task regressor in the model (nuisance).
         If False, fit pupil regressors only (no time-on-task control).
     """
-    perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv']
+    perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
 
     # collect per-run coefficients: subj -> run -> measure -> {lin, quad}
     subj_run_coefs = {}
@@ -617,8 +630,8 @@ def plot_fig4(results, title_suffix=''):
     """
     from scipy import stats
 
-    perf_keys    = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv']
-    perf_labels  = ['False alarms', 'Slow quintile', 'Response time', 'RTCV']
+    perf_keys    = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
+    perf_labels  = ['False alarms', 'Slow quintile', 'Response time', 'RTCV', 'Smoothed VTC']
     pupil_labels = {'diameter': 'Baseline diameter', 'derivative': 'Diameter derivative'}
 
     def sig_stars(p):
@@ -709,11 +722,11 @@ fig4_results = compute_fig4_coefficients(
     f_lowpass=6,
     f_downsample=60,
     detrend_order=None,
-    win_trials=50,
-    step_trials=15,
-    include_tot=True,
+    win_trials=20,
+    step_trials=5,
+    include_tot=False,
 )
-plot_fig4(fig4_results, title_suffix=' [with time-on-task regressor]')
+plot_fig4(fig4_results, title_suffix=' [with time-on-task effect')
 
 # Fig 4 without time-on-task regressor
 fig4_results_notot = compute_fig4_coefficients(
@@ -721,9 +734,8 @@ fig4_results_notot = compute_fig4_coefficients(
     f_lowpass=6,
     f_downsample=60,
     detrend_order=None,
-    win_trials=50,
-    step_trials=15,
-    include_tot=False,
+    win_trials=20,
+    step_trials=5,
+    include_tot=True,
 )
-plot_fig4(fig4_results_notot, title_suffix=' [without time-on-task regressor]')
-
+plot_fig4(fig4_results_notot, title_suffix=' [without time-on-task effect]')

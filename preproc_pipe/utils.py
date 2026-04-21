@@ -786,11 +786,14 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params):
     if not os.path.exists(event_file):
         gen_EEG_event_tsv(int(key_name.split('-')[-1]))
     # for each run
-    for run_id in np.arange(1,4):
+    for run_name in single_subj_EEG_dict.keys():
+        if 'gradcpt' not in run_name:
+            continue
+        run_id = int(run_name.split('cpt')[-1])
         subj_epoch_dict[f"run{run_id:02d}"] = dict()
         subj_vtc_dict[f"run{run_id:02d}"] = dict()
         subj_react_dict[f"run{run_id:02d}"] = dict()
-        EEG = single_subj_EEG_dict[f"gradcpt{run_id}"]
+        EEG = single_subj_EEG_dict[run_name]
         # load corresponding event file
         event_file = os.path.join(data_save_path,f"{key_name}",
                                 f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")

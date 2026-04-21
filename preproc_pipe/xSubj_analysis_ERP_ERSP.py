@@ -51,8 +51,55 @@ preproc_params = dict(
     is_overwrite = is_overwrite
 )
 
-#%% load epoch for each condition. Epoch from each run is combined for each subject.
-combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
+#%% load epoch for each condition.
+subj_EEG_dict = dict()
+rm_ch_dict = dict()
+"""
+subj_EEG_dic: dictionary for storing subject EEG. 
+                subj_EEG_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                subj_EEG_dict["sub-{subj_id}"]["rest{run_id}"]
+rm_ch_dict: dictionary for storing the name of removed channels                
+                rm_ch_dict["sub-{subj_id}"]["gradcpt{run_id}"]
+                rm_ch_dict["sub-{subj_id}"]["rest{run_id}"]
+"""
+for subj_id in tqdm(subj_id_array):
+    print(f"preprocessing sub-{subj_id}")
+    single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(subj_id, preproc_params)
+    subj_EEG_dict[f"sub-{subj_id}"] = single_subj_EEG_dict
+    rm_ch_dict[f"sub-{subj_id}"] = single_subj_rm_ch_dict
+    
+# Epoch data
+subj_epoch_dict = dict()
+subj_vtc_dict = dict()
+subj_react_dict = dict()
+"""
+subj_epoch_dict: dictionary for storing subject Epoch.
+                    subj_epoch_dict["sub-xxx"]["run0x"][Events]
+                    Events include:
+                        'city_incorrect': incorrect city trials, time-lock to stimulus-onset (first frame)
+                        'city_correct': correct city trials, time-lock to stimulus-onset (first frame)
+                        'mnt_incorrect': incorrect mountain trials, time-lock to stimulus-onset (first frame)
+                        'mnt_correct': correct mountain trials, time-lock to stimulus-onset (first frame)
+                        'city_incorrect_response': incorrect city trials, time-lock to stimulus-onset (first frame)
+                        'city_correct_response': correct city trials, time-lock to response (spacebar press)
+                        'mnt_incorrect_response': incorrect mountain trials, time-lock to response (spacebar press)
+                        'mnt_correct_response': correct mountain trials, time-lock to stimulus-onset (first frame)
+"""
+# for each subject
+for key_name in tqdm(subj_EEG_dict.keys()):
+    subj_id = int(key_name.split('-')[-1])
+    print(f"Epoching {key_name}")
+    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name], preproc_params)
+    # save epochs
+    subj_epoch_dict[key_name] = single_subj_epoch_dict
+    subj_vtc_dict[key_name] = single_subj_vtc_dict
+    subj_react_dict[key_name] = single_subj_react_dict
+# combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
+
+#%% Combined runs. Epoch from each run is combined for each subject.
+
+
+
 
 #%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict)
