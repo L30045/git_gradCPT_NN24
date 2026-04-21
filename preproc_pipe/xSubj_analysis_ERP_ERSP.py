@@ -20,9 +20,10 @@ from spectral_connectivity.transforms import prepare_time_series
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
 # subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
-# subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
-subj_id_array = [746, 750, 751]
+subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
+# subj_id_array = [746, 750, 751]
 ch_names = ['fz','cz','pz','oz']
+split_zone_crit = 'react'
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -97,9 +98,81 @@ for key_name in tqdm(subj_EEG_dict.keys()):
 # combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
 
 #%% Combined runs. Epoch from each run is combined for each subject.
+combine_epoch_dict = dict()
+combine_vtc_dict = dict()
+combine_react_dict = dict()
+in_out_zone_dict = dict()
+"""
+combine_epoch_dict: dictionary for combined epochs from each run for subject.
+                    combine_epoch_dict["select_event"]["ch"]: list of epoch of selected event and channel. (length equals to number of subjects)
+"""
+# get median of the vtc for each subject
+match split_zone_crit:
+    case 'vtc':
+        subj_thres_zone = {subj_id: np.median(np.concatenate([subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]
+                                                for run_id in range(1, 4)
+                                                for event in event_labels_lookup.keys()
+                                                if not event.endswith("_response") and len(subj_vtc_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                        for subj_id in subj_vtc_dict.keys()}
+    case 'react':
+        subj_thres_zone = {subj_id: np.median(np.concatenate([subj_react_dict[subj_id][f"run{run_id:02d}"][event]
+                                                for run_id in range(1, 4)
+                                                for event in event_labels_lookup.keys()
+                                                if not event.endswith("_response") and len(subj_react_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                        for subj_id in subj_react_dict.keys()}
+for select_event in event_labels_lookup.keys():
+    epoch_dict = dict()
+    vtc_dict = dict()
+    react_dict = dict()
+    ch_in_out_zone_dict = dict()
+    # initialize epoch_dict
+    for ch in preproc_params['ch_names']:
+        epoch_dict[ch] = []
+        vtc_dict[ch] = []
+        react_dict[ch] = []
+        ch_in_out_zone_dict[ch] = []
+    for subj_id in subj_epoch_dict.keys():
+        tmp_epoch_list = []
+        tmp_vtc_list = []
+        tmp_react_list = []
+        tmp_in_out_zone_list = []
+        for run_id in np.arange(1,4):
+            loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
+            loc_v = subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event]
+            loc_r = subj_react_dict[subj_id][f"run{run_id:02d}"][select_event]
+            if len(loc_e)>0:
+                tmp_epoch_list.append(loc_e)
+                tmp_vtc_list.append(loc_v)
+                tmp_react_list.append(loc_r)
+                tmp_in_out_zone_list.append(loc_v<subj_thres_zone[subj_id])
+        # initialize append values
+        concat_epoch = []
+        concat_vtc = []
+        concat_react = []
+        concat_ch_in_out_zone = []
+        # for each channel, create an epoch
+        for ch in preproc_params['ch_names']:
+            # initialize append values
+            concat_epoch = []
+            concat_vtc = []
+            concat_react = []
+            concat_ch_in_out_zone = []
+            if len(tmp_epoch_list)>0:
+                ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
+                if len(ch_picked_epoch)>0:
+                    concat_epoch = mne.concatenate_epochs(ch_picked_epoch,verbose=False)
+                    concat_vtc = np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names])
+                    concat_react = np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names])
+                    concat_ch_in_out_zone = np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names])
+            epoch_dict[ch].append(concat_epoch)
+            vtc_dict[ch].append(concat_vtc)
+            react_dict[ch].append(concat_react)
+            ch_in_out_zone_dict[ch].append(concat_ch_in_out_zone)
 
-
-
+    combine_epoch_dict[select_event] = epoch_dict
+    combine_vtc_dict[select_event] = vtc_dict
+    combine_react_dict[select_event] = react_dict
+    in_out_zone_dict[select_event] = ch_in_out_zone_dict
 
 #%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict)
