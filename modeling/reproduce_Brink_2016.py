@@ -726,7 +726,7 @@ fig4_results = compute_fig4_coefficients(
     step_trials=5,
     include_tot=False,
 )
-plot_fig4(fig4_results, title_suffix=' [with time-on-task effect')
+plot_fig4(fig4_results, title_suffix=' [with time-on-task effect]')
 
 # Fig 4 without time-on-task regressor
 fig4_results_notot = compute_fig4_coefficients(
