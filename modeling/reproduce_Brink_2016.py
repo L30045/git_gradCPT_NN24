@@ -162,13 +162,137 @@ def zscore_safe(x):
 
 
 # Fig 5
-def plot_fig_5(subject_list,
-               f_lowpass=6,
-               f_downsample=60,
-               fit_order=2,
-               detrend_order=1,
-               win_trials=50,
-               step_trials=15):
+def collect_all_obs(subject_list,
+                    f_lowpass=6,
+                    f_downsample=60,
+                    detrend_order=1,
+                    win_trials=50,
+                    step_trials=15):
+    """
+    Collect z-scored sliding-window observations for each subject and run.
+
+    Returns
+    -------
+    all_obs : dict
+        all_obs[perf_key][subj][run_id] = {
+            'pupil': [...], 'pupil_derivative': [...], 'behavior': [...], 'tot': [...]
+        }
+        where each list contains valid z-scored (or normalized) window values for
+        that run. 'tot' is time-on-task normalized to [0, 1].
+    included_subjects : set
+        Subjects that contributed at least one valid run.
+    """
+    perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
+
+    all_obs = {k: {} for k in perf_keys}
+    included_subjects = set()
+
+    for subj in subject_list:
+        subj_nirs_dir = os.path.join(project_path, subj, 'nirs')
+        subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
+        if not os.path.isdir(subj_nirs_dir) or not os.path.isdir(subj_neon_dir):
+            continue
+        neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
+
+        run_ids = sorted(set(
+            int(m.group(1))
+            for f in os.listdir(subj_nirs_dir)
+            for m in [re.search(r'task-gradCPT_run-(\d+)_events\.tsv$', f)]
+            if m
+        ))
+        for run_id in run_ids:
+            physio_file = os.path.join(subj_nirs_dir,
+                f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260423.tsv")
+            if not os.path.isfile(physio_file):
+                physio_file = os.path.join(subj_nirs_dir,
+                    f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
+            event_file = os.path.join(subj_nirs_dir,
+                f"{subj}_task-gradCPT_run-{run_id:02d}_events.tsv")
+            if not os.path.isfile(physio_file) or not os.path.isfile(event_file):
+                continue
+
+            neon_data  = pd.read_csv(physio_file, sep='\t')
+            events_df  = pd.read_csv(event_file,  sep='\t')
+
+            n_fa = ((events_df['trial_type'] == 'mnt') & (events_df['response_code'] != 0)).sum()
+            if n_fa == 0:
+                print(f"Skipping {subj} run-{run_id:02d}: no false alarms.")
+                continue
+
+            rec = None
+            if neon_dirs_subj and run_id - 1 < len(neon_dirs_subj):
+                try:
+                    rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[run_id - 1]))
+                except Exception:
+                    pass
+
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                t_pupil, pupil_tonic = preprocess_pupil(
+                    neon_data, rec=rec,
+                    f_lowpass=f_lowpass,
+                    f_downsample=f_downsample,
+                    detrend_order=detrend_order,
+                    is_rm_phasic=False,
+                    events_df=events_df,
+                )
+            if t_pupil is None:
+                print(f"Skipping {subj} run-{run_id:02d}: too much missing data.")
+                continue
+
+            win_data = sliding_window_trials(events_df, pupil_tonic, t_pupil,
+                                             win_trials=win_trials, step_trials=step_trials)
+
+            all_keys = ['pupil_mean', 'pupil_derivative_mean'] + perf_keys
+            lengths = {k: len(win_data[k]) for k in all_keys}
+            if len(set(lengths.values())) != 1:
+                raise ValueError(
+                    f"{subj} run-{run_id:02d}: sliding_window_trials returned "
+                    f"inconsistent lengths: {lengths}"
+                )
+
+            n_wins = len(win_data['win_center'])
+            t_wins = np.arange(n_wins, dtype=float)
+            detrended_perf = {}
+            for k in perf_keys:
+                series = win_data[k].copy().astype(float)
+                valid_mask = ~np.isnan(series)
+                if detrend_order:
+                    if valid_mask.sum() > detrend_order:
+                        coef = np.polyfit(t_wins[valid_mask], series[valid_mask], detrend_order)
+                        series[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
+                detrended_perf[k] = series
+
+            pupil_z            = zscore_safe(win_data['pupil_mean'])
+            pupil_derivative_z = zscore_safe(win_data['pupil_derivative_mean'])
+            beh_z              = {k: zscore_safe(detrended_perf[k]) for k in perf_keys}
+
+            valid = ~np.isnan(pupil_z) & ~np.isnan(pupil_derivative_z)
+            for k in perf_keys:
+                valid = valid & ~np.isnan(beh_z[k])
+            if valid.sum() < 2:
+                print(f"Skipping {subj} run-{run_id:02d}: fewer than 2 valid windows.")
+                continue
+
+            tot = t_wins / (n_wins - 1) if n_wins > 1 else t_wins
+
+            for k in perf_keys:
+                all_obs[k].setdefault(subj, {})[run_id] = {
+                    'pupil':            pupil_z[valid].tolist(),
+                    'pupil_derivative': pupil_derivative_z[valid].tolist(),
+                    'behavior':         beh_z[k][valid].tolist(),
+                    'tot':              tot[valid].tolist(),
+                }
+
+            included_subjects.add(subj)
+            print(f"{subj} run-{run_id:02d}: {valid.sum()} windows")
+
+    n_subjects = len(included_subjects)
+    print(f"Included subjects: {n_subjects} — {sorted(included_subjects)}")
+    return all_obs, included_subjects
+
+
+def plot_fig_5(all_obs, included_subjects):
     """
     Reproduce Brink 2016 Fig. 5: tonic pupil vs. behavioral performance measures.
 
@@ -191,116 +315,16 @@ def plot_fig_5(subject_list,
     """
     perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
 
-    # all_obs[perf_key] accumulates (pupil_z, pupil_derivative_z, behavior_z) pairs across all subj/runs
-    all_obs = {k: {'pupil': [], 'pupil_derivative': [], 'behavior': []} for k in perf_keys}
-    included_subjects = set()
-
-    for subj in subject_list:
-        subj_id       = subj.replace('sub-', '')
-        subj_nirs_dir = os.path.join(project_path, subj, 'nirs')
-        subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
-        if not os.path.isdir(subj_nirs_dir) or not os.path.isdir(subj_neon_dir):
-            continue
-        neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
-
-        run_ids = sorted(set(
-            int(m.group(1))
-            for f in os.listdir(subj_nirs_dir)
-            for m in [re.search(r'task-gradCPT_run-(\d+)_events\.tsv$', f)]
-            if m
-        ))
-        for run_id in run_ids:
-            physio_file = os.path.join(subj_nirs_dir,
-                f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
-            if not os.path.isfile(physio_file):
-                physio_file = os.path.join(subj_nirs_dir,
-                    f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
-            event_file = os.path.join(subj_nirs_dir,
-                f"{subj}_task-gradCPT_run-{run_id:02d}_events.tsv")
-            if not os.path.isfile(physio_file) or not os.path.isfile(event_file):
-                continue
-
-            neon_data  = pd.read_csv(physio_file, sep='\t')
-            events_df  = pd.read_csv(event_file,  sep='\t')
-
-            # skip run if no false alarms (mnt trials with a button press)
-            n_fa = ((events_df['trial_type'] == 'mnt') & (events_df['response_code'] != 0)).sum()
-            if n_fa == 0:
-                print(f"Skipping {subj} run-{run_id:02d}: no false alarms.")
-                continue
-
-            # Neon recording for blink removal
-            rec = None
-            if neon_dirs_subj and run_id - 1 < len(neon_dirs_subj):
-                try:
-                    rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[run_id - 1]))
-                except Exception:
-                    pass
-
-            # Step 1: preprocess — polynomial detrend (detrend_order), 6 Hz low-pass, phasic GLM regression
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                t_pupil, pupil_tonic = preprocess_pupil(
-                    neon_data, rec=rec,
-                    f_lowpass=f_lowpass,
-                    f_downsample=f_downsample,
-                    detrend_order=detrend_order,
-                    is_rm_phasic=False,
-                    events_df=events_df,
-                )
-            if t_pupil is None:
-                print(f"Skipping {subj} run-{run_id:02d}: too much missing data.")
-                continue
-
-            # Step 2: sliding window → per-window pupil mean + behavioral measures
-            win_data = sliding_window_trials(events_df, pupil_tonic, t_pupil,
-                                             win_trials=win_trials, step_trials=step_trials)
-
-            # sanity check: all outputs must have the same length
-            all_keys = ['pupil_mean', 'pupil_derivative_mean'] + perf_keys
-            lengths = {k: len(win_data[k]) for k in all_keys}
-            if len(set(lengths.values())) != 1:
-                raise ValueError(
-                    f"{subj} run-{run_id:02d}: sliding_window_trials returned "
-                    f"inconsistent lengths: {lengths}"
-                )
-
-            # Step 2b: detrend performance measures using window index as time axis
-            n_wins = len(win_data['win_center'])
-            t_wins = np.arange(n_wins, dtype=float)
-            detrended_perf = {}
-            for k in perf_keys:
-                series = win_data[k].copy().astype(float)
-                valid_mask = ~np.isnan(series)
-                if detrend_order:
-                    if valid_mask.sum() > detrend_order:
-                        coef = np.polyfit(t_wins[valid_mask], series[valid_mask], detrend_order)
-                        series[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
-                detrended_perf[k] = series
-
-            # Step 3: z-score within this run
-            pupil_z            = zscore_safe(win_data['pupil_mean'])
-            pupil_derivative_z = zscore_safe(win_data['pupil_derivative_mean'])
-            beh_z              = {k: zscore_safe(detrended_perf[k]) for k in perf_keys}
-
-            # single shared valid mask: window must be valid for pupil, derivative, AND all measures
-            valid = ~np.isnan(pupil_z) & ~np.isnan(pupil_derivative_z)
-            for k in perf_keys:
-                valid = valid & ~np.isnan(beh_z[k])
-            if valid.sum() < 2:
-                print(f"Skipping {subj} run-{run_id:02d}: fewer than 2 valid windows.")
-                continue
-
-            for k in perf_keys:
-                all_obs[k]['pupil'].extend(pupil_z[valid].tolist())
-                all_obs[k]['pupil_derivative'].extend(pupil_derivative_z[valid].tolist())
-                all_obs[k]['behavior'].extend(beh_z[k][valid].tolist())
-
-            included_subjects.add(subj)
-            print(f"{subj} run-{run_id:02d}: {valid.sum()} windows")
-
     n_subjects = len(included_subjects)
-    print(f"Included subjects: {n_subjects} — {sorted(included_subjects)}")
+
+    # flatten all_obs[k][subj][run_id] -> pooled lists for binning
+    pooled = {k: {'pupil': [], 'pupil_derivative': [], 'behavior': []} for k in perf_keys}
+    for k in perf_keys:
+        for subj_runs in all_obs[k].values():
+            for run_data in subj_runs.values():
+                pooled[k]['pupil'].extend(run_data['pupil'])
+                pooled[k]['pupil_derivative'].extend(run_data['pupil_derivative'])
+                pooled[k]['behavior'].extend(run_data['behavior'])
 
     # Aggregate: sort by pupil value, divide into 30 equal bins,
     #   compute mean behavioral value per bin
@@ -308,9 +332,9 @@ def plot_fig_5(subject_list,
 
     bin_results = {}
     for k in perf_keys:
-        pupil_arr      = np.array(all_obs[k]['pupil'])
-        pupil_deriv_arr = np.array(all_obs[k]['pupil_derivative'])
-        beh_arr        = np.array(all_obs[k]['behavior'])
+        pupil_arr      = np.array(pooled[k]['pupil'])
+        pupil_deriv_arr = np.array(pooled[k]['pupil_derivative'])
+        beh_arr        = np.array(pooled[k]['behavior'])
         if len(pupil_arr) == 0:
             continue
 
@@ -446,20 +470,23 @@ def plot_fig_5(subject_list,
     plt.tight_layout()
     plt.show()
 
+    return bin_results
+
+
 #%% Figure 5
 f_lowpass=6
 f_downsample=60
-fit_order=1
+fit_order=2
 detrend_order=1
 win_trials=20
 step_trials=5
-plot_fig_5(subject_list,
-           f_lowpass=f_lowpass,
-           f_downsample=f_downsample,
-           fit_order=fit_order,
-           detrend_order=detrend_order,
-           win_trials=win_trials,
-           step_trials=step_trials)
+all_obs, included_subjects = collect_all_obs(subject_list,
+                    f_lowpass=f_lowpass,
+                    f_downsample=f_downsample,
+                    detrend_order=detrend_order,
+                    win_trials=win_trials,
+                    step_trials=step_trials)
+bin_results = plot_fig_5(all_obs, included_subjects)
 
 #%% Figure 4
 """
@@ -476,13 +503,7 @@ linear and quadratic shown separately, for baseline diameter (left panel)
 and diameter derivative (right panel).  Stars for significance via one-sample t-test vs 0.
 """
 
-def compute_fig4_coefficients(subject_list,
-                               f_lowpass=6,
-                               f_downsample=60,
-                               detrend_order=1,
-                               win_trials=50,
-                               step_trials=15,
-                               include_tot=True):
+def compute_fig4_coefficients(all_obs, included_subjects, include_tot):
     """
     Returns two dicts (one per pupil measure): diameter and derivative.
     Each dict has keys 'linear' and 'quadratic', each a dict keyed by
@@ -493,108 +514,56 @@ def compute_fig4_coefficients(subject_list,
     include_tot : bool
         If True, include a linear time-on-task regressor in the model (nuisance).
         If False, fit pupil regressors only (no time-on-task control).
+    all_obs : dict, optional
+        Pre-built observations from collect_all_obs. If None, collect_all_obs
+        is called internally with the other parameters.
     """
     perf_keys = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
 
-    # collect per-run coefficients: subj -> run -> measure -> {lin, quad}
+    # collect per-run coefficients keyed by subject
     subj_run_coefs = {}
 
-    for subj in subject_list:
-        subj_nirs_dir = os.path.join(project_path, subj, 'nirs')
-        subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
-        if not os.path.isdir(subj_nirs_dir) or not os.path.isdir(subj_neon_dir):
-            continue
-        neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
-
-        run_ids = sorted(set(
-            int(m.group(1))
-            for f in os.listdir(subj_nirs_dir)
-            for m in [re.search(r'task-gradCPT_run-(\d+)_events\.tsv$', f)]
-            if m
-        ))
-
+    for subj in included_subjects:
         run_coefs = []
-        for run_id in run_ids:
-            physio_file = os.path.join(subj_nirs_dir,
-                f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
-            if not os.path.isfile(physio_file):
-                physio_file = os.path.join(subj_nirs_dir,
-                    f"{subj}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
-            event_file = os.path.join(subj_nirs_dir,
-                f"{subj}_task-gradCPT_run-{run_id:02d}_events.tsv")
-            if not os.path.isfile(physio_file) or not os.path.isfile(event_file):
-                continue
-
-            neon_data = pd.read_csv(physio_file, sep='\t')
-            events_df = pd.read_csv(event_file,  sep='\t')
-
-            n_fa = ((events_df['trial_type'] == 'mnt') & (events_df['response_code'] != 0)).sum()
-            if n_fa == 0:
-                continue
-
-            rec = None
-            if neon_dirs_subj and run_id - 1 < len(neon_dirs_subj):
-                try:
-                    rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[run_id - 1]))
-                except Exception:
-                    pass
-
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                t_pupil, pupil_tonic = preprocess_pupil(
-                    neon_data, rec=rec,
-                    f_lowpass=f_lowpass,
-                    f_downsample=f_downsample,
-                    detrend_order=detrend_order,
-                    is_rm_phasic=False,
-                    events_df=events_df,
-                )
-            if t_pupil is None:
-                continue
-
-            win_data = sliding_window_trials(events_df, pupil_tonic, t_pupil,
-                                             win_trials=win_trials, step_trials=step_trials)
-
-            n_wins = len(win_data['win_center'])
-            t_wins = np.arange(n_wins, dtype=float)
-            # time-on-task predictor (normalized to [0,1])
-            tot = t_wins / (n_wins - 1) if n_wins > 1 else t_wins
-
-            pupil_z  = zscore_safe(win_data['pupil_mean'])
-            deriv_z  = zscore_safe(win_data['pupil_derivative_mean'])
-
-            run_entry = {'diameter': {'linear': {}, 'quadratic': {}},
-                         'derivative': {'linear': {}, 'quadratic': {}}}
+        # all_obs[k][subj][run_id] — iterate over runs present in the first perf_key
+        first_key = perf_keys[0]
+        for run_id in sorted(all_obs[first_key][subj].keys()):
+            run_entry = {'diameter': {'linear': {}, 'quadratic': {}, 'tot': {}},
+                         'derivative': {'linear': {}, 'tot': {}}}
 
             for k in perf_keys:
-                beh = win_data[k].astype(float)
-                beh_z = zscore_safe(beh)
-
-                valid = (~np.isnan(pupil_z) & ~np.isnan(deriv_z) & ~np.isnan(beh_z))
-                if valid.sum() < 4:
+                if subj not in all_obs[k] or run_id not in all_obs[k][subj]:
                     continue
+                rd = all_obs[k][subj][run_id]
+                pz = np.array(rd['pupil'])
+                dz = np.array(rd['pupil_derivative'])
+                bz = np.array(rd['behavior'])
+                tv = np.array(rd['tot'])
 
-                pz  = pupil_z[valid]
-                dz  = deriv_z[valid]
-                bz  = beh_z[valid]
-                tv  = tot[valid]
+                n = len(bz)
+                if n < 4:
+                    continue
 
                 # Regression for baseline diameter: [1, pupil, pupil^2, (time)]
                 if include_tot:
-                    X_d = np.column_stack([np.ones(valid.sum()), pz, pz**2, tv])
+                    X_d = np.column_stack([np.ones(n), pz, pz**2, tv])
                 else:
-                    X_d = np.column_stack([np.ones(valid.sum()), pz, pz**2])
+                    X_d = np.column_stack([np.ones(n), pz, pz**2])
                 coef_d, *_ = np.linalg.lstsq(X_d, bz, rcond=None)
                 run_entry['diameter']['linear'][k]    = coef_d[1]
                 run_entry['diameter']['quadratic'][k] = coef_d[2]
+                if include_tot:
+                    run_entry['diameter']['tot'][k] = coef_d[3]
 
                 # Regression for derivative: [1, deriv, (time)]
                 if include_tot:
-                    X_r = np.column_stack([np.ones(valid.sum()), dz, tv])
+                    X_r = np.column_stack([np.ones(n), dz, tv])
                 else:
-                    X_r = np.column_stack([np.ones(valid.sum()), dz])
+                    X_r = np.column_stack([np.ones(n), dz])
                 coef_r, *_ = np.linalg.lstsq(X_r, bz, rcond=None)
-                run_entry['derivative']['linear'][k]    = coef_r[1]
+                run_entry['derivative']['linear'][k] = coef_r[1]
+                if include_tot:
+                    run_entry['derivative']['tot'][k] = coef_r[2]
 
             run_coefs.append(run_entry)
 
@@ -604,16 +573,20 @@ def compute_fig4_coefficients(subject_list,
     # Average across runs per subject, then collect per-subject means
     results = {
         'diameter':   {'linear': {k: [] for k in perf_keys},
-                       'quadratic': {k: [] for k in perf_keys}},
-        'derivative': {'linear': {k: [] for k in perf_keys}},
+                       'quadratic': {k: [] for k in perf_keys},
+                       'tot': {k: [] for k in perf_keys}},
+        'derivative': {'linear': {k: [] for k in perf_keys},
+                       'tot': {k: [] for k in perf_keys}},
+    }
+    coef_types = {
+        'diameter':  ('linear', 'quadratic', 'tot'),
+        'derivative': ('linear', 'tot'),
     }
     for subj, runs in subj_run_coefs.items():
-        for pm in ('diameter', 'derivative'):
-            for ct in ('linear', 'quadratic'):
-                if ct == 'quadratic' and pm == 'derivative':
-                    continue
+        for pm, cts in coef_types.items():
+            for ct in cts:
                 for k in perf_keys:
-                    vals = [r[pm][ct][k] for r in runs if k in r[pm][ct]]
+                    vals = [r[pm][ct][k] for r in runs if k in r[pm].get(ct, {})]
                     if vals:
                         results[pm][ct][k].append(np.mean(vals))
 
@@ -644,14 +617,19 @@ def plot_fig4(results, title_suffix=''):
         """Return p-value from one-sample t-test vs 0."""
         if len(vals) < 2:
             return 1.0
-        t, p_two = stats.ttest_1samp(vals, 0)
-        if alternative == 'greater':
-            return p_two / 2 if t > 0 else 1 - p_two / 2
+        t, p_two = stats.ttest_1samp(vals, 0, alternative=alternative)
+        # if alternative == 'greater':
+        #     return p_two / 2 if t > 0 else 1 - p_two / 2
         return p_two
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharey=False)
+    has_tot = any(
+        any(v for v in results[pm].get('tot', {}).values())
+        for pm in ('diameter', 'derivative')
+    )
+    ncols = 3 if has_tot else 2
+    fig, axes = plt.subplots(1, ncols, figsize=(5 * ncols, 5), sharey=False)
 
-    for ax, pm in zip(axes, ('diameter', 'derivative')):
+    for ax, pm in zip(axes[:2], ('diameter', 'derivative')):
         x = np.arange(len(perf_keys))
         has_quad = pm == 'diameter'
         bar_w = 0.35 if has_quad else 0.5
@@ -711,6 +689,37 @@ def plot_fig4(results, title_suffix=''):
         ax.legend(fontsize=9)
         ax.grid(axis='y', alpha=0.3)
 
+    if has_tot:
+        ax_tot = axes[2]
+        x = np.arange(len(perf_keys))
+        bar_w = 0.35
+        tot_colors = {'diameter': 'steelblue', 'derivative': 'darkorange'}
+        for offset, pm in zip([-bar_w/2, bar_w/2], ('diameter', 'derivative')):
+            tot_means, tot_sems, tot_stars_list = [], [], []
+            for k in perf_keys:
+                tv = np.array(results[pm].get('tot', {}).get(k, []))
+                tot_means.append(np.mean(tv) if len(tv) else 0)
+                tot_sems.append(sp.stats.sem(tv) if len(tv) > 1 else 0)
+                tot_stars_list.append(sig_stars(ttest_p(tv, 'two-sided')))
+            bars = ax_tot.bar(x + offset, tot_means, bar_w, yerr=tot_sems,
+                              color=tot_colors[pm], capsize=4,
+                              label=pupil_labels[pm], zorder=3)
+            y_offset = 0.005
+            for i, b in enumerate(bars):
+                if tot_stars_list[i]:
+                    h = b.get_height()
+                    err = tot_sems[i]
+                    ypos = (h + err + y_offset) if h >= 0 else (h - err - y_offset * 4)
+                    ax_tot.text(b.get_x() + b.get_width()/2, ypos,
+                                tot_stars_list[i], ha='center', va='bottom', fontsize=10)
+        ax_tot.axhline(0, color='k', linewidth=0.8)
+        ax_tot.set_xticks(x)
+        ax_tot.set_xticklabels(perf_labels, fontsize=9)
+        ax_tot.set_ylabel('Regression coefficient (β)')
+        ax_tot.set_title('Time-on-task')
+        ax_tot.legend(fontsize=9)
+        ax_tot.grid(axis='y', alpha=0.3)
+
     n_subj = max(len(v) for v in results['diameter']['linear'].values())
     fig.suptitle(f'Fig 4: Pupil–behavior regression coefficients (N={n_subj}){title_suffix}', fontsize=12)
     plt.tight_layout()
@@ -718,24 +727,19 @@ def plot_fig4(results, title_suffix=''):
 
 
 fig4_results = compute_fig4_coefficients(
-    subject_list,
-    f_lowpass=6,
-    f_downsample=60,
-    detrend_order=None,
-    win_trials=20,
-    step_trials=5,
+    all_obs,
+    included_subjects,
     include_tot=False,
 )
-plot_fig4(fig4_results, title_suffix=' [with time-on-task effect]')
+plot_fig4(fig4_results, title_suffix=' [without time-on-task regressor]')
 
-# Fig 4 without time-on-task regressor
-fig4_results_notot = compute_fig4_coefficients(
-    subject_list,
-    f_lowpass=6,
-    f_downsample=60,
-    detrend_order=None,
-    win_trials=20,
-    step_trials=5,
+# Fig 4 with time-on-task regressor (tot coefficient also plotted)
+fig4_results_tot = compute_fig4_coefficients(
+    all_obs,
+    included_subjects,
     include_tot=True,
 )
-plot_fig4(fig4_results_notot, title_suffix=' [without time-on-task effect]')
+plot_fig4(fig4_results_tot, title_suffix=' [with time-on-task regressor]')
+
+
+# %%

@@ -25,7 +25,7 @@ win_trials=20
 step_trials=5
 include_tot=False
 
-subj = 'sub-730'
+subj = 'sub-746'
 subj_id       = subj.replace('sub-', '')
 subj_nirs_dir = os.path.join(project_path, subj, 'nirs')
 subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
@@ -43,7 +43,6 @@ event_file = os.path.join(subj_nirs_dir,
     f"{subj}_task-gradCPT_run-{run_id:02d}_events.tsv")
 
 neon_data  = pd.read_csv(physio_file, sep='\t')
-events_df  = pd.read_csv(event_file,  sep='\t')
 
 # Neon recording for blink removal
 rec = None
