@@ -166,6 +166,7 @@ def collect_all_obs(subject_list,
                     f_lowpass=6,
                     f_downsample=60,
                     detrend_order=1,
+                    detrend_perf=False,
                     win_trials=50,
                     step_trials=15):
     """
@@ -253,19 +254,27 @@ def collect_all_obs(subject_list,
 
             n_wins = len(win_data['win_center'])
             t_wins = np.arange(n_wins, dtype=float)
-            detrended_perf = {}
-            for k in perf_keys:
-                series = win_data[k].copy().astype(float)
-                valid_mask = ~np.isnan(series)
-                if detrend_order:
-                    if valid_mask.sum() > detrend_order:
-                        coef = np.polyfit(t_wins[valid_mask], series[valid_mask], detrend_order)
-                        series[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
-                detrended_perf[k] = series
 
             pupil_z            = zscore_safe(win_data['pupil_mean'])
             pupil_derivative_z = zscore_safe(win_data['pupil_derivative_mean'])
-            beh_z              = {k: zscore_safe(detrended_perf[k]) for k in perf_keys}
+            beh_z              = {k: zscore_safe(win_data[k]) for k in perf_keys}
+
+            # detrend z-scored series (linear regression on window index)
+            if detrend_order:
+                for arr in [pupil_z, pupil_derivative_z]:
+                    valid_mask = ~np.isnan(arr)
+                    if valid_mask.sum() > detrend_order:
+                        coef = np.polyfit(t_wins[valid_mask], arr[valid_mask], detrend_order)
+                        arr[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
+            if detrend_perf:
+                for k in perf_keys:
+                    series = beh_z[k].copy()
+                    valid_mask = ~np.isnan(series)
+                    poly_order = detrend_perf if isinstance(detrend_perf, int) else 1
+                    if valid_mask.sum() > poly_order:
+                        coef = np.polyfit(t_wins[valid_mask], series[valid_mask], poly_order)
+                        series[valid_mask] -= np.polyval(coef, t_wins[valid_mask])
+                    beh_z[k] = series
 
             valid = ~np.isnan(pupil_z) & ~np.isnan(pupil_derivative_z)
             for k in perf_keys:
@@ -292,7 +301,7 @@ def collect_all_obs(subject_list,
     return all_obs, included_subjects
 
 
-def plot_fig_5(all_obs, included_subjects):
+def plot_fig_5(all_obs, included_subjects, fit_order):
     """
     Reproduce Brink 2016 Fig. 5: tonic pupil vs. behavioral performance measures.
 
@@ -712,17 +721,17 @@ def plot_fig4(results, title_suffix=''):
 #%% Figure 5
 f_lowpass=6
 f_downsample=60
-fit_order=2
-detrend_order=1
-win_trials=20
-step_trials=5
+fit_order=1
+detrend_order=None
+win_trials=50
+step_trials=15
 all_obs, included_subjects = collect_all_obs(subject_list,
                     f_lowpass=f_lowpass,
                     f_downsample=f_downsample,
                     detrend_order=detrend_order,
                     win_trials=win_trials,
                     step_trials=step_trials)
-bin_results = plot_fig_5(all_obs, included_subjects)
+bin_results = plot_fig_5(all_obs, included_subjects, fit_order)
 
 #%% Figure 4
 fig4_results = compute_fig4_coefficients(
@@ -740,5 +749,276 @@ fig4_results_tot = compute_fig4_coefficients(
 )
 plot_fig4(fig4_results_tot, title_suffix=' [with time-on-task regressor]')
 
+#%% Rerun fig 5 and fig 4 with linear detrend on both z-scored pupil diameter/derivative and performance metrics
+f_lowpass=6
+f_downsample=60
+fit_order=2
+detrend_order=1
+detrend_perf=1
+win_trials=20
+step_trials=5
+all_obs_detrend, included_subjects_detrend = collect_all_obs(subject_list,
+                    f_lowpass=f_lowpass,
+                    f_downsample=f_downsample,
+                    detrend_order=detrend_order,
+                    detrend_perf=detrend_perf,
+                    win_trials=win_trials,
+                    step_trials=step_trials)
+bin_results_detrend = plot_fig_5(all_obs_detrend, included_subjects_detrend, fit_order)
 
-# %%
+fig4_results_detrend = compute_fig4_coefficients(
+    all_obs_detrend,
+    included_subjects_detrend,
+    include_tot=False,
+)
+plot_fig4(fig4_results_detrend, title_suffix=' [linear detrend, without time-on-task regressor]')
+
+fig4_results_detrend_tot = compute_fig4_coefficients(
+    all_obs_detrend,
+    included_subjects_detrend,
+    include_tot=True,
+)
+plot_fig4(fig4_results_detrend_tot, title_suffix=' [linear detrend, with time-on-task regressor]')
+
+# %% visualize behavior performance and pupil diameter/derivative
+"""
+For each subject, take average of their z-scored erformance metrics across time.
+Plot the cross-subject results for each performance metrics with mean and SEM.
+"""
+nb_bins=100
+f_lowpass=6
+f_downsample=60
+fit_order=1
+detrend_order=2
+detrend_perf=2
+win_trials=20
+step_trials=5
+all_obs_detrend, included_subjects_detrend = collect_all_obs(subject_list,
+                    f_lowpass=f_lowpass,
+                    f_downsample=f_downsample,
+                    detrend_order=detrend_order,
+                    detrend_perf=detrend_perf,
+                    win_trials=win_trials,
+                    step_trials=step_trials)
+
+perf_keys   = ['fa_rate', 'slow_q_rt', 'mean_rt', 'rtcv', 'smoothed_vtc']
+perf_labels = ['False Alarm Rate', 'Slow Quintile RT', 'Mean RT', 'RTCV', 'Smoothed VTC']
+
+# Common normalized time grid (0 = start, 1 = end of run)
+t_grid = np.linspace(0, 1, nb_bins)
+
+# Interpolate per-subject run-averaged traces onto t_grid
+subj_traces    = {k: [] for k in perf_keys}
+pupil_traces   = []
+pupil_d_traces = []
+for subj in sorted(included_subjects_detrend):
+    pupil_runs, pupil_d_runs = [], []
+    for k in perf_keys:
+        if subj not in all_obs_detrend[k]:
+            continue
+        run_interps = []
+        for run_data in all_obs_detrend[k][subj].values():
+            tot = np.array(run_data['tot'])
+            if len(tot) < 2:
+                continue
+            run_interps.append(np.interp(t_grid, tot, run_data['behavior']))
+            if k == perf_keys[0]:
+                pupil_runs.append(np.interp(t_grid, tot, run_data['pupil']))
+                pupil_d_runs.append(np.interp(t_grid, tot, run_data['pupil_derivative']))
+        if run_interps:
+            subj_traces[k].append(np.mean(run_interps, axis=0))
+    if pupil_runs:
+        pupil_traces.append(np.mean(pupil_runs, axis=0))
+        pupil_d_traces.append(np.mean(pupil_d_runs, axis=0))
+
+def _plot_beh_with_pupil(subj_traces, pupil_src, perf_keys, perf_labels, t_grid,
+                         pupil_label, pupil_color, suptitle, show_individual=True,
+                         smooth_L=None):
+    def _smooth(arr):
+        if smooth_L:
+            return smoothing_VTC_gaussian_array(arr, L=smooth_L)
+        return arr
+
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8), sharey=False)
+    p_arr = np.array([_smooth(tr) for tr in pupil_src]) if len(pupil_src) else np.array(pupil_src)
+    for ax, k, label in zip(axes.flat, perf_keys, perf_labels):
+        traces = np.array([_smooth(tr) for tr in subj_traces[k]]) if subj_traces[k] else np.array([])
+        if traces.ndim < 2 or len(traces) == 0:
+            ax.set_title(label)
+            continue
+        ax2 = ax.twinx()
+        if len(p_arr):
+            p_mean = p_arr.mean(axis=0)
+            p_sem  = sp.stats.sem(p_arr, axis=0)
+            if show_individual:
+                for tr in p_arr:
+                    ax2.plot(t_grid, tr, color=pupil_color, linewidth=0.5, alpha=0.15)
+            ax2.fill_between(t_grid, p_mean - p_sem, p_mean + p_sem,
+                             alpha=0.2, color=pupil_color)
+            ax2.plot(t_grid, p_mean, color=pupil_color, linewidth=1.5,
+                     linestyle='--', label=pupil_label)
+            ax2.set_ylabel(f'{pupil_label} (z)', color=pupil_color, fontsize=8)
+            ax2.tick_params(axis='y', labelcolor=pupil_color)
+        grand_mean = traces.mean(axis=0)
+        sem        = sp.stats.sem(traces, axis=0)
+        if show_individual:
+            for trace in traces:
+                ax.plot(t_grid, trace, color='steelblue', linewidth=0.6, alpha=0.3)
+        ax.fill_between(t_grid, grand_mean - sem, grand_mean + sem,
+                        alpha=0.3, color='steelblue')
+        ax.plot(t_grid, grand_mean, color='steelblue', linewidth=2)
+        ax.axhline(0, color='k', linewidth=0.6, linestyle='--')
+        ax.set_xlabel('Normalized time-on-task')
+        ax.set_ylabel('Behavior (z)', color='steelblue', fontsize=8)
+        ax.tick_params(axis='y', labelcolor='steelblue')
+        ax.set_title(f'{label} (N={len(traces)})')
+        ax.grid(True, alpha=0.3)
+    for ax in axes.flat[len(perf_keys):]:
+        ax.set_visible(False)
+    fig.suptitle(suptitle, fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+n_subj   = len(included_subjects_detrend)
+smooth_L = int(20*nb_bins/450)
+_plot_beh_with_pupil(subj_traces, pupil_traces, perf_keys, perf_labels, t_grid,
+                     pupil_label='Pupil diameter', pupil_color='firebrick',
+                     suptitle=f'Behavior (blue) + Pupil diameter (red dashed), N={n_subj}',
+                     show_individual=False, smooth_L=smooth_L)
+
+_plot_beh_with_pupil(subj_traces, pupil_d_traces, perf_keys, perf_labels, t_grid,
+                     pupil_label='Pupil derivative', pupil_color='green',
+                     suptitle=f'Behavior (blue) + Pupil derivative (green dashed), N={n_subj}',
+                     show_individual=False, smooth_L=smooth_L)
+
+# %% Single-subject example
+def plot_single_subject(all_obs, subj, perf_keys, perf_labels, t_grid,
+                        pupil_color='firebrick', pupil_d_color='green', smooth_L=None):
+    """
+    Two figures for one subject:
+      Fig 1 — a single randomly chosen run (raw time series).
+      Fig 2 — cross-run mean ± SEM interpolated onto t_grid.
+    Each has one subplot per performance metric with behavior on the primary axis
+    and pupil diameter (dashed) + pupil derivative (dotted) on the twin axis.
+    """
+    from matplotlib.lines import Line2D
+
+    def _smooth(arr):
+        if smooth_L:
+            return smoothing_VTC_gaussian_array(arr, L=smooth_L)
+        return arr
+
+    # collect per-run interpolated traces
+    run_ids_valid = [
+        run_id for run_id in all_obs[perf_keys[0]].get(subj, {})
+        if len(all_obs[perf_keys[0]][subj][run_id]['tot']) >= 2
+    ]
+    if not run_ids_valid:
+        print(f"No valid runs for {subj}.")
+        return
+
+    rng        = np.random.default_rng()
+    example_id = rng.choice(run_ids_valid)
+
+    legend_elements = [
+        Line2D([0], [0], color='steelblue',   linewidth=1.5,              label='Behavior'),
+        Line2D([0], [0], color=pupil_color,   linewidth=1.2, linestyle='--', label='Pupil diameter'),
+        Line2D([0], [0], color=pupil_d_color, linewidth=1.2, linestyle=':',  label='Pupil derivative'),
+    ]
+
+    def _fill_axes(axes, beh_dict, pup_dict, pupd_dict, title_suffix):
+        for ax, k, label in zip(axes.flat, perf_keys, perf_labels):
+            if k not in beh_dict:
+                ax.set_title(label)
+                continue
+            ax2 = ax.twinx()
+            beh_data  = beh_dict[k]
+            pup_data  = pup_dict[k]
+            pupd_data = pupd_dict[k]
+            if isinstance(beh_data, dict):   # mean/sem dict
+                ax.fill_between(t_grid,
+                                beh_data['mean'] - beh_data['sem'],
+                                beh_data['mean'] + beh_data['sem'],
+                                alpha=0.25, color='steelblue')
+                ax.plot(t_grid, beh_data['mean'], color='steelblue', linewidth=1.8)
+                ax2.fill_between(t_grid,
+                                 pup_data['mean'] - pup_data['sem'],
+                                 pup_data['mean'] + pup_data['sem'],
+                                 alpha=0.2, color=pupil_color)
+                ax2.plot(t_grid, pup_data['mean'],  color=pupil_color,   linewidth=1.2, linestyle='--')
+                ax2.fill_between(t_grid,
+                                 pupd_data['mean'] - pupd_data['sem'],
+                                 pupd_data['mean'] + pupd_data['sem'],
+                                 alpha=0.2, color=pupil_d_color)
+                ax2.plot(t_grid, pupd_data['mean'], color=pupil_d_color, linewidth=1.2, linestyle=':')
+            else:                            # single array
+                ax.plot(t_grid, beh_data,  color='steelblue',   linewidth=1.5)
+                ax2.plot(t_grid, pup_data,  color=pupil_color,   linewidth=1.2, linestyle='--')
+                ax2.plot(t_grid, pupd_data, color=pupil_d_color, linewidth=1.2, linestyle=':')
+            ax.axhline(0, color='k', linewidth=0.6, linestyle='--')
+            ax.set_xlabel('Normalized time-on-task')
+            ax.set_ylabel('Behavior (z)', color='steelblue', fontsize=8)
+            ax.tick_params(axis='y', labelcolor='steelblue')
+            ax2.set_ylabel('Pupil (z)', fontsize=8)
+            ax2.tick_params(axis='y')
+            ax.set_title(f'{label}{title_suffix}')
+            ax.grid(True, alpha=0.3)
+        for ax in axes.flat[len(perf_keys):]:
+            ax.set_visible(False)
+
+    # --- Figure 1: single random run ---
+    beh_single  = {}
+    pup_single  = {}
+    pupd_single = {}
+    for k in perf_keys:
+        rd = all_obs[k].get(subj, {}).get(example_id)
+        if rd is None or len(rd['tot']) < 2:
+            continue
+        tot = np.array(rd['tot'])
+        beh_single[k]  = _smooth(np.interp(t_grid, tot, rd['behavior']))
+        pup_single[k]  = _smooth(np.interp(t_grid, tot, rd['pupil']))
+        pupd_single[k] = _smooth(np.interp(t_grid, tot, rd['pupil_derivative']))
+
+    fig1, axes1 = plt.subplots(2, 3, figsize=(14, 8), sharey=False)
+    _fill_axes(axes1, beh_single, pup_single, pupd_single, '')
+    fig1.legend(handles=legend_elements, loc='lower right', fontsize=9)
+    fig1.suptitle(f'Single subject example: {subj}  run-{example_id:02d}', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Figure 2: cross-run mean ± SEM ---
+    beh_runs  = {k: [] for k in perf_keys}
+    pup_runs  = {k: [] for k in perf_keys}
+    pupd_runs = {k: [] for k in perf_keys}
+    for k in perf_keys:
+        for rd in all_obs[k].get(subj, {}).values():
+            tot = np.array(rd['tot'])
+            if len(tot) < 2:
+                continue
+            beh_runs[k].append(_smooth(np.interp(t_grid, tot, rd['behavior'])))
+            pup_runs[k].append(_smooth(np.interp(t_grid, tot, rd['pupil'])))
+            pupd_runs[k].append(_smooth(np.interp(t_grid, tot, rd['pupil_derivative'])))
+
+    def _mean_sem(runs):
+        arr = np.array(runs)
+        if len(arr) == 0:
+            return None
+        return {'mean': arr.mean(axis=0),
+                'sem':  sp.stats.sem(arr, axis=0) if len(arr) > 1 else np.zeros(len(t_grid))}
+
+    beh_ms  = {k: _mean_sem(beh_runs[k])  for k in perf_keys if beh_runs[k]}
+    pup_ms  = {k: _mean_sem(pup_runs[k])  for k in perf_keys if pup_runs[k]}
+    pupd_ms = {k: _mean_sem(pupd_runs[k]) for k in perf_keys if pupd_runs[k]}
+
+    n_runs = max(len(v) for v in beh_runs.values())
+    fig2, axes2 = plt.subplots(2, 3, figsize=(14, 8), sharey=False)
+    _fill_axes(axes2, beh_ms, pup_ms, pupd_ms, '')
+    fig2.legend(handles=legend_elements, loc='lower right', fontsize=9)
+    fig2.suptitle(f'Single subject: {subj}  —  cross-run mean ± SEM  (N runs={n_runs})', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+# example_subj = np.random.choice(sorted(included_subjects_detrend))
+example_subj = 'sub-721'
+plot_single_subject(all_obs_detrend, example_subj, perf_keys, perf_labels, t_grid,
+                    smooth_L=smooth_L)
