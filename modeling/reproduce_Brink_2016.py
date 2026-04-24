@@ -472,23 +472,6 @@ def plot_fig_5(all_obs, included_subjects):
 
     return bin_results
 
-
-#%% Figure 5
-f_lowpass=6
-f_downsample=60
-fit_order=2
-detrend_order=1
-win_trials=20
-step_trials=5
-all_obs, included_subjects = collect_all_obs(subject_list,
-                    f_lowpass=f_lowpass,
-                    f_downsample=f_downsample,
-                    detrend_order=detrend_order,
-                    win_trials=win_trials,
-                    step_trials=step_trials)
-bin_results = plot_fig_5(all_obs, included_subjects)
-
-#%% Figure 4
 """
 Fig 4: Regression coefficients (linear + quadratic) per pupil measure × behavioral measure.
 
@@ -726,6 +709,22 @@ def plot_fig4(results, title_suffix=''):
     plt.show()
 
 
+#%% Figure 5
+f_lowpass=6
+f_downsample=60
+fit_order=2
+detrend_order=1
+win_trials=20
+step_trials=5
+all_obs, included_subjects = collect_all_obs(subject_list,
+                    f_lowpass=f_lowpass,
+                    f_downsample=f_downsample,
+                    detrend_order=detrend_order,
+                    win_trials=win_trials,
+                    step_trials=step_trials)
+bin_results = plot_fig_5(all_obs, included_subjects)
+
+#%% Figure 4
 fig4_results = compute_fig4_coefficients(
     all_obs,
     included_subjects,

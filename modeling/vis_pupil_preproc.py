@@ -31,7 +31,7 @@ subj_nirs_dir = os.path.join(project_path, subj, 'nirs')
 subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
 neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
 
-run_id = 1
+run_id = 3
 dirs = os.listdir(project_path)
 subject_list = sorted([d for d in dirs if 'sub' in d])
 physio_file = os.path.join(subj_nirs_dir,
@@ -43,6 +43,7 @@ event_file = os.path.join(subj_nirs_dir,
     f"{subj}_task-gradCPT_run-{run_id:02d}_events.tsv")
 
 neon_data  = pd.read_csv(physio_file, sep='\t')
+events_df  = pd.read_csv(event_file,  sep='\t')
 
 # Neon recording for blink removal
 rec = None
@@ -54,6 +55,8 @@ if neon_dirs_subj and run_id - 1 < len(neon_dirs_subj):
 
 #%% Replay each preprocessing step and visualize
 def build_snapshots(neon_data, rec, order, f_lowpass, f_downsample):
+    if events_df is not None:
+        neon_data = neon_data[neon_data['timestamps']<=events_df['onset'].values[-1]+1.6]
     t_neon = neon_data['timestamps']
     pupil_raw = (neon_data['eyeleft_pupilDiameter'] + neon_data['eyeright_pupilDiameter']) / 2
     pupil_d = pupil_raw.values.copy().astype(float)
@@ -116,11 +119,32 @@ plt.tight_layout()
 plt.show()
 
 # %%
-t_pupil,pupil_tonic = preprocess_pupil(
-                    neon_data, rec=rec,
-                    f_lowpass=f_lowpass,
-                    f_downsample=f_downsample,
-                    detrend_order=detrend_order,
-                    is_rm_phasic=False,
-                    events_df=events_df,
-                )
+fig, axes = plt.subplots(2,1, figsize=(10, 10), sharey=False)
+fig.suptitle(f'{subj} run-{run_id:02d} — tonic pupil (smoothed)', fontsize=12)
+neon_data = neon_data[neon_data['timestamps']<=events_df['onset'].values[-1]+1.6]
+t_neon = neon_data['timestamps']
+pupil_raw = (neon_data['eyeleft_pupilDiameter'] + neon_data['eyeright_pupilDiameter']) / 2
+pupil_d = pupil_raw.values.copy().astype(float) - np.mean(pupil_d)
+
+for ax, order in zip(axes, [1, 2]):
+    smooth_pupil = smoothing_VTC_gaussian_array(pupil_d, L=20*0.8*np.median(1/np.diff(t_pupil)))
+    t_smooth = smoothing_VTC_gaussian_array(t_neon, L=20*0.8*np.median(1/np.diff(t_pupil)))
+
+    _t_idx = np.arange(len(pupil_d), dtype=float)
+    _valid = np.where(~np.isnan(pupil_d))[0]
+    _coef  = np.polyfit(_t_idx[_valid], pupil_d[_valid], order)
+    _trend = np.polyval(_coef, _t_idx)
+
+    smooth_detrend = smoothing_VTC_gaussian_array(pupil_d-_trend, L=20*0.8*np.median(1/np.diff(t_neon)))
+
+    ax.plot(t_smooth, smooth_pupil, lw=0.8, label='tonic pupil')
+    ax.plot(t_smooth, _trend, lw=1.5, color='red', linestyle='--', label='trend')
+    ax.plot(t_smooth, smooth_detrend, lw=1.5, color='green', linestyle='--', label='removed')
+    ax.set_title(f'detrend order={order}', fontsize=10)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Diameter')
+    ax.autoscale(axis='x', tight=True)
+    ax.legend(fontsize=8)
+
+plt.tight_layout()
+plt.show()
