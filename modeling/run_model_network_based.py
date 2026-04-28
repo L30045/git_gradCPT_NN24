@@ -54,15 +54,15 @@ for run_id in range(len(parcel_ts_post)):
     unique_networks = np.unique(network_labels)
     # get data
     data = parcel_ts_post[run_id].copy()
-    data = data.assign_coords({'network': ('parcel', network_labels)})
+    data = data.assign_coords({'channel': ('parcel', network_labels)})
     # get parcel mse
     mse = vertex_mse[run_id].copy()
     mse = mse.groupby('parcel').mean('vertex')
-    mse = mse.assign_coords({'network': ('parcel', network_labels)})
+    mse = mse.assign_coords({'channel': ('parcel', network_labels)})
 
-    # Then I do our weighted averaging across the network dimension: 
-    roi_parcel_ts = (data/mse).groupby('network').sum('parcel') / (1/mse).groupby('network').sum('parcel')
-    roi_var =  1 / (1/mse).groupby('network').sum('parcel')
+    # Then I do our weighted averaging across the network dimension:
+    roi_parcel_ts = (data/mse).groupby('channel').sum('parcel') / (1/mse).groupby('channel').sum('parcel')
+    roi_var =  1 / (1/mse).groupby('channel').sum('parcel')
 
     # store the values
     roi_parcel_ts_list.append(roi_parcel_ts)
@@ -167,8 +167,8 @@ for run_key in run_dict.keys():
     ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
     stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
 reduced_dm = model.get_GLM_copy_from_pf_DM_network(run_list, cfg_GLM, stim_list)
-Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
-Y_all = Y_all.assign_coords(samples=('time', np.arange(Y_all.sizes['time'])))
+# Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
+# Y_all = Y_all.assign_coords(samples=('time', np.arange(Y_all.sizes['time'])))
 
 # get drift and ss
 basis_dm = model.create_no_info_dm_network(run_list, cfg_GLM, stim_list)
@@ -177,7 +177,7 @@ basis_dm = model.create_no_info_dm_network(run_list, cfg_GLM, stim_list)
 eeg_dm_dict = model.create_eeg_dm_network(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
 
 # combine EEG DMs from all runs into one big DM
-Y_all, eeg_dm, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
+Y_all, eeg_dm, runs_updated = model.concatenate_runs_dms_network(run_dict, eeg_dm_dict)
 
 # save DMs
 save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
@@ -261,6 +261,41 @@ elif model_type=='onlyEEG':
     f_test_result = glm_results.sm.f_test(hypotheses)
     result_dict['f_test_eeg_basis'] = f_test_result
 
+#%% diagnose redundant regressors
+# param_names_diag = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
+# cov_full = glm_results.sm.cov_params().sel(
+#     regressor_r=param_names_diag,
+#     regressor_c=param_names_diag
+# )
+# print("cov_params submatrix dims:", cov_full.dims, "shape:", cov_full.shape)
+
+# # collapse all non-regressor dims by taking first index — collinearity is in
+# # regressor space so one spatial/chromo slice is sufficient for diagnosis
+# extra_dims = [d for d in cov_full.dims if d not in ('regressor_r', 'regressor_c')]
+# cov_sub = cov_full.isel({d: 0 for d in extra_dims}).values  # shape: (n_params, n_params)
+# print("2-D slice used for SVD, shape:", cov_sub.shape)
+
+# U, sv, Vt = np.linalg.svd(cov_sub)
+# print("\nSingular values:")
+# for i in range(len(sv)):
+#     print(f"  sv[{i:2d}] = {sv[i]:.3e}")
+
+# # direction corresponding to smallest singular value = redundant constraint
+# redundant_vec = Vt[-1]
+# print("\nRedundant direction (|loading| > 0.1):")
+# for name, load in zip(param_names_diag, redundant_vec):
+#     if abs(load) > 0.1:
+#         print(f"  {name:50s}  loading = {load:.3f}")
+
+# # SE from diagonal of the slice; inflated SE flags near-collinear regressor
+# betas_diag = glm_results.sm.params.sel(regressor=param_names_diag).isel(
+#     {d: 0 for d in extra_dims}
+# )
+# se_diag = np.sqrt(np.diag(cov_sub))
+# print("\nBeta and SE per EEG regressor:")
+# for name, beta, se in zip(param_names_diag, np.array(betas_diag).flatten(), se_diag):
+#     print(f"  {name:50s}  beta={beta:+.3e}  SE={se:.3e}")
+
 #%% contrast t test
 if model_type.startswith('full'):
     # full vs stim
@@ -299,7 +334,7 @@ elif model_type=='onlyEEG':
     t_test_result = glm_results.sm.t_test(hypotheses)
     result_dict['f_test_0_eeg'] = t_test_result
 
-#%% get HRF and MSE for each run
+#%% get HRF and MSE for each event type
 if model_type!='basis':
     # 4. estimate HRF and MSE
     trial_type_list = ['mnt-correct','mnt-incorrect']
@@ -313,10 +348,13 @@ if model_type!='basis':
         """
         NOTE: The number of regressors is fixed.
         """
-        basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+        sample_run = run_dict[run_key]['network'].copy()
+        sample_run = sample_run.assign_coords(samples=('time', np.arange(sample_run.sizes['time'])))
+        sample_run.time.attrs['units'] = units.s
+        basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(sample_run)
         basis_hrf = model.xr.concat([basis_hrf,basis_hrf],dim='component')
     else:
-        basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
+        basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(sample_run)
 
 
     hrf_mse_list = []
@@ -344,7 +382,7 @@ if model_type!='basis':
     hrf_mse = hrf_mse.pint.quantify(run_unit**2)
 
     # set universal time so that all hrfs have the same time base 
-    fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
+    fs = model.frequency.sampling_rate(sample_run).to('Hz')
     before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
     after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
 

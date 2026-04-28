@@ -597,6 +597,7 @@ def create_eeg_dm_network(run_dict, ev_dict, cfg_GLM, select_event=None, select_
         dm_dict[run_key] = dict()
         target_run = run_dict[run_key]['network']
         target_run = target_run.assign_coords(samples=('time', np.arange(target_run.sizes['time'])))
+        target_run.time.attrs['units'] = 's'
         ev_df = run_dict[run_key]['ev_df']
         
         # for each event, create a dm list
@@ -876,6 +877,48 @@ def concatenate_runs_dms(run_dict, dm_dict):
     dm_all.common = dm_all.common.fillna(0)
     
     return Y_all, dm_all, runs_updated
+
+
+def concatenate_runs_dms_network(run_dict, dm_dict):
+    """
+    Concatenate multiple runs along time dimension for joint analysis.
+    
+    Combines time series and stimulus timing from multiple runs into single
+    continuous arrays. Adjusts time coordinates and stimulus onsets to maintain
+    temporal continuity. Enables fitting a single GLM across all runs.
+    
+    """
+
+    CURRENT_OFFSET = 0
+    runs_updated = []
+    dm_updated = []
+
+    for run_key in run_dict.keys():
+        ts = run_dict[run_key]['network']
+        dm = dm_dict[run_key]
+        time = ts.time.values
+        new_time = time + CURRENT_OFFSET
+
+        ts_new = ts.copy(deep=True)
+        ts_new = ts_new.pint.dequantify().pint.quantify('molar')
+        ts_new = ts_new.assign_coords(time=new_time)
+
+        dm_new = copy.deepcopy(dm)
+        dm_new.common = dm_new.common.assign_coords(time=new_time)
+
+        runs_updated.append(ts_new)
+        dm_updated.append(dm_new.common)
+
+        CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+
+    Y_all = xr.concat(runs_updated, dim='time')
+    Y_all.time.attrs['units'] = units.s
+    dm_all = copy.deepcopy(dm_dict[run_key])
+    dm_all.common = xr.concat(dm_updated, dim="time")
+    dm_all.common = dm_all.common.fillna(0)
+    
+    return Y_all, dm_all, runs_updated
+
 
 def concatenate_runs(runs, stim):
     """
