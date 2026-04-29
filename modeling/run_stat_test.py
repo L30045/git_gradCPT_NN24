@@ -450,3 +450,4 @@ for ax, (sig_list_data, title) in zip(axes, plot_data):
     ax.grid()
 
 plt.tight_layout()
+# %%

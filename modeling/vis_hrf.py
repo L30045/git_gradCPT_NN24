@@ -19,7 +19,8 @@ from scipy import stats
 from statsmodels.stats.multitest import fdrcorrection
 
 # load template run and geo3d
-subj_id_array = [670, 695, 721, 723]
+# subj_id_array = [670, 695, 721, 723]
+subj_id_array = [670, 695, 721, 723, 726, 730]
 subj_id = 695
 hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
 with gzip.open(hbo_file, 'rb') as f:
