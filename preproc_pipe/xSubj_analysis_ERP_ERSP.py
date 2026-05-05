@@ -19,7 +19,7 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-# subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
+# subj_id_array = [670, 695, 721, 723, 726, 730]
 subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733, 746, 751, 755]
 
 ch_names = ['fz','cz','pz','oz']
