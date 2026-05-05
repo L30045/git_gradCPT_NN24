@@ -105,6 +105,14 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
     single_subj_EEG_dict = dict()
     single_subj_rm_ch_dict = dict()
 
+    # delete existing figures before replotting
+    if is_overwrite:
+        _vis_dir_batch = os.path.join(data_save_path, f"sub-{vis_subj_id}", "preprocess_visualization")
+        if os.path.isdir(_vis_dir_batch):
+            for _f in glob.glob(os.path.join(_vis_dir_batch, "*.png")):
+                os.remove(_f)
+            print(f"sub-{vis_subj_id}: cleared existing figures in {_vis_dir_batch}")
+
     for vhdr_file in vhdr_files:
         # derive BIDS-style run label from filename (e.g. run-01, run-02, run-03)
         run_match = re.search(r'run-(\d+)', vhdr_file, re.IGNORECASE)
@@ -117,13 +125,13 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
 
         # skip if all figures already exist
         expected_figs = [
-            f"{prefix}_raw_psd.png", f"{prefix}_raw_timeseries.png",
-            f"{prefix}_band_pass_psd.png", f"{prefix}_band_pass_timeseries.png",
-            f"{prefix}_bad_channels.png",
-            f"{prefix}_pre_reref_mastoid_timeseries.png",
-            f"{prefix}_reref_psd.png", f"{prefix}_reref_timeseries.png",
-            f"{prefix}_ICA_scores.png",
-            f"{prefix}_ICA_psd.png", f"{prefix}_ICA_timeseries.png",
+            f"{prefix}_step0_raw_psd.png", f"{prefix}_step0_raw_timeseries.png",
+            f"{prefix}_step1_band_pass_psd.png", f"{prefix}_step1_band_pass_timeseries.png",
+            f"{prefix}_step2_bad_channels.png",
+            f"{prefix}_step3_pre_reref_mastoid_timeseries.png",
+            f"{prefix}_step3_reref_psd.png", f"{prefix}_step3_reref_timeseries.png",
+            f"{prefix}_step4_ICA_scores.png",
+            f"{prefix}_step4_ICA_psd.png", f"{prefix}_step4_ICA_timeseries.png",
         ]
         if not is_overwrite and all(os.path.exists(os.path.join(save_dir, f)) for f in expected_figs):
             print(f"{prefix}: figures exist, skipping.")
@@ -143,9 +151,9 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         print(f"  Valid recording length: {eeg_duration:.1f} min")
 
         _savefig(_make_psd_fig(EEG_raw, ch_names, f"{prefix} – Raw PSD"),
-                 save_dir, f"{prefix}_raw_psd.png")
+                 save_dir, f"{prefix}_step0_raw_psd.png")
         _savefig(_make_timeseries_fig(EEG_raw, ch_names, f"{prefix} – Raw time series"),
-                 save_dir, f"{prefix}_raw_timeseries.png")
+                 save_dir, f"{prefix}_step0_raw_timeseries.png")
 
         # Step 1 – band-pass filter ───────────────────────────────────────────
         EEG_step1 = EEG_raw.copy()
@@ -153,9 +161,9 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
             EEG_step1.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1], picks='all', verbose=False)
 
         _savefig(_make_psd_fig(EEG_step1, ch_names, f"{prefix} – Band-pass {bp_f_range} Hz PSD"),
-                 save_dir, f"{prefix}_band_pass_psd.png")
+                 save_dir, f"{prefix}_step1_band_pass_psd.png")
         _savefig(_make_timeseries_fig(EEG_step1, ch_names, f"{prefix} – Band-pass time series"),
-                 save_dir, f"{prefix}_band_pass_timeseries.png")
+                 save_dir, f"{prefix}_step1_band_pass_timeseries.png")
 
         # Step 2 – bad channel detection and removal ──────────────────────────
         rm_ch_list = []
@@ -178,7 +186,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         ax_var.set_xlabel("Channel"); ax_var.set_ylabel("Variance (µV²)")
         ax_var.set_title(f"{prefix} – Channel variance (red = removed: {rm_ch_list})")
         plt.xticks(rotation=90, fontsize=6); plt.tight_layout()
-        _savefig(fig_var, save_dir, f"{prefix}_bad_channels.png")
+        _savefig(fig_var, save_dir, f"{prefix}_step2_bad_channels.png")
 
         EEG_step2 = EEG_step1.copy()
         if rm_ch_list:
@@ -189,7 +197,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         if mastoid_chs:
             _savefig(_make_timeseries_fig(EEG_step2, mastoid_chs,
                                           f"{prefix} – Mastoid (tp9h/tp10h) before re-reference"),
-                     save_dir, f"{prefix}_pre_reref_mastoid_timeseries.png")
+                     save_dir, f"{prefix}_step2_pre_reref_mastoid_timeseries.png")
 
         # Step 3 – re-reference ───────────────────────────────────────────────
         EEG_step3 = EEG_step2.copy()
@@ -198,9 +206,9 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
             EEG_step3.set_eeg_reference(ref_channels=ref, ch_type='eeg', verbose=False)
 
         _savefig(_make_psd_fig(EEG_step3, ch_names, f"{prefix} – Re-reference PSD"),
-                 save_dir, f"{prefix}_reref_psd.png")
+                 save_dir, f"{prefix}_step3_reref_psd.png")
         _savefig(_make_timeseries_fig(EEG_step3, ch_names, f"{prefix} – Re-reference time series"),
-                 save_dir, f"{prefix}_reref_timeseries.png")
+                 save_dir, f"{prefix}_step3_reref_timeseries.png")
 
         # Step 4 – ICA eye-artifact removal ───────────────────────────────────
         EEG_step4 = EEG_step3.copy()
@@ -211,22 +219,27 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
                                             random_state=42, verbose=False)
                 ica.fit(EEG_step4, picks=['eeg'], verbose=False)
                 eog_inds, eog_scores = ica.find_bads_eog(EEG_step4, ch_name=['hEOG', 'vEOG'],
-                                                          measure='correlation', verbose=False)
+                                                          measure='correlation', threshold=0.9,
+                                                          verbose=False)
                 print(f"  ICA eye components: {eog_inds}")
 
                 # ICA scores
                 fig_scores = ica.plot_scores(eog_scores, exclude=eog_inds, show=False)
                 fig_scores.suptitle(f"{prefix} – ICA EOG scores"); plt.tight_layout()
-                _savefig(fig_scores, save_dir, f"{prefix}_ICA_scores.png")
+                _savefig(fig_scores, save_dir, f"{prefix}_step4_ICA_scores.png")
 
                 # ICA topomaps for excluded components
                 if eog_inds:
-                    fig_comp = ica.plot_components(picks=eog_inds, show=False)
-                    if not isinstance(fig_comp, list):
-                        fig_comp = [fig_comp]
-                    for fi, fc in enumerate(fig_comp):
-                        fc.suptitle(f"{prefix} – ICA excluded components"); plt.tight_layout()
-                        _savefig(fc, save_dir, f"{prefix}_ICA_components_{fi}.png")
+                    try:
+                        fig_comp = ica.plot_components(picks=eog_inds, show=False)
+                        if not isinstance(fig_comp, list):
+                            fig_comp = [fig_comp]
+                        for fi, fc in enumerate(fig_comp):
+                            fc.suptitle(f"{prefix} – ICA excluded components"); plt.tight_layout()
+                            _savefig(fc, save_dir, f"{prefix}_step4_ICA_components_{fi}.png")
+                    except Exception as e:
+                        # QhullError: too few channels remaining for topomap triangulation
+                        print(f"  Could not plot ICA components ({type(e).__name__}): {e}")
 
                 ica.exclude = eog_inds
                 EEG_step4 = ica.apply(EEG_step4, verbose=False)
@@ -237,12 +250,12 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
                 fig_err, ax_err = plt.subplots()
                 ax_err.text(0.5, 0.5, f"ICA failed:\n{e}", ha='center', va='center', wrap=True)
                 ax_err.axis('off')
-                _savefig(fig_err, save_dir, f"{prefix}_ICA_scores.png")
+                _savefig(fig_err, save_dir, f"{prefix}_step4_ICA_scores.png")
 
         _savefig(_make_psd_fig(EEG_step4, ch_names, f"{prefix} – Post-ICA PSD"),
-                 save_dir, f"{prefix}_ICA_psd.png")
+                 save_dir, f"{prefix}_step4_ICA_psd.png")
         _savefig(_make_timeseries_fig(EEG_step4, ch_names, f"{prefix} – Post-ICA time series"),
-                 save_dir, f"{prefix}_ICA_timeseries.png")
+                 save_dir, f"{prefix}_step4_ICA_timeseries.png")
 
         print(f"  Saved to {save_dir}")
 
@@ -310,6 +323,13 @@ else:
     _single_subj_EEG_dict   = dict()
     _single_subj_rm_ch_dict = dict()
 
+# delete existing figures before replotting
+_vis_dir = os.path.join(_save_dir, "preprocess_visualization")
+if is_overwrite and os.path.isdir(_vis_dir):
+    for _f in glob.glob(os.path.join(_vis_dir, "*.png")):
+        os.remove(_f)
+    print(f"sub-{subj_id}: cleared existing figures in {_vis_dir}")
+
 for _vhdr_file in _vhdr_files:
     _run_match = re.search(r'run-(\d+)', _vhdr_file, re.IGNORECASE)
     _run_digit = str(int(_run_match.group(1))) if _run_match else '0'
@@ -332,9 +352,9 @@ for _vhdr_file in _vhdr_files:
     print(f"  Valid recording length: {eeg_duration:.1f} min")
 
     _savefig(_make_psd_fig(EEG_raw, ch_names, f"{_prefix} – Raw PSD"),
-             _vis_dir, f"{_prefix}_raw_psd.png")
+             _vis_dir, f"{_prefix}_step0_raw_psd.png")
     _savefig(_make_timeseries_fig(EEG_raw, ch_names, f"{_prefix} – Raw time series"),
-             _vis_dir, f"{_prefix}_raw_timeseries.png")
+             _vis_dir, f"{_prefix}_step0_raw_timeseries.png")
 
     # ── Step 1: band-pass filter ──────────────────────────────────────────────
     EEG_step1 = EEG_raw.copy()
@@ -342,9 +362,9 @@ for _vhdr_file in _vhdr_files:
         EEG_step1.filter(l_freq=bp_f_range[0], h_freq=bp_f_range[1], picks='all', verbose=False)
 
     _savefig(_make_psd_fig(EEG_step1, ch_names, f"{_prefix} – Band-pass {bp_f_range} Hz PSD"),
-             _vis_dir, f"{_prefix}_band_pass_psd.png")
+             _vis_dir, f"{_prefix}_step1_band_pass_psd.png")
     _savefig(_make_timeseries_fig(EEG_step1, ch_names, f"{_prefix} – Band-pass time series"),
-             _vis_dir, f"{_prefix}_band_pass_timeseries.png")
+             _vis_dir, f"{_prefix}_step1_band_pass_timeseries.png")
 
     # ── Step 2: detect and drop bad channels ──────────────────────────────────
     rm_ch_list = []
@@ -365,7 +385,7 @@ for _vhdr_file in _vhdr_files:
     ax_var.set_xlabel("Channel"); ax_var.set_ylabel("Variance (µV²)")
     ax_var.set_title(f"{_prefix} – Channel variance (red = removed: {rm_ch_list})")
     plt.xticks(rotation=90, fontsize=6); plt.tight_layout()
-    _savefig(fig_var, _vis_dir, f"{_prefix}_bad_channels.png")
+    _savefig(fig_var, _vis_dir, f"{_prefix}_step2_bad_channels.png")
 
     EEG_step2 = EEG_step1.copy()
     if rm_ch_list:
@@ -376,7 +396,7 @@ for _vhdr_file in _vhdr_files:
     if mastoid_chs:
         _savefig(_make_timeseries_fig(EEG_step2, mastoid_chs,
                                       f"{_prefix} – Mastoid (tp9h/tp10h) before re-reference"),
-                 _vis_dir, f"{_prefix}_pre_reref_mastoid_timeseries.png")
+                 _vis_dir, f"{_prefix}_step2_pre_reref_mastoid_timeseries.png")
 
     # ── Step 3: re-reference ──────────────────────────────────────────────────
     EEG_step3 = EEG_step2.copy()
@@ -385,9 +405,9 @@ for _vhdr_file in _vhdr_files:
         EEG_step3.set_eeg_reference(ref_channels=ref, ch_type='eeg', verbose=False)
 
     _savefig(_make_psd_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference PSD"),
-             _vis_dir, f"{_prefix}_reref_psd.png")
+             _vis_dir, f"{_prefix}_step3_reref_psd.png")
     _savefig(_make_timeseries_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference time series"),
-             _vis_dir, f"{_prefix}_reref_timeseries.png")
+             _vis_dir, f"{_prefix}_step3_reref_timeseries.png")
 
     # ── Step 4: ICA eye-artifact removal ─────────────────────────────────────
     EEG_step4 = EEG_step3.copy()
@@ -396,29 +416,34 @@ for _vhdr_file in _vhdr_files:
         ica = mne.preprocessing.ICA(n_components=n_eeg, method='infomax', random_state=42, verbose=False)
         ica.fit(EEG_step4, picks=['eeg'], verbose=False)
         eog_inds, eog_scores = ica.find_bads_eog(EEG_step4, ch_name=['hEOG', 'vEOG'],
-                                                  measure='correlation', verbose=False)
+                                                  measure='correlation', threshold=0.9,
+                                                  verbose=False)
         print(f"  ICA eye components removed: {eog_inds}")
 
         fig_scores = ica.plot_scores(eog_scores, exclude=eog_inds, show=False)
         fig_scores.suptitle(f"{_prefix} – ICA EOG scores"); plt.tight_layout()
-        _savefig(fig_scores, _vis_dir, f"{_prefix}_ICA_scores.png")
+        _savefig(fig_scores, _vis_dir, f"{_prefix}_step4_ICA_scores.png")
 
         if eog_inds:
-            fig_comp = ica.plot_components(picks=eog_inds, show=False)
-            if not isinstance(fig_comp, list):
-                fig_comp = [fig_comp]
-            for fi, fc in enumerate(fig_comp):
-                fc.suptitle(f"{_prefix} – ICA excluded components"); plt.tight_layout()
-                _savefig(fc, _vis_dir, f"{_prefix}_ICA_components_{fi}.png")
+            try:
+                fig_comp = ica.plot_components(picks=eog_inds, show=False)
+                if not isinstance(fig_comp, list):
+                    fig_comp = [fig_comp]
+                for fi, fc in enumerate(fig_comp):
+                    fc.suptitle(f"{_prefix} – ICA excluded components"); plt.tight_layout()
+                    _savefig(fc, _vis_dir, f"{_prefix}_step4_ICA_components_{fi}.png")
+            except Exception as e:
+                # QhullError: too few channels remaining for topomap triangulation
+                print(f"  Could not plot ICA components ({type(e).__name__}): {e}")
 
         ica.exclude = eog_inds
         EEG_step4 = ica.apply(EEG_step4, verbose=False)
         EEG_step4._data[4] = eeg_trigger
 
     _savefig(_make_psd_fig(EEG_step4, ch_names, f"{_prefix} – Post-ICA PSD"),
-             _vis_dir, f"{_prefix}_ICA_psd.png")
+             _vis_dir, f"{_prefix}_step4_ICA_psd.png")
     _savefig(_make_timeseries_fig(EEG_step4, ch_names, f"{_prefix} – Post-ICA time series"),
-             _vis_dir, f"{_prefix}_ICA_timeseries.png")
+             _vis_dir, f"{_prefix}_step4_ICA_timeseries.png")
 
     print(f"  Figures saved to {_vis_dir}")
 
