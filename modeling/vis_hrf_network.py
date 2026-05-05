@@ -12,14 +12,14 @@ from params_setting import project_path
 
 #%% settings
 subj_id_array = [670, 695, 721, 723, 726, 730]
-model_type = 'full_noEEG_rejected_ttest'
+model_type = 'reduced_network'
 
 #%% load HRF estimates per subject
 hrf_by_subj = {}
 for subj_id in subj_id_array:
     file_path = os.path.join(
         project_path, 'derivatives', 'eeg', f"sub-{subj_id}",
-        f"sub-{subj_id}_glm_mnt_{model_type}.pkl"
+        f"sub-{subj_id}_{model_type}.pkl"
     )
     if not os.path.isfile(file_path):
         print(f"Missing: {file_path}")

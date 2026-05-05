@@ -18,8 +18,9 @@ from params_setting import *
 from tqdm import tqdm
 
 #%% Test subject
-# subj_id_array = [670, 695,721,723,726, 730]
-subj_id_array = [695]
+model_type='full_network'
+subj_id_array = [670, 695,721,723,726, 730]
+# subj_id_array = [695]
 for subj_id in subj_id_array:
     print(f"Start processing: sub={subj_id}")
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/pipeline_reorder/processed_data/sub-{subj_id}"
@@ -74,8 +75,6 @@ for subj_id in subj_id_array:
         roi_var_list.append(roi_var)
 
     #%%
-    model_type='full_noEEG_rejected_ttest'
-
     # load HbO
     hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
     with gzip.open(hbo_file, 'rb') as f:
@@ -200,7 +199,7 @@ for subj_id in subj_id_array:
     if model_type.startswith('full'):
         # Combine EEG DM with Reduced DM to get full model
         dm_all = model.combine_dm(eeg_dm, reduced_dm)
-    elif model_type=='reduced':
+    elif model_type.startswith('reduced'):
         dm_all = reduced_dm
     elif model_type=='onlyEEG':
         dm_all = model.combine_dm(eeg_dm, basis_dm)
@@ -213,7 +212,7 @@ for subj_id in subj_id_array:
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
     else:
         file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full_noEEG_rejected.pkl'),'rb') as f:
+        with open(os.path.join(file_path,f'sub-{subj_id}_full_network.pkl'),'rb') as f:
             full_result = pickle.load(f)
             autoReg_dict = full_result['autoReg_dict']
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
@@ -250,7 +249,7 @@ for subj_id in subj_id_array:
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_full_eeg'] = f_test_result
-    elif model_type=='reduced':
+    elif model_type.startswith('reduced'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = [f'{name} = 0' for name in param_names]
@@ -323,7 +322,7 @@ for subj_id in subj_id_array:
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
-    elif model_type=='reduced':
+    elif model_type.startswith('reduced'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = '+'.join(param_names)+' = 0'
@@ -346,15 +345,15 @@ for subj_id in subj_id_array:
         betas = glm_results.sm.params
         cov_params = glm_results.sm.cov_params()
         run_unit = Y_all.pint.units
+        sample_run = run_dict[run_key]['network'].copy()
+        sample_run = sample_run.assign_coords(samples=('time', np.arange(sample_run.sizes['time'])))
+        sample_run.time.attrs['units'] = units.s
         # check if it is a full model
         if model_type.startswith('full'):
             # TODO: find an elegant way to check if _stim regressor is presented
             """
             NOTE: The number of regressors is fixed.
             """
-            sample_run = run_dict[run_key]['network'].copy()
-            sample_run = sample_run.assign_coords(samples=('time', np.arange(sample_run.sizes['time'])))
-            sample_run.time.attrs['units'] = units.s
             basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(sample_run)
             basis_hrf = model.xr.concat([basis_hrf,basis_hrf],dim='component')
         else:
@@ -405,5 +404,5 @@ for subj_id in subj_id_array:
 
     #%%
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_{model_type}.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
