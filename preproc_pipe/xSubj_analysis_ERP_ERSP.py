@@ -11,6 +11,7 @@ import os
 from utils import *
 from tqdm import tqdm
 import pickle
+import gzip
 import glob
 import time
 import sys
@@ -18,10 +19,9 @@ from spectral_connectivity import Multitaper, Connectivity
 from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
-# subj_id_array = [670, 671, 673, 695]
-# subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
-subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
-# subj_id_array = [746, 750, 751]
+# subj_id_array = [670, 695, 719, 721, 723, 726, 727, 730]
+subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733, 746, 751, 755]
+
 ch_names = ['fz','cz','pz','oz']
 split_zone_crit = 'react'
 is_bpfilter = True
@@ -64,10 +64,15 @@ rm_ch_dict: dictionary for storing the name of removed channels
                 rm_ch_dict["sub-{subj_id}"]["rest{run_id}"]
 """
 for subj_id in tqdm(subj_id_array):
-    print(f"preprocessing sub-{subj_id}")
-    single_subj_EEG_dict, single_subj_rm_ch_dict = eeg_preproc_subj_level(subj_id, preproc_params)
-    subj_EEG_dict[f"sub-{subj_id}"] = single_subj_EEG_dict
-    rm_ch_dict[f"sub-{subj_id}"] = single_subj_rm_ch_dict
+    gz_path = os.path.join(data_save_path, f"sub-{subj_id}", f"sub-{subj_id}_preprocessed_dict.pkl.gz")
+    if not os.path.exists(gz_path):
+        print(f"sub-{subj_id}: preprocessed dict not found at {gz_path}, skipping.")
+        continue
+    with gzip.open(gz_path, 'rb') as f:
+        _payload = pickle.load(f)
+    subj_EEG_dict[f"sub-{subj_id}"] = _payload["EEG"]
+    rm_ch_dict[f"sub-{subj_id}"]    = _payload["rm_ch"]
+    print(f"sub-{subj_id}: loaded runs {list(_payload['EEG'].keys())}")
     
 # Epoch data
 subj_epoch_dict = dict()
@@ -95,7 +100,6 @@ for key_name in tqdm(subj_EEG_dict.keys()):
     subj_epoch_dict[key_name] = single_subj_epoch_dict
     subj_vtc_dict[key_name] = single_subj_vtc_dict
     subj_react_dict[key_name] = single_subj_react_dict
-# combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict) = load_epoch_dict(subj_id_array, preproc_params)
 
 #%% Combined runs. Epoch from each run is combined for each subject.
 combine_epoch_dict = dict()
