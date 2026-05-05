@@ -244,7 +244,7 @@ dirs = os.listdir(project_path)
 subject_list = [d for d in dirs if 'sub' in d] # and d not in excluded]
 
 epoch_length = 12 # sec (fade-in + fade-out)
-baseline_length = 1 # sec (previous event's fade-out phase)
+baseline_length = 12 # sec (previous event's fade-out phase)
 rt_pre, rt_post = 5, 12  # sec before/after RT
 pupil_dict = {}
 for subj in sorted(subject_list):
@@ -300,7 +300,7 @@ for subj in sorted(subject_list):
         else:
             rt_city_incorrect_all_idx = []
         # preprocess pupil
-        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec=rec, is_rm_phasic=True, events_df=events_df_s)
+        t_neon_s, pupil_d_s = preprocess_pupil(neon_data, rec=rec, detrend_order=2, is_rm_phasic=False, events_df=events_df_s)
         # check if subject missing too many data
         if t_neon_s is None:
             print(f"Missing too many data. Skip sub-{subj}")
@@ -311,10 +311,10 @@ for subj in sorted(subject_list):
         win_baseline = int(np.round(sfreq_neon * baseline_length))
         t_epoch_run  = np.linspace(-baseline_length, epoch_length, win_baseline + win_epoch)
         pupil_dict[subj][f'run-{run_id:02d}'] = {
-            'mnt_correct':                  get_pupil_epoch(events_df_s, mnt_correct_idx_s,   t_neon_s, pupil_d_s, epoch_length=epoch_length),
-            'mnt_incorrect':                get_pupil_epoch(events_df_s, mnt_incorrect_idx_s, t_neon_s, pupil_d_s, epoch_length=epoch_length),
-            'city_correct':                 get_pupil_epoch(events_df_s, city_correct_idx_s,  t_neon_s, pupil_d_s, epoch_length=epoch_length),
-            'city_incorrect':               get_pupil_epoch(events_df_s, city_incorrect_idx_s,t_neon_s, pupil_d_s, epoch_length=epoch_length),
+            'mnt_correct':                  get_pupil_epoch(events_df_s, mnt_correct_idx_s,   t_neon_s, pupil_d_s, baseline_length=baseline_length, epoch_length=epoch_length),
+            'mnt_incorrect':                get_pupil_epoch(events_df_s, mnt_incorrect_idx_s, t_neon_s, pupil_d_s, baseline_length=baseline_length, epoch_length=epoch_length),
+            'city_correct':                 get_pupil_epoch(events_df_s, city_correct_idx_s,  t_neon_s, pupil_d_s, baseline_length=baseline_length, epoch_length=epoch_length),
+            'city_incorrect':               get_pupil_epoch(events_df_s, city_incorrect_idx_s,t_neon_s, pupil_d_s, baseline_length=baseline_length, epoch_length=epoch_length),
             'mnt_incorrect_rt_epoch':       get_pupil_epoch(events_df_rt_mnt, rt_mnt_all_idx, t_neon_s, pupil_d_s,
                                                             baseline_length=rt_pre, epoch_length=rt_post)
                                             if len(events_df_rt_mnt) > 0 else [],
@@ -340,6 +340,8 @@ for subj in sorted(subject_list):
                                             if len(events_df_rt_city_correct) > 0 else np.array([]),
             't_epoch':                      t_epoch_run,
             'sfreq_neon':                   sfreq_neon,
+            'baseline_length':              baseline_length,
+            'epoch_length':                 epoch_length,
         }
 pupil_dict = {subj: runs for subj, runs in pupil_dict.items() if runs}
 
@@ -357,7 +359,7 @@ for subj, runs in pupil_dict.items():
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
                     continue
-                t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 baseline_val = np.nanmean(ep[t_ep < 0])
                 all_epochs.append(ep - baseline_val)
         if len(all_epochs) == 0:
@@ -421,7 +423,7 @@ for subj, runs in pupil_dict.items():
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
                     continue
-                t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 baseline_val = np.nanmean(ep[t_ep < 0])
                 ep_corr = ep - baseline_val
                 if vtc_val >= subj_median:
@@ -555,7 +557,7 @@ for cond in cond_labels:
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
                     continue
-                t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 baseline_val = np.nanmean(ep[t_ep < 0])
                 all_epochs_cond.append(ep - baseline_val)
                 all_vtc_cond.append(vtc_val)
@@ -666,7 +668,7 @@ for subj, runs in pupil_dict.items():
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
                     continue
-                t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 dep = diff_epoch(ep, t_ep)
                 bl  = np.nanmean(dep[t_ep < 0])
                 all_epochs.append(dep - bl)
@@ -721,7 +723,7 @@ for subj, runs in pupil_dict.items():
                 ep = np.array(ep, dtype=float)
                 if np.all(np.isnan(ep)):
                     continue
-                t_ep = np.linspace(-baseline_length, epoch_length, len(ep))
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 dep = diff_epoch(ep, t_ep)
                 bl  = np.nanmean(dep[t_ep < 0])
                 ep_corr = dep - bl
