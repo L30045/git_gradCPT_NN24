@@ -43,7 +43,7 @@ epoch_reject_crit = dict(
                         eeg=100e-6 #unit:V
                         )
 is_detrend = 1 # 0:constant, 1:linear, None
-is_overwrite = False # Force to re run preprocessing if it is True
+is_overwrite = True # Force to re run preprocessing if it is True
 
 preproc_params = dict(
     is_bpfilter = is_bpfilter,
@@ -166,19 +166,14 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
                  save_dir, f"{prefix}_step1_band_pass_timeseries.png")
 
         # Step 2 – bad channel detection and removal ──────────────────────────
-        rm_ch_list = []
-        eeg_data = EEG_step1.get_data(picks='eeg')
-        eeg_chs = np.array([x["ch_name"] for x in EEG_step1.info["chs"] if x["kind"] == 2])
-        # flat channels
-        for ch_i in range(eeg_data.shape[0]):
-            if np.mean(eeg_data[ch_i] - np.mean(eeg_data[ch_i])) == 0:
-                rm_ch_list.append(eeg_chs[ch_i])
-        # high-variance channels
-        eeg_var = np.var(eeg_data, axis=1)
-        eeg_var_z = (eeg_var - np.mean(eeg_var)) / np.std(eeg_var)
-        rm_ch_list.extend(eeg_chs[np.abs(eeg_var_z) > 3].tolist())
-        rm_ch_list = list(set(rm_ch_list))
+        rm_ch_list = list(set(check_flat_channels(EEG_step1) +
+                              list(check_abnormal_var_channels(EEG_step1)) +
+                              check_large_amp_channels(EEG_step1)))
         print(f"  Removed channels: {rm_ch_list}")
+        # recompute for variance bar chart
+        eeg_data = EEG_step1.get_data(picks='eeg')
+        eeg_chs  = np.array([x["ch_name"] for x in EEG_step1.info["chs"] if x["kind"] == 2])
+        eeg_var  = np.var(eeg_data, axis=1)
 
         fig_var, ax_var = plt.subplots(figsize=(12, 4))
         ax_var.bar(eeg_chs, eeg_var * 1e12,
@@ -367,17 +362,14 @@ for _vhdr_file in _vhdr_files:
              _vis_dir, f"{_prefix}_step1_band_pass_timeseries.png")
 
     # ── Step 2: detect and drop bad channels ──────────────────────────────────
-    rm_ch_list = []
+    rm_ch_list = list(set(check_flat_channels(EEG_step1) +
+                          list(check_abnormal_var_channels(EEG_step1)) +
+                          check_large_amp_channels(EEG_step1)))
+    print(f"  Removed channels: {rm_ch_list}")
+    # recompute for variance bar chart
     eeg_data = EEG_step1.get_data(picks='eeg')
     eeg_chs  = np.array([x["ch_name"] for x in EEG_step1.info["chs"] if x["kind"] == 2])
-    for ch_i in range(eeg_data.shape[0]):
-        if np.mean(eeg_data[ch_i] - np.mean(eeg_data[ch_i])) == 0:
-            rm_ch_list.append(eeg_chs[ch_i])
-    eeg_var   = np.var(eeg_data, axis=1)
-    eeg_var_z = (eeg_var - np.mean(eeg_var)) / np.std(eeg_var)
-    rm_ch_list.extend(eeg_chs[np.abs(eeg_var_z) > 3].tolist())
-    rm_ch_list = list(set(rm_ch_list))
-    print(f"  Removed channels: {rm_ch_list}")
+    eeg_var  = np.var(eeg_data, axis=1)
 
     fig_var, ax_var = plt.subplots(figsize=(12, 4))
     ax_var.bar(eeg_chs, eeg_var * 1e12,

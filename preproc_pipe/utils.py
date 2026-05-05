@@ -1,6 +1,7 @@
 #%% load library
 import numpy as np
 import scipy as sp
+import itertools
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
@@ -77,14 +78,19 @@ def fix_and_load_brainvision(vhdr_path,
     os.remove(tmp_path)
     return raw
 
-def check_flat_channels(EEG):
+def check_flat_channels(EEG, flat_dur_sec=5):
     eeg_data = EEG.get_data(picks='eeg')
     eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"]==2])
     flat_ch_idx = []
-    # check flat channels
+    min_flat_samples = int(flat_dur_sec * EEG.info["sfreq"])
     for ch_i in range(eeg_data.shape[0]):
-        if np.mean(eeg_data[ch_i]-np.mean(eeg_data[ch_i]))==0:
-            print(f"Warning: flat channel detected. ({eeg_chs[ch_i]})")
+        # find runs of consecutive identical samples (diff == 0)
+        is_flat = np.diff(eeg_data[ch_i]) == 0
+        # count the longest consecutive flat run
+        max_flat = max((sum(1 for _ in g) for v, g in itertools.groupby(is_flat) if v),
+                       default=0)
+        if max_flat >= min_flat_samples:
+            print(f"Warning: flat channel detected (>{flat_dur_sec}s flat). ({eeg_chs[ch_i]})")
             flat_ch_idx.append(eeg_chs[ch_i])
     return flat_ch_idx
 
@@ -97,6 +103,16 @@ def check_abnormal_var_channels(EEG, thres_std=3):
     if np.any(abs(eeg_var_z))>thres_std:
         print(f"Warning: channels with abnormal variance: {eeg_chs[abs(eeg_var_z)>thres_std]}")
     return eeg_chs[abs(eeg_var_z)>thres_std]
+
+def check_large_amp_channels(EEG, thres_amp=1000):
+    """Flag EEG channels whose peak-to-peak amplitude exceeds thres_amp µV."""
+    eeg_data = EEG.get_data(picks='eeg') * 1e6  # V -> µV
+    eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"] == 2])
+    peak_to_peak = np.max(eeg_data, axis=1) - np.min(eeg_data, axis=1)
+    bad_chs = eeg_chs[peak_to_peak > thres_amp].tolist()
+    if bad_chs:
+        print(f"Warning: channels with large amplitude (>{thres_amp} µV p-p): {bad_chs}")
+    return bad_chs
 
 def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat=True, is_check_ch_var=True,
                       is_reref=True, reref_ch=None,
