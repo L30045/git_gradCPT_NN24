@@ -509,6 +509,8 @@ def plt_multitaper(plt_epoch,
     time_vector = plt_epoch.times
     # reshpae epoch data for multitaper
     plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
+    if plt_epoch_data.ndim != 3:
+        plt_epoch_data = np.expand_dims(plt_epoch_data, axis=-1)
     # create multitaper
     multitaper = Multitaper(
         plt_epoch_data,

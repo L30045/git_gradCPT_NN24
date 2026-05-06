@@ -18,7 +18,8 @@ from utils_eyetracking import preprocess_pupil, get_pupil_epoch, plot_pupil_epoc
     _build_gaussian_basis, _convolve_onsets
 import warnings
 from spectral_connectivity import Multitaper, Connectivity
-
+import mne
+import copy
 
 #%% functions
 def smoothing_VTC_gaussian_array(vtc, sigma=None, alpha=2.5, L=None, radius=None, truncate=4, savepath=None):
@@ -877,46 +878,316 @@ for onsets_key, vtc_key, colors_rt, cond_title in rt_vtc_specs_dpp:
 
 
 # %% Time-frequency analysis
-import mne
-import copy
-
 time_halfbandwidth_product = 3
-time_window_duration = 2  # sec
-time_window_step = 0.5
+time_window_duration = 4  # sec
+time_window_step = 1
 
-subj_tf = 'sub-730'
-run_id_tf = 1
 conditions_tf = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
 
-run_data_tf = pupil_dict[subj_tf][f'run-{run_id_tf:02d}']
-sfreq_tf = run_data_tf['sfreq_neon']
+# Per-subject VTC median across all runs and conditions (in-zone = VTC < median)
+subj_vtc_median = {}
+for _subj, _runs in pupil_dict.items():
+    _all_vtc = []
+    for _rd in _runs.values():
+        for _cond in conditions_tf:
+            _arr = _rd.get(f'{_cond}_vtc', np.array([]))
+            _all_vtc.extend(np.asarray(_arr).tolist())
+    subj_vtc_median[_subj] = np.median(_all_vtc) if _all_vtc else np.nan
 
+power_dict = {}
+for subj_tf, runs_tf in pupil_dict.items():
+    power_dict[subj_tf] = {}
+    vtc_threshold = subj_vtc_median[subj_tf]
+    for run_key, run_data_tf in runs_tf.items():
+        power_dict[subj_tf][run_key] = {}
+        sfreq_tf = run_data_tf['sfreq_neon']
+        for cond_tf in conditions_tf:
+            epochs_tf = run_data_tf.get(cond_tf, [])
+            vtc_tf = run_data_tf.get(f'{cond_tf}_vtc', np.full(len(epochs_tf), np.nan))
+            valid_epochs = []
+            is_in_zone = []
+            for ep, vtc_v in zip(epochs_tf, vtc_tf):
+                ep = np.array(ep, dtype=float)
+                if np.all(np.isnan(ep)):
+                    continue
+                ep = np.where(np.isnan(ep), 0.0, ep)
+                valid_epochs.append(ep)
+                is_in_zone.append(1 if vtc_v < vtc_threshold else 0)
+            if not valid_epochs:
+                continue
+
+            is_in_zone_arr = np.array(is_in_zone)
+            in_epochs  = [ep for ep, z in zip(valid_epochs, is_in_zone_arr) if z == 1]
+            out_epochs = [ep for ep, z in zip(valid_epochs, is_in_zone_arr) if z == 0]
+
+            def _run_tf(epoch_list):
+                data = np.array(epoch_list)[:, np.newaxis, :]
+                info = mne.create_info(ch_names=['pupil'], sfreq=sfreq_tf, ch_types=['misc'])
+                ep_mne = mne.EpochsArray(data, info, tmin=-baseline_length, verbose=False)
+                lp, mt, conn = plt_multitaper(
+                    ep_mne,
+                    time_halfbandwidth_product=time_halfbandwidth_product,
+                    time_window_duration=time_window_duration,
+                    time_window_step=time_window_step,
+                    ratio_to='baseline',
+                    vis_f_range=[0, 15],
+                    is_plot=False)
+                return lp, mt, conn, ep_mne
+
+            # Stack into MNE EpochsArray: (n_epochs, 1, n_times)
+            data_tf = np.array(valid_epochs)[:, np.newaxis, :]
+            info_tf = mne.create_info(ch_names=['pupil'], sfreq=sfreq_tf, ch_types=['misc'])
+            epochs_mne = mne.EpochsArray(data_tf, info_tf, tmin=-baseline_length, verbose=False)
+
+            print(f"\n--- TF: {subj_tf} {run_key} {cond_tf} ({len(valid_epochs)} epochs) ---")
+            (log_power, multitaper, connectivity) = plt_multitaper(
+                epochs_mne,
+                time_halfbandwidth_product=time_halfbandwidth_product,
+                time_window_duration=time_window_duration,
+                time_window_step=time_window_step,
+                ratio_to='baseline',
+                vis_f_range=[0, 15],
+                is_plot=False)
+            vis_f_range = [0, 15]
+            vis_mask = (connectivity.frequencies >= vis_f_range[0]) & (connectivity.frequencies <= vis_f_range[1])
+            vis_f = connectivity.frequencies[vis_mask]
+            time_vector = epochs_mne.times
+            multitaper_time = multitaper.time + time_vector[0]
+
+            log_power_in  = _run_tf(in_epochs)[0]  if in_epochs  else None
+            log_power_out = _run_tf(out_epochs)[0] if out_epochs else None
+
+            power_dict[subj_tf][run_key][cond_tf] = {
+                'log_power': log_power,
+                'log_power_in': log_power_in,
+                'log_power_out': log_power_out,
+                'is_in_zone': is_in_zone_arr,
+                'vis_f_range': vis_f_range,
+                'vis_mask': vis_mask,
+                'vis_f': vis_f,
+                'time_vector': time_vector,
+                'multitaper_time': multitaper_time,
+            }
+
+#%% visualize tf results across subjects by averageing 
+def _vis_tf(plt_power, vis_mask, multitaper_time, vis_f, title='ERSP'):
+    fig, ax1 = plt.subplots(1, 1, figsize=(10, 5), constrained_layout=True)
+
+    # Plot log power spectrogram
+    extent = [multitaper_time[0], multitaper_time[-1], 0, np.sum(vis_mask)]
+    vmax = np.abs(plt_power).max()
+    im = ax1.imshow(plt_power[:,vis_mask].T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
+    plt.colorbar(im, ax=ax1, label='Log Power')
+    ax1.set_ylabel('Frequency')
+    ax1.set_yticks(np.arange(np.sum(vis_mask)))
+    ax1.set_yticklabels(vis_f)
+    ax1.set_title(title)
+    ax1.axvline(0, color='white', linestyle='--', linewidth=1)
+    plt.show()
+
+
+# mnt_correct − city_correct: averaged across subjects and runs
+# diff_list = []
+# vis_mask_ref = vis_f_ref = multitaper_time_ref = None
+# for subj, runs in power_dict.items():
+#     for run_key, run in runs.items():
+#         if 'mnt_correct' not in run or 'city_correct' not in run:
+#             continue
+#         lp_mnt  = run['mnt_correct']['log_power']
+#         lp_city = run['city_correct']['log_power']
+#         if lp_mnt.shape != lp_city.shape:
+#             continue
+#         diff_list.append(lp_mnt - lp_city)
+#         if vis_mask_ref is None:
+#             vis_mask_ref        = run['mnt_correct']['vis_mask']
+#             vis_f_ref           = run['mnt_correct']['vis_f']
+#             multitaper_time_ref = run['mnt_correct']['multitaper_time']
+# if diff_list:
+#     mean_diff = np.nanmean(diff_list, axis=0)
+#     n_pairs = len(diff_list)
+#     _vis_tf(mean_diff, vis_mask_ref, multitaper_time_ref, vis_f_ref,
+#             title=f'mnt_correct − city_correct (N={n_pairs} subject-runs)')
+
+# in-zone − out-of-zone for each condition: 3-panel plot per condition
 for cond_tf in conditions_tf:
-    epochs_tf = run_data_tf[cond_tf]
-    valid_epochs = []
-    for ep in epochs_tf:
-        ep = np.array(ep, dtype=float)
-        if np.all(np.isnan(ep)):
-            continue
-        ep = np.where(np.isnan(ep), 0.0, ep)
-        valid_epochs.append(ep)
-    if not valid_epochs:
+    # average runs within each subject → one diff per subject for valid t-test
+    subj_diff_list = []
+    vis_mask_ref = vis_f_ref = multitaper_time_ref = None
+    for subj, runs in power_dict.items():
+        run_diffs = []
+        for run_key, run in runs.items():
+            if cond_tf not in run:
+                continue
+            lp_in  = run[cond_tf]['log_power_in']
+            lp_out = run[cond_tf]['log_power_out']
+            if lp_in is None or lp_out is None:
+                continue
+            if lp_in.shape != lp_out.shape:
+                continue
+            run_diffs.append(lp_in - lp_out)
+            if vis_mask_ref is None:
+                vis_mask_ref        = run[cond_tf]['vis_mask']
+                vis_f_ref           = run[cond_tf]['vis_f']
+                multitaper_time_ref = run[cond_tf]['multitaper_time']
+        if run_diffs:
+            subj_diff_list.append(np.nanmean(run_diffs, axis=0))
+    if not subj_diff_list or vis_mask_ref is None:
         continue
 
-    # Stack into MNE EpochsArray: (n_epochs, 1, n_times)
-    data_tf = np.array(valid_epochs)[:, np.newaxis, :]
-    info_tf = mne.create_info(ch_names=['pupil'], sfreq=sfreq_tf, ch_types=['misc'])
-    epochs_mne = mne.EpochsArray(data_tf, info_tf, tmin=-baseline_length, verbose=False)
+    n_subj = len(subj_diff_list)
+    subj_diff_arr = np.array(subj_diff_list)           # (n_subj, n_time, n_freq)
+    mean_diff     = np.nanmean(subj_diff_arr, axis=0)  # (n_time, n_freq)
 
-    print(f"\n--- TF: {cond_tf} ({len(valid_epochs)} epochs) ---")
-    plt_multitaper(epochs_mne,
-                   time_halfbandwidth_product=time_halfbandwidth_product,
-                   time_window_duration=time_window_duration,
-                   time_window_step=time_window_step,
-                   ratio_to='baseline',
-                   vis_f_range=[0, 15])
-    plt.suptitle(f'TF — {subj_tf} run-{run_id_tf:02d} {cond_tf.replace("_", " ")} (N={len(valid_epochs)})')
-    plt.tight_layout()
+    # one-sample t-test at each TF point (H0: mean diff = 0)
+    t_stat, p_val = sp.stats.ttest_1samp(subj_diff_arr, popmean=0, axis=0)
+
+    # restrict to visible frequency band
+    mean_diff_vis = mean_diff[:, vis_mask_ref]          # (n_time, n_vis_freq)
+    t_vis         = t_stat[:, vis_mask_ref]
+    p_vis         = p_val[:, vis_mask_ref]
+
+    # FDR correction (Benjamini-Hochberg) over all visible TF points
+    reject_flat, p_flat = mne.stats.fdr_correction(p_vis.ravel(), alpha=0.05)
+    sig = reject_flat.reshape(p_vis.shape)              # (n_time, n_vis_freq)
+    mean_diff_sig = np.where(sig, mean_diff_vis, np.nan)
+
+
+
+    # --- 3-panel figure ---
+    extent    = [multitaper_time_ref[0], multitaper_time_ref[-1], 0, np.sum(vis_mask_ref)]
+    n_vis_f   = int(np.sum(vis_mask_ref))
+    ytick_idx = np.arange(0, n_vis_f, max(1, n_vis_f // 8))
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+    def _imshow_tf(ax, data, cmap='RdBu_r', label='', vmax=None):
+        vmax = vmax or (np.nanmax(np.abs(data)) or 1)
+        im = ax.imshow(data.T, aspect='auto', origin='lower', cmap=cmap,
+                       extent=extent, vmin=-vmax, vmax=vmax)
+        plt.colorbar(im, ax=ax, label=label)
+        ax.set_yticks(ytick_idx)
+        ax.set_yticklabels(np.round(vis_f_ref[ytick_idx], 1))
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Frequency (Hz)')
+        ax.axvline(0, color='white', linestyle='--', linewidth=1)
+        return im
+
+    _imshow_tf(axes[0], mean_diff_vis, label='Log Power diff')
+    axes[0].set_title('in-zone − out-of-zone (mean)')
+
+    p_vis_masked = np.where(p_vis <= 0.05, p_vis, np.nan)
+    cmap_p = plt.cm.hot.copy()
+    cmap_p.set_bad(color='white')
+    im2 = axes[1].imshow(p_vis_masked.T, aspect='auto', origin='lower', cmap=cmap_p,
+                         extent=extent, vmin=0, vmax=0.05)
+    plt.colorbar(im2, ax=axes[1], label='p-value')
+    axes[1].set_yticks(ytick_idx)
+    axes[1].set_yticklabels(np.round(vis_f_ref[ytick_idx], 1))
+    axes[1].set_xlabel('Time (s)')
+    axes[1].set_ylabel('Frequency (Hz)')
+    axes[1].axvline(0, color='white', linestyle='--', linewidth=1)
+    axes[1].set_title(f'p-value ≤ 0.05 (N={n_subj} subjects)')
+
+    _imshow_tf(axes[2], mean_diff_sig, label='Log Power diff')
+    axes[2].set_title('Significant TF (FDR p<0.05)')
+
+    fig.suptitle(f'in-zone − out-of-zone | {cond_tf}')
+    plt.show()
+
+    # p-value distribution plots
+    fig2, (ax_p1, ax_p2) = plt.subplots(1, 2, figsize=(14, 4), constrained_layout=True)
+
+    p_vis_sorted = np.sort(p_vis.flatten())[::-1]
+    ax_p1.bar(np.arange(len(p_vis_sorted)), p_vis_sorted, width=1.0, color='steelblue', linewidth=0)
+    ax_p1.axhline(0.05, color='red', linestyle='--', linewidth=1.5, label='p = 0.05')
+    ax_p1.set_xlabel('TF point rank')
+    ax_p1.set_ylabel('p-value (uncorrected)')
+    ax_p1.set_title(f'Uncorrected p-values | {cond_tf}')
+    ax_p1.legend()
+
+    p_flat_sorted = np.sort(p_flat)[::-1]
+    ax_p2.bar(np.arange(len(p_flat_sorted)), p_flat_sorted, width=1.0, color='steelblue', linewidth=0)
+    ax_p2.axhline(0.05, color='red', linestyle='--', linewidth=1.5, label='p = 0.05')
+    ax_p2.set_xlabel('TF point rank')
+    ax_p2.set_ylabel('p-value (FDR corrected)')
+    ax_p2.set_title(f'FDR-corrected p-values | {cond_tf}')
+    ax_p2.legend()
+
+    plt.show()
+
+#%% Time-frequency analysis (Whole Run)
+time_halfbandwidth_product = 3
+time_window_duration = 4
+time_window_step = 1
+
+subj_wr    = next(iter(pupil_dict))
+run_key_wr = next(iter(pupil_dict[subj_wr]))
+run_data_wr = pupil_dict[subj_wr][run_key_wr]
+
+pupil_run  = run_data_wr['pupil_d']
+t_run      = run_data_wr['t_neon']
+sfreq_run  = run_data_wr['sfreq_neon']
+vtc_thr_wr = subj_vtc_median[subj_wr]
+
+# reload events for onset times + VTC
+subj_id_wr   = subj_wr.replace('sub-', '')
+run_id_wr    = int(run_key_wr.replace('run-', ''))
+event_file_wr = os.path.join(project_path, subj_wr, 'nirs',
+    f"sub-{subj_id_wr}_task-gradCPT_run-{run_id_wr:02d}_events.tsv")
+events_wr  = pd.read_csv(event_file_wr, sep='\t')
+vtc_wr     = smoothing_VTC_gaussian_array(events_wr['VTC'].values, L=20)
+onset_wr   = events_wr['onset'].values
+
+# multitaper on the full run signal — shape (n_times, 1, 1)
+run_mt_data = np.expand_dims(pupil_run[:, np.newaxis], axis=-1)
+mt_run = Multitaper(
+    run_mt_data,
+    sampling_frequency=sfreq_run,
+    time_halfbandwidth_product=time_halfbandwidth_product,
+    time_window_duration=time_window_duration,
+    time_window_step=time_window_step,
+    detrend_type='linear'
+)
+conn_run      = Connectivity.from_multitaper(mt_run, expectation_type="trials_tapers")
+log_power_run = np.log10(np.squeeze(conn_run.power()))   # (n_time_windows, n_freqs)
+mt_time_run   = mt_run.time + t_run[0]                   # shift to run start time
+
+vis_mask_wr = (conn_run.frequencies >= 0) & (conn_run.frequencies <= 15)
+vis_f_wr    = conn_run.frequencies[vis_mask_wr]
+n_vis_wr    = int(np.sum(vis_mask_wr))
+lp_vis_wr   = log_power_run[:, vis_mask_wr]
+lp_vis_wr   = lp_vis_wr - np.mean(lp_vis_wr) # ratio to the mean power
+
+fig, (ax_tf, ax_vtc) = plt.subplots(2, 1, figsize=(14, 8), sharex=True, constrained_layout=True)
+
+# subplot 1: TF spectrogram
+extent_wr = [mt_time_run[0], mt_time_run[-1], 0, n_vis_wr]
+vmax_wr   = np.nanmax(np.abs(lp_vis_wr))
+im_wr = ax_tf.imshow(lp_vis_wr.T, aspect='auto', origin='lower', cmap='RdBu_r',
+                     extent=extent_wr, vmin=-vmax_wr, vmax=vmax_wr)
+plt.colorbar(im_wr, ax=ax_tf, label='Log Power')
+ytick_wr = np.arange(0, n_vis_wr, max(1, n_vis_wr // 8))
+ax_tf.set_yticks(ytick_wr)
+ax_tf.set_yticklabels(np.round(vis_f_wr[ytick_wr], 1))
+ax_tf.set_ylabel('Frequency (Hz)')
+ax_tf.set_title(f'Time-Frequency Power — {subj_wr} {run_key_wr}')
+ax_tf.grid(axis='x', color='black', linestyle='--', linewidth=0.5, alpha=0.7)
+
+# subplot 2: VTC colored by in-zone / out-of-zone
+ax_vtc.plot(onset_wr, vtc_wr, color='black', linewidth=0.8)
+ax_vtc.fill_between(onset_wr, vtc_wr, vtc_thr_wr,
+                    where=(vtc_wr >= vtc_thr_wr), color='red',  alpha=0.5, label='out-of-zone')
+ax_vtc.fill_between(onset_wr, vtc_wr, vtc_thr_wr,
+                    where=(vtc_wr <  vtc_thr_wr), color='blue', alpha=0.5, label='in-zone')
+ax_vtc.axhline(vtc_thr_wr, color='gray', linestyle='--', linewidth=1.5, label='threshold')
+ax_vtc.set_ylabel('VTC')
+ax_vtc.set_xlabel('Time (s)')
+ax_vtc.set_title('VTC vs Time')
+ax_vtc.grid(axis='x', linestyle='--', color='black',linewidth=0.5, alpha=0.7)
+ax_vtc.legend(fontsize=8)
+
+plt.show()
+
 
 #%% spectrum
 conditions_spec = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
