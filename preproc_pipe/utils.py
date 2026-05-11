@@ -200,15 +200,9 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
         # get reaction time. Remove last trial since it is a fade-out only trial.
         react_time = data_cpt['response'][:-1,4] # sec
-        # assign correct response code
-        # correct/incorrect city trial in data_cpt is ('city', 1) and ('city', 0).
-        # correct/incorrect mnt trial in data_cpt is ('mnt', 0) and ('mnt', -1).
-        # assigned response code: city_correct=1, city_incorrect=-1, mnt_correct=0, mnt_incorrect=-2
+        # get response_code (press/ no press)
         response_code = data_cpt['response'][:-1,6].astype(int)
-        # assign mnt_incorrect trials
-        response_code[response_code==-1] = -2
-        # assign city_incorrect trials
-        response_code[(response_code==0)&(data_cpt['response'][:-1,0]==2)] = -1
+        
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
         # find when EEG trigger is on (to 0)
@@ -707,7 +701,7 @@ def load_epoch_dict(subj_id_array, preproc_params):
 
     return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, (subj_EEG_dict, subj_epoch_dict, subj_vtc_dict, subj_react_dict)
 
-def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict):
+def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict=None):
     check_ch = 'cz'
     epoch_count = []
     for ev in combine_epoch_dict.keys():
@@ -739,7 +733,12 @@ def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, com
         for ch in in_out_zone_dict[ev].keys():
             in_out_zone_dict[ev][ch] = [x for i, x in enumerate(in_out_zone_dict[ev][ch]) if keep_subj_idx[i]]
 
-    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict
+    if combine_pupil_dict is not None:
+        for ev in combine_pupil_dict.keys():
+            for ch in combine_pupil_dict[ev].keys():
+                combine_pupil_dict[ev][ch] = [x for i, x in enumerate(combine_pupil_dict[ev][ch]) if keep_subj_idx[i]]
+
+    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict
 
 
 def eeg_preproc_subj_level(subj_id, preproc_params):
@@ -798,11 +797,8 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params):
     subj_epoch_dict = dict()
     subj_vtc_dict = dict()
     subj_react_dict = dict()
-    # check if event_file exist
-    event_file = os.path.join(data_save_path,f"{key_name}",
-                            f"{key_name}_task-gradCPT_run-01_events.tsv")
-    if not os.path.exists(event_file):
-        gen_EEG_event_tsv(int(key_name.split('-')[-1]))
+    # always regenerate event files to ensure response_code matches BIDS nirs convention
+    gen_EEG_event_tsv(int(key_name.split('-')[-1]))
     # for each run
     for run_name in single_subj_EEG_dict.keys():
         if 'gradcpt' not in run_name:

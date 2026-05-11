@@ -1280,3 +1280,79 @@ ax.set_title(f'Pupil spectrum difference (cross-subject mean ± SEM, N={n})')
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
+
+#%% city_correct spectrum: in-zone vs out-of-zone
+# Compute per-subject VTC median (in-zone = VTC < median)
+_all_conditions_vtc = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
+_subj_vtc_median = {}
+for _subj, _runs in pupil_dict.items():
+    _vtc_vals = []
+    for _rd in _runs.values():
+        for _cond in _all_conditions_vtc:
+            _vtc_vals.extend(np.asarray(_rd.get(f'{_cond}_vtc', [])).tolist())
+    _subj_vtc_median[_subj] = np.median(_vtc_vals) if _vtc_vals else np.nan
+
+city_zone_spec = {'in_zone': [], 'out_of_zone': []}
+freqs_city_zone = None
+
+for subj, runs in pupil_dict.items():
+    vtc_thr_subj = _subj_vtc_median.get(subj, np.nan)
+    in_powers, out_powers = [], []
+    for run_data in runs.values():
+        sfreq_s = run_data['sfreq_neon']
+        epochs_cc  = run_data.get('city_correct', [])
+        vtc_cc     = run_data.get('city_correct_vtc', np.full(len(epochs_cc), np.nan))
+        for ep, vtc_v in zip(epochs_cc, vtc_cc):
+            ep = np.array(ep, dtype=float)
+            if np.all(np.isnan(ep)):
+                continue
+            ep = np.where(np.isnan(ep), 0.0, ep)
+            f   = np.fft.rfftfreq(len(ep), d=1.0 / sfreq_s)
+            lp  = np.log10(np.abs(np.fft.rfft(ep)) ** 2 + 1e-30)
+            if freqs_city_zone is None:
+                freqs_city_zone = f
+            if len(lp) != len(freqs_city_zone):
+                continue
+            if vtc_v < vtc_thr_subj:
+                in_powers.append(lp)
+            else:
+                out_powers.append(lp)
+    if in_powers:
+        city_zone_spec['in_zone'].append(np.mean(in_powers, axis=0))
+    if out_powers:
+        city_zone_spec['out_of_zone'].append(np.mean(out_powers, axis=0))
+
+vis_mask_cz = (freqs_city_zone >= 0) & (freqs_city_zone <= 6)
+colors_cz = {'in_zone': 'royalblue', 'out_of_zone': 'crimson'}
+labels_cz  = {'in_zone': 'in-zone',  'out_of_zone': 'out-of-zone'}
+
+# Detect peak as frequency with largest absolute difference (in-zone minus out-of-zone)
+_mean_in  = np.array(city_zone_spec['in_zone']).mean(axis=0)
+_mean_out = np.array(city_zone_spec['out_of_zone']).mean(axis=0)
+_diff_in = np.diff(_mean_in)
+_diff_out = np.diff(_mean_out)
+_peak_idx  = np.argmax(np.abs(_diff_in[vis_mask_cz[1:]]))
+_peak_freq = freqs_city_zone[vis_mask_cz][_peak_idx]
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for zone, arr_list in city_zone_spec.items():
+    arr = np.array(arr_list)
+    if len(arr) == 0:
+        continue
+    mean_cz = arr.mean(axis=0)
+    sem_cz  = arr.std(axis=0) / np.sqrt(len(arr))
+    c = colors_cz[zone]
+    ax.plot(freqs_city_zone[vis_mask_cz], mean_cz[vis_mask_cz],
+            color=c, label=f'{labels_cz[zone]} (N={len(arr)})')
+    ax.fill_between(freqs_city_zone[vis_mask_cz],
+                    (mean_cz - sem_cz)[vis_mask_cz],
+                    (mean_cz + sem_cz)[vis_mask_cz],
+                    alpha=0.25, color=c)
+ax.axvline(_peak_freq, color='gray', linestyle='--', linewidth=1.2,
+           label=f'{_peak_freq:.2f} Hz (peak)')
+ax.set_xlabel('Frequency (Hz)')
+ax.set_ylabel('Log Power')
+ax.set_title('city_correct pupil spectrum: in-zone vs out-of-zone (cross-subject mean ± SEM)')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()

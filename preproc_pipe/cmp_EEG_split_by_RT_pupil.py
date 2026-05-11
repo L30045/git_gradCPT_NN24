@@ -74,7 +74,7 @@ for subj_id in tqdm(subj_id_array):
     rm_ch_dict[f"sub-{subj_id}"]    = _payload["rm_ch"]
     print(f"sub-{subj_id}: loaded runs {list(_payload['EEG'].keys())}")
     
-# Epoch data
+#%% Epoch data
 subj_epoch_dict = dict()
 subj_vtc_dict = dict()
 subj_react_dict = dict()
@@ -101,10 +101,103 @@ for key_name in tqdm(subj_EEG_dict.keys()):
     subj_vtc_dict[key_name] = single_subj_vtc_dict
     subj_react_dict[key_name] = single_subj_react_dict
 
+#%% get pupil size for each trial
+import sys
+sys.path.append("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking")
+from utils_eyetracking import preprocess_pupil, get_pupil_epoch
+from pupil_labs import neon_recording as nr
+
+# condition boolean index (stimulus-locked) from events_df columns
+_cond_base = {
+    'mnt_correct':   lambda df: (df['trial_type']=='mnt')  & (df['response_code']==0),
+    'mnt_incorrect': lambda df: (df['trial_type']=='mnt')  & (df['response_code']!=0),
+    'city_correct':  lambda df: (df['trial_type']=='city') & (df['response_code']!=0),
+    'city_incorrect':lambda df: (df['trial_type']=='city') & (df['response_code']==0),
+}
+
+subj_pupil_dict = dict()
+for key_name in tqdm(subj_EEG_dict.keys()):
+    subj_id = key_name.split('-')[-1]
+    subj_nirs_dir = os.path.join(project_path, f"sub-{subj_id}", 'nirs')
+    subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', f"sub-{subj_id}", 'eye_tracking')
+    neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)]) \
+                     if os.path.isdir(subj_neon_dir) else []
+    snirf_files = sorted([f for f in os.listdir(subj_nirs_dir) if f.endswith('.snirf')]) \
+                  if os.path.isdir(subj_nirs_dir) else []
+    subj_pupil_dict[key_name] = {}
+    for run_name in subj_EEG_dict[key_name].keys():
+        if 'gradcpt' not in run_name:
+            continue
+        run_id  = int(run_name.split('cpt')[-1])
+        run_key = f"run{run_id:02d}"
+        # load physio file
+        physio_file = os.path.join(subj_nirs_dir,
+            f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
+        if not os.path.isfile(physio_file):
+            physio_file = os.path.join(subj_nirs_dir,
+                f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
+        if not os.path.isfile(physio_file):
+            subj_pupil_dict[key_name][run_key] = {ev: np.array([]) for ev in event_labels_lookup}
+            continue
+        neon_data = pd.read_csv(physio_file, sep='\t')
+        # neon recording object (for blink detection)
+        snirf_name = f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_nirs.snirf"
+        if neon_dirs_subj and snirf_name in snirf_files:
+            neon_idx = snirf_files.index(snirf_name)
+            rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[neon_idx])) \
+                  if neon_idx < len(neon_dirs_subj) else None
+        else:
+            rec = None
+        # load event file
+        event_file = os.path.join(subj_nirs_dir,
+            f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        if not os.path.isfile(event_file):
+            subj_pupil_dict[key_name][run_key] = {ev: np.array([]) for ev in event_labels_lookup}
+            continue
+        events_df = pd.read_csv(event_file, sep='\t')
+        # preprocess pupil (detrend + lowpass)
+        t_neon, pupil_d = preprocess_pupil(neon_data, rec=rec, detrend_order=2,
+                                           is_rm_phasic=False, events_df=events_df)
+        subj_pupil_dict[key_name][run_key] = {}
+        if t_neon is None:
+            for ev in event_labels_lookup:
+                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+            continue
+        for ev in event_labels_lookup:
+            epochs = subj_epoch_dict[key_name][run_key][ev]
+            if len(epochs) == 0:
+                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+                continue
+            base_ev = ev.replace('_response', '')
+            if base_ev not in _cond_base:
+                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+                continue
+            # build per-event dataframe (shift onset for response-locked events)
+            ev_df = events_df[_cond_base[base_ev](events_df)].copy()
+            if ev.endswith('_response'):
+                ev_df['onset'] = ev_df['onset'] + ev_df['reaction_time']
+            ev_sel = pd.Series([True] * len(ev_df), index=ev_df.index)
+            pupil_epochs = get_pupil_epoch(ev_df, ev_sel, t_neon, pupil_d,
+                                           baseline_length=0.2, epoch_length=1.6)
+            # sanity check: flag any epoch that is entirely NaN (out-of-bounds trial)
+            all_nan_idx = [i for i, e in enumerate(pupil_epochs) if np.all(np.isnan(e))]
+            if all_nan_idx:
+                raise ValueError(
+                    f"{key_name} {run_key} [{ev}]: {len(all_nan_idx)} epoch(s) are entirely NaN "
+                    f"(trial indices: {all_nan_idx}). Check pupil recording boundaries."
+                )
+
+            # align to EEG drop_log: keep only trials not rejected by EEG
+            kept = [len(x) == 0 for x in epochs.drop_log]
+            subj_pupil_dict[key_name][run_key][ev] = np.array([
+                np.nanmean(e) for e, k in zip(pupil_epochs, kept) if k
+            ])
+
 #%% Combined runs. Epoch from each run is combined for each subject.
 combine_epoch_dict = dict()
 combine_vtc_dict = dict()
 combine_react_dict = dict()
+combine_pupil_dict = dict()
 in_out_zone_dict = dict()
 """
 combine_epoch_dict: dictionary for combined epochs from each run for subject.
@@ -124,35 +217,53 @@ match split_zone_crit:
                                                 for event in event_labels_lookup.keys()
                                                 if not event.endswith("_response") and len(subj_react_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
                         for subj_id in subj_react_dict.keys()}
+    case 'pupil':
+        subj_thres_zone = {subj_id: np.median(np.concatenate([subj_pupil_dict[subj_id][f"run{run_id:02d}"][event]
+                                                for run_id in range(1, 4)
+                                                for event in event_labels_lookup.keys()
+                                                if not event.endswith("_response") and len(subj_pupil_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
+                        for subj_id in subj_pupil_dict.keys()}
 for select_event in event_labels_lookup.keys():
     epoch_dict = dict()
     vtc_dict = dict()
     react_dict = dict()
+    pupil_dict = dict()
     ch_in_out_zone_dict = dict()
     # initialize epoch_dict
     for ch in preproc_params['ch_names']:
         epoch_dict[ch] = []
         vtc_dict[ch] = []
         react_dict[ch] = []
+        pupil_dict[ch] = []
         ch_in_out_zone_dict[ch] = []
     for subj_id in subj_epoch_dict.keys():
         tmp_epoch_list = []
         tmp_vtc_list = []
         tmp_react_list = []
+        tmp_pupil_list = []
         tmp_in_out_zone_list = []
         for run_id in np.arange(1,4):
             loc_e = subj_epoch_dict[subj_id][f"run{run_id:02d}"][select_event]
             loc_v = subj_vtc_dict[subj_id][f"run{run_id:02d}"][select_event]
             loc_r = subj_react_dict[subj_id][f"run{run_id:02d}"][select_event]
+            loc_p = subj_pupil_dict[subj_id][f"run{run_id:02d}"][select_event]
             if len(loc_e)>0:
                 tmp_epoch_list.append(loc_e)
                 tmp_vtc_list.append(loc_v)
                 tmp_react_list.append(loc_r)
-                tmp_in_out_zone_list.append(loc_v<subj_thres_zone[subj_id])
+                tmp_pupil_list.append(loc_p)
+                match split_zone_crit:
+                    case 'vtc':
+                        tmp_in_out_zone_list.append(loc_v < subj_thres_zone[subj_id])
+                    case 'react':
+                        tmp_in_out_zone_list.append(loc_r < subj_thres_zone[subj_id])
+                    case 'pupil':
+                        tmp_in_out_zone_list.append(loc_p < subj_thres_zone[subj_id])
         # initialize append values
         concat_epoch = []
         concat_vtc = []
         concat_react = []
+        concat_pupil = []
         concat_ch_in_out_zone = []
         # for each channel, create an epoch
         for ch in preproc_params['ch_names']:
@@ -160,6 +271,7 @@ for select_event in event_labels_lookup.keys():
             concat_epoch = []
             concat_vtc = []
             concat_react = []
+            concat_pupil = []
             concat_ch_in_out_zone = []
             if len(tmp_epoch_list)>0:
                 ch_picked_epoch = [x.copy().pick(ch) for x in tmp_epoch_list if ch in x.ch_names]
@@ -167,19 +279,22 @@ for select_event in event_labels_lookup.keys():
                     concat_epoch = mne.concatenate_epochs(ch_picked_epoch,verbose=False)
                     concat_vtc = np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names])
                     concat_react = np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names])
+                    concat_pupil = np.concatenate([x for x,y in zip(tmp_pupil_list,tmp_epoch_list) if ch in y.ch_names])
                     concat_ch_in_out_zone = np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names])
             epoch_dict[ch].append(concat_epoch)
             vtc_dict[ch].append(concat_vtc)
             react_dict[ch].append(concat_react)
+            pupil_dict[ch].append(concat_pupil)
             ch_in_out_zone_dict[ch].append(concat_ch_in_out_zone)
 
     combine_epoch_dict[select_event] = epoch_dict
     combine_vtc_dict[select_event] = vtc_dict
     combine_react_dict[select_event] = react_dict
+    combine_pupil_dict[select_event] = pupil_dict
     in_out_zone_dict[select_event] = ch_in_out_zone_dict
 
 #%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
-combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict)
+combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict)
 
 #%% Compare in-zone/out-of-zone reaction time
 check_ch = 'cz'
@@ -308,14 +423,33 @@ if window_size is None:
     window_size = np.max([4,np.floor(plt_epoch.shape[0]*0.01).astype(int)])
 plt_vtc = np.concatenate(combine_vtc_dict[select_event][ch])
 plt_react = np.concatenate(combine_react_dict[select_event][ch])
+plt_pupil = np.concatenate(combine_pupil_dict[select_event][ch])
 title_txt = f'{select_event} - Channel: {ch}'
 
+print("ERP sorted by VTC")
 _ = plt_ERPImage(time_vector, plt_epoch, 
                  sort_idx=plt_vtc,
                  smooth_window_size=window_size,
                  clim=[-10*1e-6, 10*1e-6],
                  title_txt=title_txt,
                  ref_onset=plt_react)
+
+print("ERP sorted by RT")
+_ = plt_ERPImage(time_vector, plt_epoch,
+                 sort_idx=plt_react,
+                 smooth_window_size=window_size,
+                 clim=[-10*1e-6, 10*1e-6],
+                 title_txt=title_txt,
+                 ref_onset=plt_react)
+
+print("ERP sorted by Pupil diameter")
+_ = plt_ERPImage(time_vector, plt_epoch,
+                 sort_idx=plt_pupil,
+                 smooth_window_size=window_size,
+                 clim=[-10*1e-6, 10*1e-6],
+                 title_txt=title_txt,
+                 ref_onset=plt_react)
+
 
 #%% ERSP analysis using multi-taper
 start_time = time.time()
