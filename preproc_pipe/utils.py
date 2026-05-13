@@ -200,9 +200,13 @@ def gen_EEG_event_tsv(subj_id, savepath=None):
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
         # get reaction time. Remove last trial since it is a fade-out only trial.
         react_time = data_cpt['response'][:-1,4] # sec
-        # get response_code (press/ no press)
+        # get response_code and recode to BIDS nirs convention:
+        # city_correct=1, city_incorrect=-1, mnt_correct=0, mnt_incorrect=-2
         response_code = data_cpt['response'][:-1,6].astype(int)
-        
+        # mnt commission errors: MATLAB -1 → BIDS -2
+        response_code[response_code==-1] = -2
+        # city omission errors: MATLAB 0 on city trial → BIDS -1
+        response_code[(response_code==0)&(data_cpt['response'][:-1,0]==2)] = -1
         # gradcpt starttime
         starttime_cpt = data_cpt['starttime'][0][0]
         # find when EEG trigger is on (to 0)
@@ -269,9 +273,9 @@ def tsv_to_events(event_file, sfreq):
     # mnt-incorrect
     event_ids[(events_df['trial_type']=='mnt')&(events_df['response_code']!=0)] = -2
     # city-correct
-    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']!=0)] = 1
+    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']>0)] = 1
     # city-incorrect
-    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']==0)] = -1
+    event_ids[(events_df['trial_type']=='city')&(events_df['response_code']<0)] = -1
     
     event_labels_lookup = dict(city_incorrect=-1, city_correct=1,
                             mnt_incorrect=-2, mnt_correct=0,
@@ -446,25 +450,17 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     fig, axes = plt.subplots(2, 1, figsize=(10, 10), height_ratios=[2, 1], sharex=True, constrained_layout=True)
 
     # Top subplot: ERP Image
-    if sort_idx is not None:
-        im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
-                            extent=[time_vector[0], time_vector[-1], plt_vtc_smooth[0], plt_vtc_smooth[-1]],
-                            vmin=clim[0], vmax=clim[1]
-                            )
-    else:
-        im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
-                            extent=[time_vector[0], time_vector[-1], 0, plt_epoch_smooth.shape[0]],
-                            vmin=clim[0], vmax=clim[1]
-                            )
+    n_trials = plt_epoch_smooth.shape[0]
+    im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
+                        extent=[time_vector[0], time_vector[-1], 0, n_trials],
+                        vmin=clim[0], vmax=clim[1]
+                        )
     axes[0].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Onset')
 
     # Plot reference onset line if provided
     if ref_onset is not None:
-        if sort_idx is not None:
-            axes[0].plot(ref_onset_smooth, plt_vtc_smooth, color='black', linewidth=2, label='Ref Onset')
-        else:
-            y_coords = np.arange(len(ref_onset_smooth))
-            axes[0].plot(ref_onset_smooth, y_coords, color='black', linewidth=2, label='Ref Onset')
+        y_coords = np.arange(len(ref_onset_smooth)) + 0.5
+        axes[0].plot(ref_onset_smooth, y_coords, color='black', linewidth=2, label='Ref Onset')
 
     plt.colorbar(im, ax=axes[0], label='Amplitude (µV)')
     axes[0].set_xlabel('Time (s)')
@@ -738,7 +734,9 @@ def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, com
             for ch in combine_pupil_dict[ev].keys():
                 combine_pupil_dict[ev][ch] = [x for i, x in enumerate(combine_pupil_dict[ev][ch]) if keep_subj_idx[i]]
 
-    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict
+    preserved_subj = list(np.array(subj_id_array)[ keep_subj_idx])
+    removed_subj   = list(np.array(subj_id_array)[rm_subj_idx])
+    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict, preserved_subj, removed_subj
 
 
 def eeg_preproc_subj_level(subj_id, preproc_params):
@@ -789,7 +787,7 @@ def eeg_preproc_subj_level(subj_id, preproc_params):
 
     return subj_EEG_dict, rm_ch_dict
 
-def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params):
+def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params, interp_rt=False):
     # unpacked preproc_params
     epoch_reject_crit = preproc_params['epoch_reject_crit']
     is_detrend = preproc_params['is_detrend']
@@ -812,6 +810,15 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params):
         event_file = os.path.join(data_save_path,f"{key_name}",
                                 f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")
         events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
+        # interpolate zero-RT (no-press) trials from non-zero neighbours
+        if interp_rt:
+            n_trials = len(reaction_time) // 2
+            rt_stim  = reaction_time[:n_trials].copy()
+            non_zero = np.where(rt_stim > 0)[0]
+            zero_idx = np.where(rt_stim == 0)[0]
+            if len(non_zero) > 0 and len(zero_idx) > 0:
+                rt_stim[zero_idx] = np.interp(zero_idx, non_zero, rt_stim[non_zero])
+            reaction_time = np.concatenate([rt_stim, -rt_stim])
         # for each condition
         for select_event in event_labels_lookup.keys():
             if np.any(events[:,-1]==event_labels_lookup[select_event]):

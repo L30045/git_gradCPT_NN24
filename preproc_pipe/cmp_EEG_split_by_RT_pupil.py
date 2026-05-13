@@ -23,7 +23,7 @@ from spectral_connectivity.transforms import prepare_time_series
 subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733, 746, 751, 755]
 
 ch_names = ['fz','cz','pz','oz']
-split_zone_crit = 'react'
+split_zone_crit = 'pupil'
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -95,7 +95,7 @@ subj_epoch_dict: dictionary for storing subject Epoch.
 for key_name in tqdm(subj_EEG_dict.keys()):
     subj_id = int(key_name.split('-')[-1])
     print(f"Epoching {key_name}")
-    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name], preproc_params)
+    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = eeg_epoch_subj_level(key_name, subj_EEG_dict[key_name], preproc_params,interp_rt=True)
     # save epochs
     subj_epoch_dict[key_name] = single_subj_epoch_dict
     subj_vtc_dict[key_name] = single_subj_vtc_dict
@@ -111,8 +111,8 @@ from pupil_labs import neon_recording as nr
 _cond_base = {
     'mnt_correct':   lambda df: (df['trial_type']=='mnt')  & (df['response_code']==0),
     'mnt_incorrect': lambda df: (df['trial_type']=='mnt')  & (df['response_code']!=0),
-    'city_correct':  lambda df: (df['trial_type']=='city') & (df['response_code']!=0),
-    'city_incorrect':lambda df: (df['trial_type']=='city') & (df['response_code']==0),
+    'city_correct':  lambda df: (df['trial_type']=='city') & (df['response_code']>0),
+    'city_incorrect':lambda df: (df['trial_type']=='city') & (df['response_code']<0),
 }
 
 subj_pupil_dict = dict()
@@ -130,14 +130,20 @@ for key_name in tqdm(subj_EEG_dict.keys()):
             continue
         run_id  = int(run_name.split('cpt')[-1])
         run_key = f"run{run_id:02d}"
-        # load physio file
+        # load physio file (check in priority order: 20260423 → corrected-idx → plain)
         physio_file = os.path.join(subj_nirs_dir,
+                f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260423.tsv")
+        if not os.path.isfile(physio_file):
+            physio_file = os.path.join(subj_nirs_dir,
             f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
         if not os.path.isfile(physio_file):
             physio_file = os.path.join(subj_nirs_dir,
                 f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
         if not os.path.isfile(physio_file):
-            subj_pupil_dict[key_name][run_key] = {ev: np.array([]) for ev in event_labels_lookup}
+            subj_pupil_dict[key_name][run_key] = {
+                ev: np.full((len(subj_epoch_dict[key_name][run_key][ev]), 1), np.nan)
+                for ev in event_labels_lookup
+            }
             continue
         neon_data = pd.read_csv(physio_file, sep='\t')
         # neon recording object (for blink detection)
@@ -152,7 +158,10 @@ for key_name in tqdm(subj_EEG_dict.keys()):
         event_file = os.path.join(subj_nirs_dir,
             f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
         if not os.path.isfile(event_file):
-            subj_pupil_dict[key_name][run_key] = {ev: np.array([]) for ev in event_labels_lookup}
+            subj_pupil_dict[key_name][run_key] = {
+                ev: np.full((len(subj_epoch_dict[key_name][run_key][ev]), 1), np.nan)
+                for ev in event_labels_lookup
+            }
             continue
         events_df = pd.read_csv(event_file, sep='\t')
         # preprocess pupil (detrend + lowpass)
@@ -161,37 +170,35 @@ for key_name in tqdm(subj_EEG_dict.keys()):
         subj_pupil_dict[key_name][run_key] = {}
         if t_neon is None:
             for ev in event_labels_lookup:
-                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+                subj_pupil_dict[key_name][run_key][ev] = np.full((len(subj_epoch_dict[key_name][run_key][ev]), 1), np.nan)
             continue
         for ev in event_labels_lookup:
             epochs = subj_epoch_dict[key_name][run_key][ev]
             if len(epochs) == 0:
-                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+                subj_pupil_dict[key_name][run_key][ev] = np.full((0, 1), np.nan)
                 continue
             base_ev = ev.replace('_response', '')
             if base_ev not in _cond_base:
-                subj_pupil_dict[key_name][run_key][ev] = np.array([])
+                subj_pupil_dict[key_name][run_key][ev] = np.full((len(epochs), 1), np.nan)
                 continue
             # build per-event dataframe (shift onset for response-locked events)
             ev_df = events_df[_cond_base[base_ev](events_df)].copy()
-            if ev.endswith('_response'):
-                ev_df['onset'] = ev_df['onset'] + ev_df['reaction_time']
-            ev_sel = pd.Series([True] * len(ev_df), index=ev_df.index)
-            pupil_epochs = get_pupil_epoch(ev_df, ev_sel, t_neon, pupil_d,
-                                           baseline_length=0.2, epoch_length=1.6)
-            # sanity check: flag any epoch that is entirely NaN (out-of-bounds trial)
-            all_nan_idx = [i for i, e in enumerate(pupil_epochs) if np.all(np.isnan(e))]
-            if all_nan_idx:
-                raise ValueError(
-                    f"{key_name} {run_key} [{ev}]: {len(all_nan_idx)} epoch(s) are entirely NaN "
-                    f"(trial indices: {all_nan_idx}). Check pupil recording boundaries."
-                )
-
-            # align to EEG drop_log: keep only trials not rejected by EEG
-            kept = [len(x) == 0 for x in epochs.drop_log]
-            subj_pupil_dict[key_name][run_key][ev] = np.array([
-                np.nanmean(e) for e, k in zip(pupil_epochs, kept) if k
-            ])
+            if len(ev_df) != 0:
+                if ev.endswith('_response'):
+                    ev_df['onset'] = ev_df['onset'] + ev_df['reaction_time']
+                ev_sel = pd.Series([True] * len(ev_df), index=ev_df.index)
+                pupil_epochs = get_pupil_epoch(ev_df, ev_sel, t_neon, pupil_d,
+                                            baseline_length=0.2, epoch_length=1.6)
+                # align to EEG drop_log: keep only trials not rejected by EEG
+                kept = [len(x) == 0 for x in epochs.drop_log]
+                subj_pupil_dict[key_name][run_key][ev] = np.array([
+                    e for e, k in zip(pupil_epochs, kept) if k
+                ])
+            else:
+                if len(epochs)!=0:
+                    print(f"{key_name} - {run_name}: EEG length = {len(epochs)}")
+                    raise ValueError("Number of epoch don't match between BIDS and EEG events file.")
+                subj_pupil_dict[key_name][run_key][ev] = np.full((len(epochs), 1), np.nan)
 
 #%% Combined runs. Epoch from each run is combined for each subject.
 combine_epoch_dict = dict()
@@ -279,7 +286,8 @@ for select_event in event_labels_lookup.keys():
                     concat_epoch = mne.concatenate_epochs(ch_picked_epoch,verbose=False)
                     concat_vtc = np.concatenate([x for x,y in zip(tmp_vtc_list,tmp_epoch_list) if ch in y.ch_names])
                     concat_react = np.concatenate([x for x,y in zip(tmp_react_list,tmp_epoch_list) if ch in y.ch_names])
-                    concat_pupil = np.concatenate([x for x,y in zip(tmp_pupil_list,tmp_epoch_list) if ch in y.ch_names])
+                    _p_list = [x.mean(axis=1) for x,y in zip(tmp_pupil_list,tmp_epoch_list) if ch in y.ch_names]
+                    concat_pupil = np.concatenate(_p_list)
                     concat_ch_in_out_zone = np.concatenate([x for x,y in zip(tmp_in_out_zone_list,tmp_epoch_list) if ch in y.ch_names])
             epoch_dict[ch].append(concat_epoch)
             vtc_dict[ch].append(concat_vtc)
@@ -294,7 +302,9 @@ for select_event in event_labels_lookup.keys():
     in_out_zone_dict[select_event] = ch_in_out_zone_dict
 
 #%% remove subjects with number of epoch less than half of the target number of epoch (2700/2)
-combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict)
+combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict, preserved_subj_array, removed_subj_array = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict)
+print(f"Preserved subjects: {preserved_subj_array}")
+print(f"Removed subjects:   {removed_subj_array}")
 
 #%% Compare in-zone/out-of-zone reaction time
 check_ch = 'cz'
@@ -412,7 +422,7 @@ for ch in vis_ch:
 """
 Plot ERP Image and sorted by VTC. Merge all subjects's epochs into one big epoch.
 """
-select_event = "mnt_correct"
+select_event = "city_correct"
 ch = 'cz'
 window_size = None  # Number of trials to average. If None, window_size equals to 1% of the data length.
 clim = [-10*1e-6, 10*1e-6]
@@ -423,7 +433,8 @@ if window_size is None:
     window_size = np.max([4,np.floor(plt_epoch.shape[0]*0.01).astype(int)])
 plt_vtc = np.concatenate(combine_vtc_dict[select_event][ch])
 plt_react = np.concatenate(combine_react_dict[select_event][ch])
-plt_pupil = np.concatenate(combine_pupil_dict[select_event][ch])
+# get the
+plt_pupil = np.concatenate([x for x in combine_pupil_dict[select_event][ch] if len(x)>0])
 title_txt = f'{select_event} - Channel: {ch}'
 
 print("ERP sorted by VTC")
@@ -443,13 +454,13 @@ _ = plt_ERPImage(time_vector, plt_epoch,
                  ref_onset=plt_react)
 
 print("ERP sorted by Pupil diameter")
-_ = plt_ERPImage(time_vector, plt_epoch,
-                 sort_idx=plt_pupil,
+_valid = ~np.isnan(plt_pupil)
+_ = plt_ERPImage(time_vector, plt_epoch[_valid],
+                 sort_idx=plt_pupil[_valid],
                  smooth_window_size=window_size,
                  clim=[-10*1e-6, 10*1e-6],
                  title_txt=title_txt,
-                 ref_onset=plt_react)
-
+                 ref_onset=plt_react[_valid])
 
 #%% ERSP analysis using multi-taper
 start_time = time.time()
@@ -514,7 +525,7 @@ for select_event in in_out_zone_dict.keys():
             print(f"  Total: No trials found")
 
 #%% zone-in vs zone-out
-select_event = "mnt_correct"
+select_event = "city_correct"
 vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions
@@ -570,7 +581,7 @@ for ch in vis_ch:
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "city_correct"
+select_event = "mnt_correct"
 ch = 'cz'
 time_halfbandwidth_product = 1
 time_window_duration = 0.5
@@ -699,4 +710,212 @@ plt.ylabel(r"Power ($log\,V^2$)")
 plt.grid()
 plt.legend()
 
+#%% Time-frequency analysis using wavelet transform
+"""
+For city_correct trials, apply wavelet transform for frequency range same as bandpass filter range during preprocessing.
+1. split city_correct trials into in-the-zone/ out-of-the-zone by 3 criteria: VTC, interpret RT, and pupil diameter.
+2. Plot the power difference between in-the-zone and out-of-the-zone.
+"""
+select_event = "city_correct"
+ch           = 'cz'
+# logspaced frequencies within bp_f_range; start at 2 Hz (0.1 Hz needs >10 s epochs)
+freqs    = np.logspace(np.log10(2), np.log10(bp_f_range[1]), 30)
+n_cycles = freqs / 2.0   # standard Morlet: half-cycle bandwidth
 
+# --- define per-subject in/out masks for each criterion ---
+criteria = {
+    'VTC':       lambda si: (combine_vtc_dict[select_event][ch][si],   None),
+    'Interp RT': lambda si: (combine_react_dict[select_event][ch][si], None),
+    'Pupil':     lambda si: (combine_pupil_dict[select_event][ch][si], 'nanmask'),
+}
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 6), constrained_layout=True)
+
+for ax, (crit_name, crit_fn) in zip(axes, criteria.items()):
+    in_list, out_list = [], []
+    for subj_i, epoch in enumerate(combine_epoch_dict[select_event][ch]):
+        if len(epoch) == 0:
+            continue
+        crit_arr, flag = crit_fn(subj_i)
+        crit_arr = np.asarray(crit_arr, dtype=float)
+        if flag == 'nanmask':
+            valid = ~np.isnan(crit_arr)
+            if np.sum(valid) < 2:
+                continue
+            med      = np.median(crit_arr[valid])
+            in_mask  = valid & (crit_arr <  med)
+            out_mask = valid & (crit_arr >= med)
+        else:
+            med      = np.median(crit_arr)
+            in_mask  = crit_arr <  med
+            out_mask = crit_arr >= med
+        if not np.any(in_mask) or not np.any(out_mask):
+            continue
+        in_list.append(epoch[in_mask])
+        out_list.append(epoch[out_mask])
+
+    if not in_list:
+        ax.set_title(f'{crit_name}: no data')
+        continue
+
+    in_epochs  = mne.concatenate_epochs(in_list,  verbose=False)
+    out_epochs = mne.concatenate_epochs(out_list, verbose=False)
+
+    # compute Morlet TFR (average across trials)
+    tfr_in  = mne.time_frequency.compute_tfr(in_epochs, method='morlet', freqs=freqs, n_cycles=n_cycles,
+                                             average=True, return_itc=False, verbose=False)
+    tfr_out = mne.time_frequency.compute_tfr(out_epochs, method='morlet', freqs=freqs, n_cycles=n_cycles,
+                                             average=True, return_itc=False, verbose=False)
+
+    # log power ratio: in-zone vs out-of-zone (dB)
+    power_diff = 10 * np.log10(tfr_in.data[0] / tfr_out.data[0])   # (n_freqs, n_times)
+    times_ms   = tfr_in.times * 1000
+
+    im = ax.pcolormesh(times_ms, freqs, power_diff, cmap='RdBu_r',
+                       vmin=-1, vmax=1, shading='auto')
+    ax.set_yscale('log')
+    ax.set_yticks([2, 4, 8, 16, 32, 45])
+    ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.axvline(0,   color='k', linestyle='--', linewidth=1.5)
+    ax.axvline(800, color='k', linestyle='--', linewidth=1.5)
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Frequency (Hz)')
+    ax.set_title(f'{crit_name}\n(n_in={len(in_epochs)}, n_out={len(out_epochs)})')
+    plt.colorbar(im, ax=ax, label='Power diff (dB)')
+
+fig.suptitle(f'{select_event} — {ch.upper()} — TFR: In vs Out of zone')
+plt.show()
+
+#%% Calculate the correlation between EEG band power and VTC/RT.
+"""
+1. Use a 1 second sliding window with step size of 1 second to calculate EEG spectrum for the entire run.
+2. Calculate the correlation between EEG band power and VTC/RT with different time delay.
+"""
+import scipy.signal as sp_sig
+
+ch          = 'cz'
+win_sec     = 1.0   # window length (s)
+step_sec    = 1.0   # step size (s) — non-overlapping
+max_lag_sec = 10    # ± lag range (s)
+
+bands = {
+    'delta': (0.5,  4),
+    'theta': (4,    8),
+    'alpha': (8,   13),
+    'beta':  (13,  30),
+    'gamma': (30,  45),
+}
+n_lags   = 2 * max_lag_sec + 1
+lag_axis = np.arange(-max_lag_sec, max_lag_sec + 1)   # seconds
+
+def _zscore(x):
+    s = np.std(x)
+    return (x - np.mean(x)) / s if s > 0 else np.zeros_like(x)
+
+def _run_xcorr(pwr_z, ts_z, n_wins):
+    """Return cross-correlation vector (Pearson r at each lag)."""
+    corr = np.correlate(pwr_z, ts_z, mode='full')   # length 2*n_wins - 1
+    mid  = n_wins - 1
+    out  = np.zeros(n_lags)
+    for li, lag in enumerate(lag_axis):
+        idx = mid + lag
+        if 0 <= idx < len(corr):
+            out[li] = corr[idx] / max(n_wins - abs(lag), 1)
+    return out
+
+# per-subject lists of cross-correlation vectors (one entry per subject)
+subj_xcorr_vtc = {b: [] for b in bands}
+subj_xcorr_rt  = {b: [] for b in bands}
+n_subjects     = 0
+
+for key_name in [f"sub-{x}" for x in preserved_subj_array]:
+    # accumulators for this subject's runs
+    run_xcorr_vtc = {b: [] for b in bands}
+    run_xcorr_rt  = {b: [] for b in bands}
+
+    for run_name in subj_EEG_dict[key_name].keys():
+        if 'gradcpt' not in run_name:
+            continue
+        run_id = int(run_name.split('cpt')[-1])
+        EEG    = subj_EEG_dict[key_name][run_name]
+        sfreq  = EEG.info['sfreq']
+
+        if ch not in EEG.ch_names:
+            continue
+        eeg_data  = EEG.get_data(picks=[ch]).squeeze()
+        win_samp  = int(win_sec  * sfreq)
+        step_samp = int(step_sec * sfreq)
+        n_wins    = (len(eeg_data) - win_samp) // step_samp + 1
+        if n_wins < max_lag_sec * 2 + 5:
+            continue
+
+        # sliding-window band power
+        band_power = {b: np.zeros(n_wins) for b in bands}
+        for wi in range(n_wins):
+            seg = eeg_data[wi*step_samp : wi*step_samp + win_samp]
+            f, psd = sp_sig.welch(seg, fs=sfreq, nperseg=win_samp)
+            for b, (flo, fhi) in bands.items():
+                band_power[b][wi] = np.mean(psd[(f >= flo) & (f <= fhi)])
+
+        # VTC and interp RT at 1 Hz grid
+        event_file = os.path.join(data_save_path, key_name,
+                                  f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")
+        if not os.path.isfile(event_file):
+            continue
+        ev_df   = pd.read_csv(event_file, sep='\t')
+        vtc_col = 'VTC_smoothed' if 'VTC_smoothed' in ev_df.columns else 'VTC'
+
+        vtc_ts = np.full(n_wins, np.nan)
+        rt_ts  = np.full(n_wins, np.nan)
+        for _, row in ev_df.iterrows():
+            wi = int(row['onset'] // step_sec)
+            if 0 <= wi < n_wins:
+                vtc_ts[wi] = row[vtc_col]
+                rt_ts[wi]  = row['reaction_time']
+
+        # fill NaN windows from neighbours
+        for ts in (vtc_ts, rt_ts):
+            valid = np.where(~np.isnan(ts))[0]
+            if len(valid) < 2:
+                break
+            ts[np.isnan(ts)] = np.interp(np.where(np.isnan(ts))[0], valid, ts[valid])
+        else:
+            # interpolate zero RT from non-zero neighbours
+            nz, zi = np.where(rt_ts > 0)[0], np.where(rt_ts == 0)[0]
+            if len(nz) > 1 and len(zi) > 0:
+                rt_ts[zi] = np.interp(zi, nz, rt_ts[nz])
+
+            vtc_z = _zscore(vtc_ts)
+            rt_z  = _zscore(rt_ts)
+            for b in bands:
+                pwr_z = _zscore(band_power[b])
+                run_xcorr_vtc[b].append(_run_xcorr(pwr_z, vtc_z, n_wins))
+                run_xcorr_rt[b].append( _run_xcorr(pwr_z, rt_z,  n_wins))
+
+    # average across valid runs within this subject
+    if all(len(run_xcorr_vtc[b]) > 0 for b in bands):
+        for b in bands:
+            subj_xcorr_vtc[b].append(np.mean(run_xcorr_vtc[b], axis=0))
+            subj_xcorr_rt[b].append( np.mean(run_xcorr_rt[b],  axis=0))
+        n_subjects += 1
+
+# --- cross-subject mean ± SEM ---
+fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+colors = plt.cm.viridis(np.linspace(0, 1, len(bands)))
+
+for ax, (acc, lbl) in zip(axes, [(subj_xcorr_vtc, 'VTC'), (subj_xcorr_rt, 'Interp RT')]):
+    for (b, (flo, fhi)), col in zip(bands.items(), colors):
+        mat  = np.vstack(acc[b])            # (n_subjects, n_lags)
+        mean = mat.mean(axis=0)
+        sem  = mat.std(axis=0) / np.sqrt(n_subjects)
+        ax.plot(lag_axis, mean, label=f'{b} ({flo}–{fhi} Hz)', color=col, linewidth=2)
+        ax.fill_between(lag_axis, mean - sem, mean + sem, color=col, alpha=0.2)
+    ax.axhline(0, color='k', linestyle='--', linewidth=1)
+    ax.axvline(0, color='k', linestyle='-',  linewidth=1)
+    ax.set_xlabel('Lag (s)  [+ = EEG power leads]')
+    ax.set_ylabel('Pearson r')
+    ax.set_title(f'EEG band power ~ {lbl}  ({ch.upper()})')
+    ax.legend(title='Band')
+    ax.grid(True, alpha=0.3)
+fig.suptitle(f'Cross-correlation: EEG band power vs VTC / Interp RT  (n={n_subjects} subjects)')
+plt.show()
