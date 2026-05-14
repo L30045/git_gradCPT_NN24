@@ -23,7 +23,7 @@ from spectral_connectivity.transforms import prepare_time_series
 subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733, 746, 751, 755]
 
 ch_names = ['fz','cz','pz','oz']
-split_zone_crit = 'pupil'
+split_zone_crit = 'vtc'
 is_bpfilter = True
 bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_reref = True
@@ -225,11 +225,20 @@ match split_zone_crit:
                                                 if not event.endswith("_response") and len(subj_react_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
                         for subj_id in subj_react_dict.keys()}
     case 'pupil':
-        subj_thres_zone = {subj_id: np.median(np.concatenate([subj_pupil_dict[subj_id][f"run{run_id:02d}"][event]
+        # TODO: remove subjects with no eye tracker data (all-nan slice)
+        pupil_d_output = [(subj_id, np.concatenate([np.mean(subj_pupil_dict[subj_id][f"run{run_id:02d}"][event],axis=1)
                                                 for run_id in range(1, 4)
                                                 for event in event_labels_lookup.keys()
                                                 if not event.endswith("_response") and len(subj_pupil_dict[subj_id][f"run{run_id:02d}"][event]) > 0]))
-                        for subj_id in subj_pupil_dict.keys()}
+                        for subj_id in subj_pupil_dict.keys() if not all(np.isnan(np.concatenate([np.mean(subj_pupil_dict[subj_id][f"run{run_id:02d}"][event],axis=1)
+                                                for run_id in range(1, 4)
+                                                for event in event_labels_lookup.keys()
+                                                if not event.endswith("_response") and len(subj_pupil_dict[subj_id][f"run{run_id:02d}"][event]) > 0])))]
+        preserved_subj_id = [x[0] for x in pupil_d_output]
+        mean_pupil_d_trial = [x[1] for x in pupil_d_output]
+        # calculate the mean pupil size across the trial
+        subj_thres_zone = {subj_id: np.nanmedian(x)
+                        for subj_id,x in pupil_d_output}
 for select_event in event_labels_lookup.keys():
     epoch_dict = dict()
     vtc_dict = dict()
@@ -265,7 +274,10 @@ for select_event in event_labels_lookup.keys():
                     case 'react':
                         tmp_in_out_zone_list.append(loc_r < subj_thres_zone[subj_id])
                     case 'pupil':
-                        tmp_in_out_zone_list.append(loc_p < subj_thres_zone[subj_id])
+                        if subj_id in preserved_subj_id:
+                            tmp_in_out_zone_list.append(np.mean(loc_p,axis=1) < subj_thres_zone[subj_id])
+                        else:
+                            tmp_in_out_zone_list.append(np.full(loc_p.shape[0],np.nan))
         # initialize append values
         concat_epoch = []
         concat_vtc = []
@@ -305,6 +317,33 @@ for select_event in event_labels_lookup.keys():
 combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict, preserved_subj_array, removed_subj_array = remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict)
 print(f"Preserved subjects: {preserved_subj_array}")
 print(f"Removed subjects:   {removed_subj_array}")
+
+#%% If select pupil as in/out zone criteria, further remove epochs with combine_pupil_dict == nan
+if split_zone_crit == 'pupil':
+    for select_event in event_labels_lookup.keys():
+        for ch in preproc_params['ch_names']:
+            keep_indices = []
+            for subj_idx in range(len(combine_pupil_dict[select_event][ch])):
+                pupil_arr = combine_pupil_dict[select_event][ch][subj_idx]
+                if len(pupil_arr) == 0:
+                    continue  # drop subject with no epochs
+                valid_mask = ~np.isnan(pupil_arr)
+                if not np.any(valid_mask):
+                    continue  # drop subject with all-NaN pupil (no eye tracker)
+                if not np.all(valid_mask):
+                    epoch_obj = combine_epoch_dict[select_event][ch][subj_idx]
+                    if len(epoch_obj) > 0:
+                        combine_epoch_dict[select_event][ch][subj_idx] = epoch_obj[valid_mask]
+                    combine_vtc_dict[select_event][ch][subj_idx]   = combine_vtc_dict[select_event][ch][subj_idx][valid_mask]
+                    combine_react_dict[select_event][ch][subj_idx] = combine_react_dict[select_event][ch][subj_idx][valid_mask]
+                    combine_pupil_dict[select_event][ch][subj_idx] = pupil_arr[valid_mask]
+                    in_out_zone_dict[select_event][ch][subj_idx]   = in_out_zone_dict[select_event][ch][subj_idx][valid_mask]
+                keep_indices.append(subj_idx)
+            combine_epoch_dict[select_event][ch]  = [combine_epoch_dict[select_event][ch][i]  for i in keep_indices]
+            combine_vtc_dict[select_event][ch]    = [combine_vtc_dict[select_event][ch][i]    for i in keep_indices]
+            combine_react_dict[select_event][ch]  = [combine_react_dict[select_event][ch][i]  for i in keep_indices]
+            combine_pupil_dict[select_event][ch]  = [combine_pupil_dict[select_event][ch][i]  for i in keep_indices]
+            in_out_zone_dict[select_event][ch]    = [in_out_zone_dict[select_event][ch][i]    for i in keep_indices]
 
 #%% Compare in-zone/out-of-zone reaction time
 check_ch = 'cz'
@@ -525,7 +564,7 @@ for select_event in in_out_zone_dict.keys():
             print(f"  Total: No trials found")
 
 #%% zone-in vs zone-out
-select_event = "city_correct"
+select_event = "mnt_correct"
 vis_ch = ["fz","cz","pz","oz"]
 
 # Extract cross-subject ERPs for both conditions
@@ -581,7 +620,7 @@ for ch in vis_ch:
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "mnt_correct"
+select_event = "city_correct_response"
 ch = 'cz'
 time_halfbandwidth_product = 1
 time_window_duration = 0.5

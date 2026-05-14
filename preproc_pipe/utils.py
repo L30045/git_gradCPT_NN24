@@ -551,6 +551,7 @@ def plt_multitaper(plt_epoch,
         # Plot log power spectrogram
         extent = [multitaper_time[0], multitaper_time[-1], 0, np.sum(vis_mask)]
         vmax = np.abs(plt_power).max()
+        # vmax = 0.04
         im = ax1.imshow(plt_power[:,vis_mask].T, aspect='auto', origin='lower', cmap='RdBu_r', extent=extent, vmin=-vmax, vmax=vmax)
         plt.colorbar(im, ax=ax1, label='Log Power')
         ax1.set_ylabel('Frequency')
