@@ -452,3 +452,193 @@ axes[1].axhline(0, color='k', lw=0.8, ls='--')
 plt.suptitle(key_name_test, fontweight='bold')
 plt.tight_layout()
 plt.show()
+
+#%% Band power GLM: does VTC predict city-correct trial band power?
+# DV  : log10 band power per trial (theta / alpha / beta × channel)
+# IV  : model A: 1 + onset_time (linear drift)
+#        model B: 1 + onset_time + VTC  (full)
+# Test: added-variable F-test for VTC, H0: β_VTC == 0  (df: 1, n-3)
+# Results stored in df_bp_glm
+
+import scipy.signal as sig_proc
+from scipy.stats import f as f_dist_bp
+
+bands = {'theta': (4, 8), 'alpha': (8, 13), 'beta': (13, 30)}
+
+bp_glm_rows = []
+
+for subj_id in tqdm(subj_id_array):
+    key_name = f"sub-{subj_id}"
+    single_subj_EEG_dict, _ = eeg_preproc_subj_level(subj_id, preproc_params)
+
+    epoch_records = []    # one dict per city-correct epoch
+    session_offset = 0.0
+    sfreq_bp = None
+
+    for run_name in sorted(single_subj_EEG_dict.keys()):
+        if 'gradcpt' not in run_name:
+            continue
+        run_id  = int(run_name.split('cpt')[-1])
+        EEG     = single_subj_EEG_dict[run_name].copy()
+        avail   = [c for c in ch_names if c in EEG.ch_names]
+        if not avail:
+            continue
+        EEG.pick(avail)
+        sfreq_bp = EEG.info['sfreq']
+        run_dur  = EEG.n_times / sfreq_bp
+
+        ev_df = pd.read_csv(
+            os.path.join(data_save_path, key_name,
+                         f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv"),
+            sep='\t').copy()
+        # city correct = correctly withheld (response_code > 0, per BIDS convention)
+        stim_cty = ev_df[(ev_df['trial_type'] == 'city') &
+                         (ev_df['response_code'] > 0)].copy()
+
+        if len(stim_cty) == 0:
+            session_offset += run_dur
+            continue
+
+        onsets_sec = stim_cty['onset'].values
+        events_arr = np.column_stack([
+            (onsets_sec * sfreq_bp).astype(int),
+            np.zeros(len(onsets_sec), int),
+            np.ones(len(onsets_sec),  int)])
+        epochs_cty = mne.Epochs(EEG, events_arr, event_id=1,
+                                tmin=tmin, tmax=tmax,
+                                baseline=None, preload=True, verbose=False)
+        epochs_cty.drop_bad(reject={'eeg': 150e-6})
+        if len(epochs_cty) == 0:
+            session_offset += run_dur
+            continue
+
+        keep_mask  = np.isin((onsets_sec * sfreq_bp).astype(int),
+                             epochs_cty.events[:, 0])
+        vtc_v      = stim_cty['VTC'].values[keep_mask].copy()
+        onset_v    = onsets_sec[keep_mask] + session_offset
+        epoch_data = epochs_cty.get_data()           # (n_ep, n_ch, n_t)
+
+        # bandpass filter coefficients computed once per run (same sfreq)
+        filt_coefs = {b: sig_proc.butter(4, [flo, fhi], btype='band', fs=sfreq_bp)
+                      for b, (flo, fhi) in bands.items()}
+
+        for i_ep in range(epoch_data.shape[0]):
+            rec = {'onset_session': float(onset_v[i_ep]),
+                   'vtc':           float(vtc_v[i_ep])}
+            for i_ch, ch in enumerate(avail):
+                for b_name, (bc, ac) in filt_coefs.items():
+                    xf = sig_proc.filtfilt(bc, ac, epoch_data[i_ep, i_ch, :])
+                    rec[f'{ch}_{b_name}'] = float(np.log10(np.var(xf) + 1e-30))
+            for ch in ch_names:      # fill absent channels with NaN
+                if ch not in avail:
+                    for b_name in bands:
+                        rec[f'{ch}_{b_name}'] = np.nan
+            epoch_records.append(rec)
+
+        session_offset += run_dur
+
+    if len(epoch_records) < 5:
+        print(f"  {key_name}: too few city-correct epochs, skipping")
+        continue
+
+    df_ep      = pd.DataFrame(epoch_records)
+    onset_arr  = df_ep['onset_session'].values
+    vtc_arr    = df_ep['vtc'].values - df_ep['vtc'].mean()
+    n_tr       = len(onset_arr)
+    onset_norm = (onset_arr - onset_arr.mean()) / (onset_arr.std() + 1e-10)
+
+    X_A = np.column_stack([np.ones(n_tr), onset_norm])            # restricted
+    X_B = np.column_stack([np.ones(n_tr), onset_norm, vtc_arr])   # full
+
+    for ch in ch_names:
+        for b_name in bands:
+            col  = f'{ch}_{b_name}'
+            y    = df_ep[col].values
+            mask = ~np.isnan(y)
+            if mask.sum() < 5:
+                continue
+            y_v, Xa, Xb = y[mask], X_A[mask], X_B[mask]
+            nv = int(mask.sum())
+
+            bA, _, _, _ = np.linalg.lstsq(Xa, y_v, rcond=None)
+            bB, _, _, _ = np.linalg.lstsq(Xb, y_v, rcond=None)
+            ssA   = float(np.sum((y_v - Xa @ bA) ** 2))
+            ssB   = float(np.sum((y_v - Xb @ bB) ** 2))
+            ssTot = float(np.sum((y_v - y_v.mean()) ** 2))
+
+            # F-test: H0: adding VTC does not improve fit (1 numerator df)
+            F_val = max(ssA - ssB, 0.0) / max(ssB / (nv - 3), 1e-30)
+            p_val = float(1.0 - f_dist_bp.cdf(F_val, 1, nv - 3))
+
+            bp_glm_rows.append(dict(
+                subject  = key_name,
+                channel  = ch,
+                band     = b_name,
+                n_trials = nv,
+                R2_noVTC = 1.0 - ssA / ssTot,
+                R2_vtc   = 1.0 - ssB / ssTot,
+                delta_R2 = (ssA - ssB) / ssTot,
+                F_stat   = F_val,
+                p_val    = p_val,
+                VTC_beta = float(bB[2]),
+            ))
+
+# ── results table ────────────────────────────────────────────────────────────
+df_bp_glm = pd.DataFrame(bp_glm_rows)
+
+df_summary = (df_bp_glm
+    .groupby(['channel', 'band'])
+    .agg(
+        n_subj        = ('subject',  'nunique'),
+        mean_delta_R2 = ('delta_R2', 'mean'),
+        mean_F        = ('F_stat',   'mean'),
+        n_sig_p05     = ('p_val',    lambda x: int((x < 0.05).sum())),
+        pct_sig_p05   = ('p_val',    lambda x: round(100 * (x < 0.05).mean(), 1)),
+    )
+    .reset_index()
+)
+
+print(f"\nBand power GLM — city-correct epochs")
+print(f"  subjects: {df_bp_glm['subject'].nunique()}   "
+      f"model: log(band_power) ~ 1 + onset_time [+ VTC]\n")
+print(df_summary.to_string(index=False,
+    formatters={'mean_delta_R2': '{:+.5f}'.format, 'mean_F': '{:.3f}'.format}))
+
+# ── heatmap visualisation ─────────────────────────────────────────────────────
+band_order = ['theta', 'alpha', 'beta']
+ch_order   = ch_names
+
+def _pivot(df_sum, metric):
+    return (df_sum.pivot(index='channel', columns='band', values=metric)
+            .reindex(index=ch_order, columns=band_order).values.astype(float))
+
+dr2_mat  = _pivot(df_summary, 'mean_delta_R2')
+psig_mat = _pivot(df_summary, 'pct_sig_p05')
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+vlim = max(np.nanmax(np.abs(dr2_mat)), 1e-6)
+im0  = axes[0].imshow(dr2_mat, aspect='auto', cmap='RdBu_r',
+                      vmin=-vlim, vmax=vlim)
+axes[0].set_xticks(range(len(band_order))); axes[0].set_xticklabels(band_order)
+axes[0].set_yticks(range(len(ch_order)));   axes[0].set_yticklabels([c.upper() for c in ch_order])
+axes[0].set_title('Mean ΔR²  (VTC added variance)')
+plt.colorbar(im0, ax=axes[0])
+for i in range(len(ch_order)):
+    for j in range(len(band_order)):
+        axes[0].text(j, i, f'{dr2_mat[i,j]:+.4f}',
+                     ha='center', va='center', fontsize=7)
+
+im1 = axes[1].imshow(psig_mat, aspect='auto', cmap='Reds', vmin=0, vmax=100)
+axes[1].set_xticks(range(len(band_order))); axes[1].set_xticklabels(band_order)
+axes[1].set_yticks(range(len(ch_order)));   axes[1].set_yticklabels([c.upper() for c in ch_order])
+axes[1].set_title('% subjects  p < 0.05')
+plt.colorbar(im1, ax=axes[1], label='%')
+for i in range(len(ch_order)):
+    for j in range(len(band_order)):
+        axes[1].text(j, i, f"{psig_mat[i,j]:.0f}%",
+                     ha='center', va='center', fontsize=9)
+
+plt.suptitle('Band power GLM — city-correct | F-test for added VTC regressor',
+             fontweight='bold')
+plt.tight_layout()
+plt.show()

@@ -735,9 +735,10 @@ def remove_subject_by_nb_epochs_preserved(subj_id_array, combine_epoch_dict, com
             for ch in combine_pupil_dict[ev].keys():
                 combine_pupil_dict[ev][ch] = [x for i, x in enumerate(combine_pupil_dict[ev][ch]) if keep_subj_idx[i]]
 
-    preserved_subj = list(np.array(subj_id_array)[ keep_subj_idx])
-    removed_subj   = list(np.array(subj_id_array)[rm_subj_idx])
-    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict, preserved_subj, removed_subj
+        preserved_subj = list(np.array(subj_id_array)[ keep_subj_idx])
+        removed_subj   = list(np.array(subj_id_array)[rm_subj_idx])
+        return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict, combine_pupil_dict, preserved_subj, removed_subj
+    return combine_epoch_dict, combine_vtc_dict, combine_react_dict, in_out_zone_dict
 
 
 def eeg_preproc_subj_level(subj_id, preproc_params):
