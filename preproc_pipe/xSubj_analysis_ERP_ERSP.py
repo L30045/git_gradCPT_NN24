@@ -436,10 +436,10 @@ for ch in vis_ch:
 
 # %% In-zone/ out-of-zone ERSP
 start_time = time.time()
-select_event = "city_correct"
+select_event = "city_correct_response"
 ch = 'cz'
 time_halfbandwidth_product = 1
-time_window_duration = 0.5
+time_window_duration = 0.25
 time_window_step = 0.1
 
 # Extract cross-subject ERPs for both conditions
@@ -464,24 +464,31 @@ in_zone_erp = mne.concatenate_epochs(in_zone_erp)
 out_zone_erp = mne.concatenate_epochs(out_zone_erp)
 
 # multitaper
+if select_event.endswith('response'):
+    ratio_to = None
+else:
+    ratio_to = "baseline"
 print("In Zone")
 _ = plt_multitaper(in_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
                    time_window_step=time_window_step,
-                   ratio_to="baseline")
+                   ratio_to=ratio_to,
+                   vis_f_range=[1/time_window_duration, 40])
 print("Out of Zone")
 _ = plt_multitaper(out_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
                    time_window_step=time_window_step,
-                   ratio_to="baseline")
+                   ratio_to=ratio_to,
+                   vis_f_range=[1/time_window_duration, 40])
 print("In Zone / Out of Zone")
 (_,multitaper,_) = plt_multitaper(in_zone_erp, 
                    time_halfbandwidth_product=time_halfbandwidth_product,
                    time_window_duration=time_window_duration,
                    time_window_step=time_window_step,
-                   ratio_to=out_zone_erp)
+                   ratio_to=out_zone_erp,
+                   vis_f_range=[1/time_window_duration, 40])
 print(f"Freq. resolution = {multitaper.frequency_resolution:.2F} Hz")
 end_time = time.time()
 elapsed_time = end_time - start_time

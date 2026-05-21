@@ -498,7 +498,8 @@ def plt_multitaper(plt_epoch,
         time_window_step = time_window_duration
     time_vector = plt_epoch.times
     # reshpae epoch data for multitaper
-    plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
+    # plt_epoch_data = np.expand_dims(np.squeeze(plt_epoch.get_data()).T,axis=-1)
+    plt_epoch_data = plt_epoch.get_data().transpose(2,0,1) # (n_trial, n_channel, n_timesample) -> (n_timesample, n_trial, n_channel)
     if plt_epoch_data.ndim != 3:
         plt_epoch_data = np.expand_dims(plt_epoch_data, axis=-1)
     # create multitaper
@@ -827,7 +828,7 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params, interp_
                 ev_vtc = vtc_list[events[:,-1]==event_labels_lookup[select_event]]
                 ev_react = reaction_time[events[:,-1]==event_labels_lookup[select_event]]
                 event_duration = 1.6 if select_event.split('_')[-1]=='response' else 1.8
-                baseline_length = -1.2 if select_event.split('_')[-1]=='response' else -0.2
+                baseline_length = -0.8 if select_event.split('_')[-1]=='response' else -0.2
                 try:    
                     epochs = epoch_by_select_event(EEG, events, event_labels_lookup,
                                                                 select_event=select_event,
@@ -836,10 +837,22 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params, interp_
                                                                 is_detrend=is_detrend,
                                                                 event_duration=event_duration,
                                                                 verbose=False)
-                    # remove vtc that is dropped
-                    ev_vtc = ev_vtc[[len(x)==0 for x in epochs.drop_log]]
-                    # remove reaction time that is dropped
-                    ev_react = ev_react[[len(x)==0 for x in epochs.drop_log]]
+                    # align ev_vtc/ev_react with drop_log by replicating the same
+                    # valid_mask that epoch_by_select_event applies internally before
+                    # passing events to mne.Epochs (drop_log length = N_valid, not N_type)
+                    _sfreq = EEG.info["sfreq"]
+                    _n_samples = len(EEG.times)
+                    _tmax = event_duration + baseline_length
+                    _samples_before = int(np.abs(baseline_length) * _sfreq)
+                    _samples_after = int(_tmax * _sfreq)
+                    _type_events = events[events[:, -1] == event_labels_lookup[select_event]]
+                    _valid_mask = (_type_events[:, 0] >= _samples_before) & (_type_events[:, 0] <= _n_samples - _samples_after)
+                    ev_vtc   = ev_vtc[_valid_mask]
+                    ev_react = ev_react[_valid_mask]
+                    # remove epochs dropped by artifact rejection
+                    _keep = np.array([len(x) == 0 for x in epochs.drop_log])
+                    ev_vtc   = ev_vtc[_keep]
+                    ev_react = ev_react[_keep]
                 except:
                     print("="*20)
                     print(f"No clean trial found in {key_name}_gradCPT{run_id} ({select_event}).")    
