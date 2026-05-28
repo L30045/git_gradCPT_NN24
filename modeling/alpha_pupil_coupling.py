@@ -224,6 +224,8 @@ for subj_id in SUBJECTS:
             n_troughs=len(t_troughs),
             t_pupil=t_pupil,
             pupil_d=pupil_d,
+            pupil_hf=pupil_hf,
+            alpha_pupil_t=alpha_pupil_t,
             nirs_ev_file=nirs_ev_file,
         )
         print(f'  r={r:.3f} p={p:.2e}  n_peaks={len(t_peaks)}  n_troughs={len(t_troughs)}')
@@ -329,7 +331,85 @@ if all_xcorr and all_lags is not None:
     plt.tight_layout()
     plt.show()
 
+#%% Fig. 1 (D)
+"""
+Mean amplitude of the high-frequency component of the pupil dynamic versus mean alpha power and the corresponding linear fit (red) averaged across all subjects
+"""
+# Epoch both signals into 1 s windows with 25% overlap (Montefusco-Siegmund 2022 methods)
+EP_LEN_S  = 1.0    # epoch duration (s)
+EP_STEP_S = 0.75   # step = 75% of epoch → 25% overlap
+N_DECILES  = 10
+
+all_decile_pupil = []   # one (N_DECILES,) array per run
+all_decile_alpha  = []
+
+for res in run_results.values():
+    t_p   = res['t_pupil']
+    p_hf  = res.get('pupil_hf') if res.get('pupil_hf') is not None \
+            else bandpass_pupil_hf(t_p, res['pupil_d'], PUPIL_HF_BAND)
+    a_env = res.get('alpha_pupil_t')
+    if a_env is None:
+        continue  # re-run the main loop to populate alpha_pupil_t
+
+    dt      = float(np.median(np.diff(t_p)))
+    ep_len  = int(round(EP_LEN_S  / dt))
+    ep_step = int(round(EP_STEP_S / dt))
+
+    p_means, a_means = [], []
+    i = 0
+    while i * ep_step + ep_len <= len(t_p):
+        s = i * ep_step
+        e = s + ep_len
+        p_means.append(np.mean(p_hf[s:e]))
+        a_means.append(np.mean(a_env[s:e]))
+        i += 1
+
+    if len(p_means) < N_DECILES:
+        continue
+
+    p_means = np.array(p_means)
+    a_means = np.array(a_means)
+
+    # assign each epoch to one of N_DECILES bins by pupil amplitude
+    decile_edges = np.percentile(p_means, np.linspace(0, 100, N_DECILES + 1))
+    d_pupil = np.full(N_DECILES, np.nan)
+    d_alpha  = np.full(N_DECILES, np.nan)
+    for d in range(N_DECILES):
+        lo, hi = decile_edges[d], decile_edges[d + 1]
+        mask = (p_means >= lo) & (p_means <= hi) if d == N_DECILES - 1 \
+               else (p_means >= lo) & (p_means < hi)
+        if mask.sum() > 0:
+            d_pupil[d] = np.mean(p_means[mask])
+            d_alpha[d]  = np.mean(a_means[mask])
+
+    all_decile_pupil.append(d_pupil)
+    all_decile_alpha.append(d_alpha)
+
+# group mean across runs (NaN-safe)
+mean_pupil = np.nanmean(all_decile_pupil, axis=0)
+mean_alpha  = np.nanmean(all_decile_alpha, axis=0)
+
+# linear fit and R²
+slope, intercept, r_val, p_val, _ = sp.stats.linregress(mean_pupil, mean_alpha)
+fit_x = np.linspace(mean_pupil.min(), mean_pupil.max(), 200)
+fit_y = slope * fit_x + intercept
+
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.scatter(mean_pupil, mean_alpha, color='k', s=50, zorder=3)
+ax.plot(fit_x, fit_y, color='red', linewidth=2,
+        label=f'R²={r_val**2:.4f}  p={p_val:.3f}')
+ax.set_xlabel('Mean pupil diameter (norm.)')
+ax.set_ylabel('Alpha amplitude (a.u.)')
+ax.set_title('Mean HF pupil amplitude vs mean alpha amplitude\n'
+             '(decile means averaged across all runs)')
+ax.legend(fontsize=9)
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
 #%% Mean pupil diameter in 800 ms post-stimulus window per trial type
+# Discovers all subjects with physio + events files — does NOT require EEG derivatives.
 PUPIL_WINDOW_S = 0.8   # seconds after stimulus onset
 
 CONDITIONS = {
@@ -339,31 +419,56 @@ CONDITIONS = {
     'city_incorrect':lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
 }
 
-# subj_pupil_mean[cond] = list of per-subject mean values (averaged over trials and runs)
+# discover all subjects that have at least one gradCPT physio + events pair
+all_subjects = sorted([d for d in os.listdir(project_path) if d.startswith('sub-')])
+
 from collections import defaultdict
 subj_pupil_mean = {cond: defaultdict(list) for cond in CONDITIONS}
 
-for (subj, run), res in run_results.items():
-    t_p  = res['t_pupil']
-    pd_  = res['pupil_d']
-    evdf = pd.read_csv(res['nirs_ev_file'], sep='\t')
+for subj in all_subjects:
+    subj_id  = subj.replace('sub-', '')
+    subj_nirs = os.path.join(project_path, subj, 'nirs')
+    subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
+    if not os.path.isdir(subj_nirs):
+        continue
 
-    # convert NIRS event onsets → EEG time using the already-known offset
-    # (t_pupil is already in EEG time after alignment in the main loop)
-    eeg_ev_file = os.path.join(EEG_DERIV_DIR, subj,
-        f'{subj}_task-gradCPT_{run}_events.tsv')
-    nirs_first  = evdf['onset'].values[0]
-    eeg_first   = pd.read_csv(eeg_ev_file, sep='\t')['onset'].values[0]
-    t_off       = nirs_first - eeg_first          # nirs_time = eeg_time + t_off
-    onsets_eeg  = evdf['onset'].values - t_off    # trial onsets in EEG time
+    neon_dirs_s = []
+    if os.path.isdir(subj_neon_dir):
+        neon_dirs_s = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
 
-    for cond, selector in CONDITIONS.items():
-        mask_cond = selector(evdf).values
-        for onset_eeg in onsets_eeg[mask_cond]:
-            win_mask = (t_p >= onset_eeg) & (t_p < onset_eeg + PUPIL_WINDOW_S)
-            if win_mask.sum() < 3:
-                continue
-            subj_pupil_mean[cond][subj].append(np.mean(pd_[win_mask]))
+    for run_id in range(1, 4):
+        physio_file  = get_physio_file(subj_nirs, subj_id, run_id)
+        nirs_ev_file = os.path.join(subj_nirs,
+                           f'{subj}_task-gradCPT_run-{run_id:02d}_events.tsv')
+        if not physio_file or not os.path.isfile(nirs_ev_file):
+            continue
+
+        neon_data = pd.read_csv(physio_file, sep='\t')
+        events_df = pd.read_csv(nirs_ev_file, sep='\t')
+
+        rec = None
+        if nr is not None and neon_dirs_s and run_id - 1 < len(neon_dirs_s):
+            try:
+                rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_s[run_id - 1]))
+            except Exception:
+                pass
+
+        # pupil and timestamps stay in NIRS time — same reference as events onsets
+        t_p, pupil_d_s = preprocess_pupil(
+            neon_data, rec=rec, detrend_order=2,
+            is_rm_phasic=False, events_df=events_df
+        )
+        if t_p is None:
+            continue
+        t_p = np.array(t_p)
+
+        for cond, selector in CONDITIONS.items():
+            mask_cond = selector(events_df).values
+            for onset in events_df['onset'].values[mask_cond]:
+                win_mask = (t_p >= onset) & (t_p < onset + PUPIL_WINDOW_S)
+                if win_mask.sum() < 3:
+                    continue
+                subj_pupil_mean[cond][subj].append(np.mean(pupil_d_s[win_mask]))
 
 # Average trials within each subject
 subj_cond_mean = {
@@ -420,8 +525,9 @@ def get_rs_physio_file(subj_nirs, subj_id):
 
 baseline_pupil = {}   # subj → mean RS pupil diameter
 
-for subj_id in SUBJECTS:
-    subj = f'sub-{subj_id}'
+# same dynamic discovery — any subject with an RS physio file
+for subj in all_subjects:
+    subj_id  = subj.replace('sub-', '')
     subj_nirs = os.path.join(project_path, subj, 'nirs')
     rs_file = get_rs_physio_file(subj_nirs, subj_id)
     if rs_file is None:
