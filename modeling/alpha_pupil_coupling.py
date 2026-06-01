@@ -649,3 +649,200 @@ ax.grid(axis='y', alpha=0.3)
 
 plt.tight_layout()
 plt.show()
+
+# %% pupil diameter and alpha power coupling in Resting state
+"""
+This session aims to study the relationship between pupil diameter and alpha power during Resting state.
+
+Pipeline:
+1. Get the subject ID with a resting session.
+2. Load preprocessed EEG file.
+3. Load pupil data
+4. Align EEG and pupil data
+5. Calculate alpha power and mean pupil amplitude
+    5.1. Select only Pz, Oz channels (make the channel selection parameter editable)
+    5.2. Bandpass EEG at 8-12Hz.
+    5.3. Epoch using a 1-second window with a 250ms step.
+    5.4. Calculate alpha amplitude envelope using the Hilbert transform.
+    5.5. Bandpass pupil data at 0.2-1Hz.
+    5.6. Calculate mean pupil amplitude per epoch.
+6. Plot mean amplitude of the high-frequency component of the pupil dynamic versus
+   mean alpha power and the corresponding linear fit (red) averaged across all subjects. (Fig 1D)
+"""
+
+# ── RS-specific parameters ─────────────────────────────────────────────────
+RS_POSTERIOR_CH = ['pz', 'oz']   # editable channel selection
+RS_EP_LEN_S     = 1.0            # epoch window (s)
+RS_EP_STEP_S    = 0.25           # step between epochs (s)  — 250 ms per pipeline spec
+RS_N_DECILES    = 10
+
+
+def get_rest_eeg_fif(eeg_subj_dir, subj_id):
+    """Find RS preprocessed EEG, tolerating naming variations across subjects."""
+    for fname in [
+        f'sub-{subj_id}_task-Rest_run-01_preproc_eeg.fif',
+        f'sub-{subj_id}_task_Rest_run-01_preproc_eeg.fif',   # sub-751
+    ]:
+        path = os.path.join(eeg_subj_dir, fname)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def get_rs_physio_file(subj_nirs, subj_id):
+    """Return the RS eyetracking physio TSV (most-recent version first)."""
+    candidates = [
+        f'sub-{subj_id}_task-RS_run-01_recording-eyetracking_physio_20260423.tsv',
+        f'sub-{subj_id}_task-RS_run-01_recording-eyetracking_physio_20260311_correct_idx.tsv',
+        f'sub-{subj_id}_task-RS_run-01_recording-eyetracking_physio.tsv',
+    ]
+    for fname in candidates:
+        path = os.path.join(subj_nirs, fname)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+# ── Step 1: discover subjects with both RS EEG and RS physio ──────────────
+all_subj_dirs = sorted([d for d in os.listdir(project_path) if d.startswith('sub-')])
+
+rs_subj_data = []   # list of dicts: {subj, p_means, a_means}
+
+for subj in all_subj_dirs:
+    subj_id  = subj.replace('sub-', '')
+    eeg_dir  = os.path.join(EEG_DERIV_DIR, subj)
+    nirs_dir = os.path.join(project_path, subj, 'nirs')
+
+    # Step 1: locate files
+    fif_file    = get_rest_eeg_fif(eeg_dir, subj_id)
+    physio_file = get_rs_physio_file(nirs_dir, subj_id)
+    if not fif_file or not physio_file:
+        continue
+
+    print(f'Processing {subj} RS ...')
+
+    # Step 2: load EEG
+    raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+
+    # Step 5.1–5.4: alpha envelope on posterior channels via Hilbert transform
+    t_eeg, alpha_env = alpha_envelope(raw, RS_POSTERIOR_CH, ALPHA_BAND)
+    if t_eeg is None:
+        print(f'  No posterior channels found, skipping.')
+        continue
+
+    # Step 3: load and preprocess pupil
+    neon_data = pd.read_csv(physio_file, sep='\t')
+
+    # locate the matching Neon recording directory for blink removal
+    subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
+    neon_dirs_rs  = sorted([d for d in os.listdir(subj_neon_dir)
+                            if re.match(r'\d{4}-', d)]) if os.path.isdir(subj_neon_dir) else []
+    snirf_files_rs = sorted([f for f in os.listdir(nirs_dir) if f.endswith('.snirf')])
+    rs_snirf_name  = f'sub-{subj_id}_task-RS_run-01_nirs.snirf'
+    neon_idx_rs    = snirf_files_rs.index(rs_snirf_name) if rs_snirf_name in snirf_files_rs else 0
+
+    rec = None
+    if nr is not None and neon_dirs_rs and neon_idx_rs < len(neon_dirs_rs):
+        try:
+            rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_rs[neon_idx_rs]))
+        except Exception:
+            pass
+
+    t_pupil_nirs, pupil_d = preprocess_pupil(
+        neon_data, rec=rec, detrend_order=None,
+        is_rm_phasic=False, events_df=None
+    )
+    if t_pupil_nirs is None:
+        print(f'  Too much missing pupil data, skipping.')
+        continue
+
+    # z-score pupil diameter within subject
+    pupil_d = (pupil_d - np.nanmean(pupil_d)) / (np.nanstd(pupil_d) + 1e-30)
+
+    # Step 4: align — both recordings start simultaneously; shift pupil to t=0
+    t_pupil = np.array(t_pupil_nirs) - float(np.array(t_pupil_nirs).min())
+
+    mask = (t_pupil >= t_eeg[0]) & (t_pupil <= t_eeg[-1])
+    t_pupil = t_pupil[mask]
+    pupil_d = pupil_d[mask]
+    if len(t_pupil) < 200:
+        print(f'  Too little overlapping data, skipping.')
+        continue
+
+    # Step 5.5: high-frequency pupil component (0.2–1 Hz)
+    pupil_hf = bandpass_pupil_hf(t_pupil, pupil_d, PUPIL_HF_BAND)
+
+    # Interpolate alpha envelope onto pupil time grid
+    alpha_on_pupil = np.interp(t_pupil, t_eeg, alpha_env)
+
+    # Step 5.3–5.5: epoch both signals (1 s window, 250 ms step)
+    dt      = float(np.median(np.diff(t_pupil)))
+    ep_len  = int(round(RS_EP_LEN_S  / dt))
+    ep_step = int(round(RS_EP_STEP_S / dt))
+
+    p_means, a_means = [], []
+    i = 0
+    while i * ep_step + ep_len <= len(t_pupil):
+        s = i * ep_step
+        e = s + ep_len
+        p_means.append(np.mean(pupil_hf[s:e]))
+        a_means.append(np.mean(alpha_on_pupil[s:e]))
+        i += 1
+
+    p_means = np.array(p_means)
+    a_means = np.array(a_means)
+
+    # reject epochs with mean alpha power > 1e-4 (likely artifacts)
+    keep = a_means <= 1e-4
+    n_rejected = (~keep).sum()
+    p_means = p_means[keep]
+    a_means = a_means[keep]
+
+    if len(p_means) < 2:
+        print(f'  Too few epochs after rejection ({len(p_means)}), skipping.')
+        continue
+
+    rs_subj_data.append(dict(
+        subj=subj,
+        p_means=p_means,
+        a_means=a_means,
+    ))
+    print(f'  {len(p_means)} epochs kept, {n_rejected} rejected')
+
+# ── Step 6: Fig 1D — one subplot per subject ─────────────────────────────
+if not rs_subj_data:
+    print('No RS subjects could be processed.')
+else:
+    n_subj = len(rs_subj_data)
+    n_cols = int(np.ceil(np.sqrt(n_subj)))
+    n_rows = int(np.ceil(n_subj / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4 * n_cols, 4 * n_rows),
+                             squeeze=False)
+
+    for idx, res in enumerate(rs_subj_data):
+        ax = axes[idx // n_cols][idx % n_cols]
+        p  = res['p_means']
+        a  = res['a_means']
+
+        slope, intercept, r_val, p_val, _ = sp.stats.linregress(p, a)
+        fit_x = np.linspace(p.min(), p.max(), 200)
+
+        ax.scatter(p, a, color='k', s=8, alpha=0.5, zorder=2)
+        ax.plot(fit_x, slope * fit_x + intercept, color='red', linewidth=1.5, zorder=3)
+        ax.set_title(f"{res['subj']}\nR²={r_val**2:.3f}  p={p_val:.3f}", fontsize=9)
+        ax.set_xlabel('Mean pupil HF amp.', fontsize=8)
+        ax.set_ylabel('Mean alpha amp.', fontsize=8)
+        ax.set_xlim(-1.5, 1.5)
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.3)
+
+    for idx in range(n_subj, n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].set_visible(False)
+
+    fig.suptitle('Fig 1D — HF pupil amplitude vs alpha amplitude per epoch\n'
+                 f'Resting State  (N={n_subj} subjects, 1 dot = 1 epoch)',
+                 fontsize=11)
+    plt.tight_layout()
+    plt.show()
