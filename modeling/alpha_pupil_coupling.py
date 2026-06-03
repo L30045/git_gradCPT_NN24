@@ -32,6 +32,22 @@ EPOCH_TMIN = -1.0             # seconds before peak/trough
 EPOCH_TMAX = 1.0              # seconds after peak/trough
 XCORR_LAG_S = 1.0             # ±lag shown in cross-correlation plot
 
+# Trial type filter for the gradCPT coupling analysis.
+# Set to None to use all trials (full continuous signal).
+# Each entry: (trial_type value, response_code condition)
+#   city_correct:   trial_type='city', response_code != 0
+#   city_incorrect: trial_type='city', response_code == 0
+#   mnt_correct:    trial_type='mnt',  response_code == 0
+#   mnt_incorrect:  trial_type='mnt',  response_code != 0
+TRIAL_TYPE = 'city_correct'
+
+TRIAL_FILTERS = {
+    'city_correct':   lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 0),
+    'city_incorrect': lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
+    'mnt_correct':    lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] == 0),
+    'mnt_incorrect':  lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] != 0),
+}
+
 #%% Helper functions
 
 def get_eeg_fif(eeg_subj_dir, subj_id, run_id):
@@ -198,6 +214,22 @@ for subj_id in SUBJECTS:
         # ── Interpolate alpha envelope onto pupil time grid ────────────────
         alpha_pupil_t = np.interp(t_pupil, t_eeg, alpha_env)
 
+        # ── Restrict to selected trial-type windows ───────────────────────
+        if TRIAL_TYPE is not None and TRIAL_TYPE in TRIAL_FILTERS:
+            sel_events = events_df[TRIAL_FILTERS[TRIAL_TYPE](events_df)]
+            trial_mask = np.zeros(len(t_pupil), dtype=bool)
+            for _, row in sel_events.iterrows():
+                t_on  = row['onset'] - t_offset        # convert to EEG time
+                t_off = t_on + row['duration']
+                trial_mask |= (t_pupil >= t_on) & (t_pupil <= t_off)
+            t_pupil      = t_pupil[trial_mask]
+            pupil_hf     = pupil_hf[trial_mask]
+            alpha_pupil_t = alpha_pupil_t[trial_mask]
+            if len(t_pupil) < 200:
+                print(f'  Too few samples after {TRIAL_TYPE} filter, skipping.')
+                continue
+            print(f'  {TRIAL_TYPE}: {len(sel_events)} trials, {trial_mask.sum()} samples kept')
+
         # ── Pearson correlation (whole run) ───────────────────────────────
         r, p = sp.stats.pearsonr(alpha_pupil_t, pupil_hf)
 
@@ -331,6 +363,92 @@ if all_xcorr and all_lags is not None:
     ax.grid(alpha=0.3)
     plt.tight_layout()
     plt.show()
+
+#%% Fig. 2B — mean power spectrum at pupil peaks vs troughs
+"""
+Average power spectrum of parietal–occipital electrodes for 2 s epochs centered at
+pupil diameter peaks (light green) and troughs (dark green), mean ± SEM across runs.
+"""
+EP2B_HALF_S = 1.0        # ±1 s around each peak/trough → 2 s epoch
+FREQ_MAX    = 30         # Hz, upper limit for display
+
+peak_spectra, trough_spectra, freqs_ref = [], [], None
+
+for (subj, run), res in run_results.items():
+    subj_id = subj.replace('sub-', '')
+    run_id  = int(run.replace('run-', '').lstrip('0') or '0')
+    fif_file = get_eeg_fif(os.path.join(EEG_DERIV_DIR, subj), subj_id, run_id)
+    if not fif_file:
+        continue
+
+    raw2b = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+    sfreq  = raw2b.info['sfreq']
+    avail  = [c for c in POSTERIOR_CH if c in raw2b.ch_names]
+    if not avail:
+        continue
+    eeg_data = raw2b.copy().pick(avail).get_data()   # (n_ch, n_times)
+    eeg_data = eeg_data*1e6 # change unit from V to muV
+    t_eeg2b  = raw2b.times
+
+    # find pupil peak / trough times from stored HF pupil
+    peak_idx, trough_idx = find_peaks_troughs(res['pupil_hf'], res['t_pupil'], PEAK_MIN_DIST_S)
+    t_peaks   = res['t_pupil'][peak_idx]
+    t_troughs = res['t_pupil'][trough_idx]
+
+    half_n = int(EP2B_HALF_S * sfreq)
+    win    = np.hanning(2 * half_n)
+    n_fft  = 2 * half_n
+    freqs  = np.fft.rfftfreq(n_fft, d=1.0 / sfreq)
+    freq_mask = freqs <= FREQ_MAX
+
+    if freqs_ref is None:
+        freqs_ref = freqs[freq_mask]
+
+    def _epoch_spectra(event_times):
+        spectra = []
+        for t_ev in event_times:
+            i_center = int(np.argmin(np.abs(t_eeg2b - t_ev)))
+            i_start  = i_center - half_n
+            i_end    = i_center + half_n
+            if i_start < 0 or i_end > eeg_data.shape[1]:
+                continue
+            ep  = eeg_data[:, i_start:i_end] * win[np.newaxis, :]  # (n_ch, n_samp)
+            psd = (np.abs(np.fft.rfft(ep, axis=1)) ** 2) / (sfreq * (win ** 2).sum())
+            spectra.append(psd[:, freq_mask].mean(axis=0))          # mean over channels
+        return spectra
+
+    pk_spec = _epoch_spectra(t_peaks)
+    tr_spec = _epoch_spectra(t_troughs)
+    if pk_spec:
+        peak_spectra.append(np.mean(pk_spec, axis=0))
+    if tr_spec:
+        trough_spectra.append(np.mean(tr_spec, axis=0))
+
+if peak_spectra and trough_spectra and freqs_ref is not None:
+    arr_pk = np.array(peak_spectra)
+    arr_tr = np.array(trough_spectra)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for arr, label, color in [(arr_pk, 'Pupil peak', '#90EE90'),
+                               (arr_tr, 'Pupil trough', '#006400')]:
+        mean = arr.mean(axis=0)
+        sem  = arr.std(axis=0) / np.sqrt(len(arr))
+        ax.plot(freqs_ref, mean, color=color, linewidth=1.8,
+                label=f'{label} (N={len(arr)})')
+        ax.fill_between(freqs_ref, mean - sem, mean + sem,
+                        alpha=0.25, color=color)
+    ax.set_xlabel('Frequency (Hz)', fontsize=10)
+    ax.set_ylabel('Power (µV²)', fontsize=10)
+    ax.set_yscale('log')
+    ax.set_xlim(0, FREQ_MAX)
+    ax.set_title('Fig 2B — Power spectrum at pupil peaks vs troughs\n'
+                 f'Parietal–occipital channels  (mean ± SEM, {TRIAL_TYPE or "all trials"})',
+                 fontsize=10)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
 
 #%% Fig. 1 (D)
 """
@@ -985,3 +1103,52 @@ if rs_subj_data:
                  fontsize=11)
     plt.tight_layout()
     plt.show()
+
+# ── Cross-subject summary: 10 bins along normalised pupil diameter ─────────
+if rs_subj_data:
+    N_BINS = 10
+    bin_edges = np.linspace(-1.5, 1.5, N_BINS + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # collect per-subject bin means, then average across subjects
+    all_bin_alpha = []
+    for res in rs_subj_data:
+        p = res['p_means']
+        a = res['a_means']
+        bin_alpha = np.full(N_BINS, np.nan)
+        for b in range(N_BINS):
+            in_bin = (p >= bin_edges[b]) & (p < bin_edges[b + 1])
+            if in_bin.sum() > 0:
+                bin_alpha[b] = np.mean(a[in_bin])
+        all_bin_alpha.append(bin_alpha)
+
+    all_bin_alpha = np.array(all_bin_alpha)          # (n_subj, N_BINS)
+    mean_alpha    = np.nanmean(all_bin_alpha, axis=0)
+    sem_alpha     = np.nanstd(all_bin_alpha, axis=0) / np.sqrt(
+                        np.sum(~np.isnan(all_bin_alpha), axis=0))
+
+    # only plot bins covered by at least 2 subjects
+    valid = np.sum(~np.isnan(all_bin_alpha), axis=0) >= 2
+    x = bin_centers[valid]
+    y = mean_alpha[valid]
+    e = sem_alpha[valid]
+
+    slope, intercept, r_val, p_val, _ = sp.stats.linregress(x, y)
+    fit_x = np.linspace(x.min(), x.max(), 200)
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.errorbar(x, y, yerr=e, fmt='ko', markersize=6, capsize=4,
+                elinewidth=1.2, zorder=3, label='Mean ± SEM across subjects')
+    ax.plot(fit_x, slope * fit_x + intercept, color='red', linewidth=2,
+            label=f'R²={r_val**2:.3f}  p={p_val:.3f}')
+    ax.set_xlabel('Mean pupil HF amplitude (z-scored, binned)', fontsize=10)
+    ax.set_ylabel('Mean alpha amplitude (a.u.)', fontsize=10)
+    ax.set_title(f'Fig 1D — Cross-subject summary\n'
+                 f'Resting State  (N={len(rs_subj_data)} subjects, {N_BINS} bins)',
+                 fontsize=10)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+# %%
