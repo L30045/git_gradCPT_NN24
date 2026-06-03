@@ -9,6 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import mne
 import re
+from scipy.ndimage import gaussian_filter1d
 
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
@@ -652,28 +653,85 @@ plt.show()
 
 # %% pupil diameter and alpha power coupling in Resting state
 """
-This session aims to study the relationship between pupil diameter and alpha power during Resting state.
+Reproduction of Montefusco-Siegmund et al. (2022) Figure 1D:
+  "Mean amplitude of the high-frequency component of the pupil dynamic versus
+   mean alpha power and the corresponding linear fit (red) averaged across all subjects."
 
-Pipeline:
-1. Get the subject ID with a resting session.
-2. Load preprocessed EEG file.
-3. Load pupil data
-4. Align EEG and pupil data
-5. Calculate alpha power and mean pupil amplitude
-    5.1. Select only Pz, Oz channels (make the channel selection parameter editable)
-    5.2. Bandpass EEG at 8-12Hz.
-    5.3. Epoch using a 1-second window with a 250ms step.
-    5.4. Calculate alpha amplitude envelope using the Hilbert transform.
-    5.5. Bandpass pupil data at 0.2-1Hz.
-    5.6. Calculate mean pupil amplitude per epoch.
-6. Plot mean amplitude of the high-frequency component of the pupil dynamic versus
-   mean alpha power and the corresponding linear fit (red) averaged across all subjects. (Fig 1D)
+Pipeline
+--------
+1. Discover subjects
+   - Find all subjects that have both:
+       (a) a preprocessed resting-state EEG file
+           sub-<id>_task-Rest_run-01_preproc_eeg.fif  (in derivatives/eeg/)
+       (b) a resting-state eyetracking physio file
+           sub-<id>_task-RS_run-01_recording-eyetracking_physio_20260423.tsv  (in <subj>/nirs/)
+
+2. Load preprocessed EEG
+   - Read the fif file with mne.io.read_raw_fif (preload=True).
+
+3. Extract alpha envelope  (Pz, Oz channels; editable via RS_POSTERIOR_CH)
+   - Bandpass filter EEG at 8–12 Hz (FIR).
+   - Apply the Hilbert transform → instantaneous amplitude envelope.
+   - Average envelope across selected channels.
+
+4. Load and preprocess pupil data
+   - Load the BIDS eyetracking physio TSV.
+   - Open the matching Neon recording directory (sorted snirf index → sorted neon dir index)
+     to obtain blink timestamps for interpolation.
+   - Call preprocess_pupil():
+       • Interpolate blink periods (linear interpolation over ±16 ms windows).
+       • Polynomial detrend (order controlled by detrend_order parameter).
+       • Lowpass filter and downsample to 60 Hz.
+   - Z-score pupil diameter within subject (zero mean, unit variance).
+
+5. Align EEG and pupil timelines
+   - No task events exist for the resting state; both modalities start simultaneously.
+   - Shift pupil timestamps so t = 0 matches the start of the recording
+     (t_pupil = t_pupil_nirs − min(t_pupil_nirs)).
+   - Restrict to the EEG time range.
+
+6. Compute per-epoch features  (window = 1 s, step = 250 ms)
+   - Bandpass-filter pupil at 0.2–1 Hz (high-frequency component; Butterworth order 4).
+   - Epoch both the alpha envelope and the HF pupil signal using the same sliding window.
+   - Per epoch: compute mean alpha amplitude and mean HF pupil amplitude.
+   - Reject epochs whose mean alpha amplitude > 1e-4 (artifact threshold).
+
+7. Plot Fig 1D — one subplot per subject
+   - Each dot represents one epoch (x = mean HF pupil amplitude, y = mean alpha amplitude).
+   - Overlay a red linear fit (scipy.stats.linregress); report R² and p in the subplot title.
+   - x-axis fixed to [−1.5, 1.5] (z-scored pupil units) for comparability across subjects.
+
+Differences from Montefusco-Siegmund et al. (2022)
+----------------------------------------------------
+- EEG channels: the original study used 8 posterior channels (P3, Pz, PO3, O1, Oz, O2,
+  PO4, P4) from a 32-electrode BioSemi ActiveTwo system. This dataset has only 2 posterior
+  channels available (Pz, Oz), so the alpha envelope is averaged over those two only.
+
+- Recording duration: the original study limited recordings to 60 s to avoid hippus. This
+  dataset's resting-state sessions are ~6 minutes long. The longer duration provides more
+  epochs but may introduce slow pupil oscillations (hippus) that were intentionally excluded
+  in the original study.
+
+- Visualization: the original Fig 1D shows a single scatter plot of 10 decile means averaged
+  across all 16 subjects with one red linear fit. Here each subject is shown in a separate
+  subplot with epoch-level dots, making individual variability visible rather than collapsing
+  it into a group summary.
+
+- Pupil normalization: the original study normalized pupil diameter by referencing to the
+  whole recording mean (dividing by the session mean). Here a z-score (zero mean, unit
+  variance) is applied within each subject, which additionally accounts for between-subject
+  differences in pupil diameter variance.
+
+- Blink interpolation: the original study used a MATLAB smooth function (robust local
+  regression, 0.1% window) after linear interpolation. Here blink periods are detected from
+  the Pupil Labs Neon blink timestamps and linearly interpolated; a Butterworth lowpass
+  filter is then applied at 30 Hz rather than MATLAB's robust regression smoother.
 """
 
 # ── RS-specific parameters ─────────────────────────────────────────────────
 RS_POSTERIOR_CH = ['pz', 'oz']   # editable channel selection
 RS_EP_LEN_S     = 1.0            # epoch window (s)
-RS_EP_STEP_S    = 0.25           # step between epochs (s)  — 250 ms per pipeline spec
+RS_EP_STEP_S    = 0.75           # step between epochs (s)  — 250 ms per pipeline spec
 RS_N_DECILES    = 10
 
 
@@ -719,10 +777,26 @@ for subj in all_subj_dirs:
     if not fif_file or not physio_file:
         continue
 
-    print(f'Processing {subj} RS ...')
+    physio_tmp = pd.read_csv(physio_file, sep='\t')
+    duration_min_physio = (physio_tmp['timestamps'].max() - physio_tmp['timestamps'].min()) / 60
+    print(f'Processing {subj} RS ...  duration={duration_min_physio:.2f} min')
 
-    # Step 2: load EEG
+    # Step 2: load EEG and find trigger onset in EEG time
     raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+
+    eeg_trigger_t = None
+    if 'Trigger' in raw.ch_names:
+        trig_data = raw.copy().pick('Trigger').get_data()[0]
+        thresh    = trig_data.max() / 2
+        crossings = np.where((trig_data[:-1] < thresh) & (trig_data[1:] >= thresh))[0]
+        if len(crossings):
+            eeg_trigger_t = float(raw.times[crossings[0]])
+            print(f'  EEG trigger: {len(crossings)} crossing(s), '
+                  f'first at t={eeg_trigger_t:.3f} s (EEG time)')
+        else:
+            print(f'  EEG trigger: Trigger channel present but no crossing found')
+    else:
+        print(f'  EEG trigger: no Trigger channel in raw')
 
     # Step 5.1–5.4: alpha envelope on posterior channels via Hilbert transform
     t_eeg, alpha_env = alpha_envelope(raw, RS_POSTERIOR_CH, ALPHA_BAND)
@@ -740,6 +814,25 @@ for subj in all_subj_dirs:
     snirf_files_rs = sorted([f for f in os.listdir(nirs_dir) if f.endswith('.snirf')])
     rs_snirf_name  = f'sub-{subj_id}_task-RS_run-01_nirs.snirf'
     neon_idx_rs    = snirf_files_rs.index(rs_snirf_name) if rs_snirf_name in snirf_files_rs else 0
+
+    # load RS snirf and check for trigger in the digital aux channel
+    rs_snirf_path = os.path.join(nirs_dir, rs_snirf_name)
+    rs_onset_nirs = None
+    if os.path.isfile(rs_snirf_path):
+        import h5py
+        with h5py.File(rs_snirf_path, 'r') as sf:
+            try:
+                digital = sf['nirs/aux1/dataTimeSeries'][()].flatten()
+                t_aux   = sf['nirs/aux1/time'][()]
+                onsets  = np.where(np.diff(digital) > 0)[0]
+                if len(onsets):
+                    rs_onset_nirs = float(t_aux[onsets[0]])
+                    print(f'  RS trigger: {len(onsets)} onset(s) found, '
+                          f'first at {rs_onset_nirs:.3f} s (NIRS time)')
+                else:
+                    print(f'  RS trigger: digital channel present but no onset found')
+            except KeyError:
+                print(f'  RS trigger: no digital aux channel in snirf')
 
     rec = None
     if nr is not None and neon_dirs_rs and neon_idx_rs < len(neon_dirs_rs):
@@ -759,8 +852,13 @@ for subj in all_subj_dirs:
     # z-score pupil diameter within subject
     pupil_d = (pupil_d - np.nanmean(pupil_d)) / (np.nanstd(pupil_d) + 1e-30)
 
-    # Step 4: align — both recordings start simultaneously; shift pupil to t=0
-    t_pupil = np.array(t_pupil_nirs) - float(np.array(t_pupil_nirs).min())
+    # Step 4: align using trigger — skip if either trigger is missing
+    if rs_onset_nirs is None or eeg_trigger_t is None:
+        print(f'  Missing trigger (NIRS={rs_onset_nirs}, EEG={eeg_trigger_t}), skipping.')
+        continue
+
+    # t_pupil_eeg = t_pupil_nirs - rs_onset_nirs + eeg_trigger_t
+    t_pupil = np.array(t_pupil_nirs) - rs_onset_nirs + eeg_trigger_t
 
     mask = (t_pupil >= t_eeg[0]) & (t_pupil <= t_eeg[-1])
     t_pupil = t_pupil[mask]
@@ -780,17 +878,26 @@ for subj in all_subj_dirs:
     ep_len  = int(round(RS_EP_LEN_S  / dt))
     ep_step = int(round(RS_EP_STEP_S / dt))
 
-    p_means, a_means = [], []
+    p_means, a_means, ep_t_centers = [], [], []
     i = 0
     while i * ep_step + ep_len <= len(t_pupil):
         s = i * ep_step
         e = s + ep_len
+        t_center = t_pupil[s + ep_len // 2]
         p_means.append(np.mean(pupil_hf[s:e]))
         a_means.append(np.mean(alpha_on_pupil[s:e]))
+        ep_t_centers.append(t_center)
         i += 1
 
-    p_means = np.array(p_means)
-    a_means = np.array(a_means)
+    p_means     = np.array(p_means)
+    a_means     = np.array(a_means)
+    ep_t_centers = np.array(ep_t_centers)
+
+    # discard epochs in the first and last 30 s of the session
+    edge_mask = (ep_t_centers >= 30.0) & (ep_t_centers <= t_pupil[-1] - 30.0)
+    p_means   = p_means[edge_mask]
+    a_means   = a_means[edge_mask]
+    print(f'  {(~edge_mask).sum()} edge epochs discarded (first/last 30 s)')
 
     # reject epochs with mean alpha power > 1e-4 (likely artifacts)
     keep = a_means <= 1e-4
@@ -802,10 +909,16 @@ for subj in all_subj_dirs:
         print(f'  Too few epochs after rejection ({len(p_means)}), skipping.')
         continue
 
+    # use actual aligned/clipped duration rather than raw physio length
+    duration_min_actual = (t_pupil[-1] - t_pupil[0]) / 60
+
     rs_subj_data.append(dict(
         subj=subj,
         p_means=p_means,
         a_means=a_means,
+        duration_min=duration_min_actual,
+        t_pupil=t_pupil,
+        pupil_hf=pupil_hf,
     ))
     print(f'  {len(p_means)} epochs kept, {n_rejected} rejected')
 
@@ -831,7 +944,8 @@ else:
 
         ax.scatter(p, a, color='k', s=8, alpha=0.5, zorder=2)
         ax.plot(fit_x, slope * fit_x + intercept, color='red', linewidth=1.5, zorder=3)
-        ax.set_title(f"{res['subj']}\nR²={r_val**2:.3f}  p={p_val:.3f}", fontsize=9)
+        ax.set_title(f"{res['subj']}  (duration_actual={res['duration_min']:.1f} min)\n"
+                     f"R²={r_val**2:.3f}  p={p_val:.3f}", fontsize=9)
         ax.set_xlabel('Mean pupil HF amp.', fontsize=8)
         ax.set_ylabel('Mean alpha amp.', fontsize=8)
         ax.set_xlim(-1.5, 1.5)
@@ -843,6 +957,31 @@ else:
 
     fig.suptitle('Fig 1D — HF pupil amplitude vs alpha amplitude per epoch\n'
                  f'Resting State  (N={n_subj} subjects, 1 dot = 1 epoch)',
+                 fontsize=11)
+    plt.tight_layout()
+    plt.show()
+
+# ── HF pupil time series — 3×3 grid ──────────────────────────────────────
+if rs_subj_data:
+    fig, axes = plt.subplots(3, 3, figsize=(15, 9), squeeze=False)
+
+    for idx in range(9):
+        ax = axes[idx // 3][idx % 3]
+        if idx < len(rs_subj_data):
+            res  = rs_subj_data[idx]
+            t_s  = res['t_pupil']
+            mask = (t_s >= 30.0) & (t_s <= t_s[-1] - 30.0)
+            pupil_smooth = gaussian_filter1d(res['pupil_hf'], sigma=200)
+            ax.plot(t_s[mask]/60, pupil_smooth[mask], color='steelblue', linewidth=0.6)
+            ax.set_title(f"{res['subj']}  (duration_actual={res['duration_min']:.1f} min)", fontsize=9)
+            ax.set_xlabel('Time (min)', fontsize=8)
+            ax.set_ylabel('Pupil HF (z)', fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.3)
+        else:
+            ax.set_visible(False)
+
+    fig.suptitle('High-frequency pupil signal (0.2–1 Hz, z-scored) — Resting State',
                  fontsize=11)
     plt.tight_layout()
     plt.show()
