@@ -37,7 +37,11 @@ for d in analysis_dirs.values():
     os.makedirs(d, exist_ok=True)
 
 #%% preprocessing parameter setting
-subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733, 746, 751, 755]
+subj_id_array = sorted([
+    int(d.split('-')[1])
+    for d in os.listdir(data_save_path)
+    if d.startswith('sub-') and os.path.isdir(os.path.join(data_save_path, d))
+])
 
 ch_names = ['fz', 'cz', 'pz', 'oz']
 split_zone_crit = 'vtc'
@@ -73,12 +77,14 @@ time_window_duration_inout = 0.25
 time_window_step_inout = 0.1
 
 #%% load preprocessed EEG for all subjects
+excluded_subjects = {}  # key: "sub-xxx", value: reason string
 subj_EEG_dict = dict()
 rm_ch_dict = dict()
 for subj_id in tqdm(subj_id_array):
     gz_path = os.path.join(data_save_path, f"sub-{subj_id}", f"sub-{subj_id}_preprocessed_dict.pkl.gz")
     if not os.path.exists(gz_path):
         print(f"sub-{subj_id}: preprocessed dict not found at {gz_path}, skipping.")
+        excluded_subjects[f"sub-{subj_id}"] = "Preprocessed data file (.pkl.gz) not found"
         continue
     with gzip.open(gz_path, 'rb') as f:
         _payload = pickle.load(f)
@@ -107,20 +113,28 @@ for key_name in tqdm(subj_epoch_dict.keys()):
     # 1.  Combine epochs across runs and build zone labels
     # ------------------------------------------------------------------ #
     # compute per-subject threshold (median of VTC or RT across all runs/events)
+    avail_runs = list(subj_epoch_dict[key_name].keys())
     match split_zone_crit:
         case 'vtc':
-            all_vals = np.concatenate([subj_vtc_dict[key_name][f"run{run_id:02d}"][ev]
-                                       for run_id in range(1, 4)
-                                       for ev in event_labels_lookup.keys()
-                                       if not ev.endswith("_response")
-                                       and len(subj_vtc_dict[key_name][f"run{run_id:02d}"][ev]) > 0])
+            all_vals_list = [subj_vtc_dict[key_name][run][ev]
+                             for run in avail_runs
+                             for ev in event_labels_lookup.keys()
+                             if not ev.endswith("_response")
+                             and len(subj_vtc_dict[key_name][run][ev]) > 0]
         case 'react':
-            all_vals = np.concatenate([subj_react_dict[key_name][f"run{run_id:02d}"][ev]
-                                       for run_id in range(1, 4)
-                                       for ev in event_labels_lookup.keys()
-                                       if not ev.endswith("_response")
-                                       and len(subj_react_dict[key_name][f"run{run_id:02d}"][ev]) > 0])
-    subj_thres = np.median(all_vals)
+            all_vals_list = [subj_react_dict[key_name][run][ev]
+                             for run in avail_runs
+                             for ev in event_labels_lookup.keys()
+                             if not ev.endswith("_response")
+                             and len(subj_react_dict[key_name][run][ev]) > 0]
+    if len(all_vals_list) == 0:
+        print(f"  No valid trials found for {key_name}, skipping.")
+        excluded_subjects[key_name] = (
+            f"No valid non-response trials found after epoching "
+            f"(available runs: {avail_runs}; split criterion: {split_zone_crit})"
+        )
+        continue
+    subj_thres = np.median(np.concatenate(all_vals_list))
 
     # combine runs -> one epoch object per (event, channel)
     epoch_dict = {ev: {ch: [] for ch in ch_names} for ev in event_labels_lookup.keys()}
@@ -133,10 +147,10 @@ for key_name in tqdm(subj_epoch_dict.keys()):
         tmp_vtc_list   = []
         tmp_react_list = []
         tmp_zone_list  = []
-        for run_id in np.arange(1, 4):
-            loc_e = subj_epoch_dict[key_name][f"run{run_id:02d}"][select_event]
-            loc_v = subj_vtc_dict[key_name][f"run{run_id:02d}"][select_event]
-            loc_r = subj_react_dict[key_name][f"run{run_id:02d}"][select_event]
+        for run in avail_runs:
+            loc_e = subj_epoch_dict[key_name][run][select_event]
+            loc_v = subj_vtc_dict[key_name][run][select_event]
+            loc_r = subj_react_dict[key_name][run][select_event]
             if len(loc_e) > 0:
                 tmp_epoch_list.append(loc_e)
                 tmp_vtc_list.append(loc_v)
@@ -421,3 +435,17 @@ for key_name in tqdm(subj_epoch_dict.keys()):
     print(f"  Saved all figures for {key_name}")
 
 print("\nAll subjects processed. Results saved in:", results_root)
+
+#%% write exclusion log
+import datetime
+log_path = os.path.join(results_root, "excluded_subjects.txt")
+with open(log_path, 'w') as f:
+    f.write(f"Exclusion log — generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"Split criterion: {split_zone_crit}\n")
+    f.write("=" * 60 + "\n\n")
+    if excluded_subjects:
+        for subj, reason in sorted(excluded_subjects.items()):
+            f.write(f"{subj}\n  Reason: {reason}\n\n")
+    else:
+        f.write("No subjects excluded.\n")
+print(f"Exclusion log saved to: {log_path}")
