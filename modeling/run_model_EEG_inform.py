@@ -20,6 +20,7 @@ import re
 
 #%% select model type
 model_type='full_noEEG_rejected_ttest'
+is_overwrite = False # If True, force re-training GLM.
 
 #%% find subjects with fNIRS and enough EEG epochs
 _project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
@@ -72,9 +73,17 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 
 #%% start training GLM for each subject each channel
 for subj_id in tqdm(subj_id_array):
+    save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
+    pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}.pkl')
+    if not is_overwrite and os.path.exists(pkl_path):
+        print(f"Skipping sub-{subj_id}: output already exists.")
+        continue
     print(f"Start processing sub-{subj_id}")
     # load HbO
     hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+    if not os.path.exists(hbo_file):
+        print(f"Skipping sub-{subj_id}: HbO file not found.")
+        continue
     with gzip.open(hbo_file, 'rb') as f:
         results = pickle.load(f)
 
@@ -360,6 +369,7 @@ for subj_id in tqdm(subj_id_array):
         pickle.dump(result_dict,f)
     # with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
     #     pickle.dump(result_dict,f)
+print("All trainings completed.")
 
 #%% Sanity check
 # subj_id = 695
