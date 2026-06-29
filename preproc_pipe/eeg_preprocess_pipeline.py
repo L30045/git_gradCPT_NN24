@@ -15,8 +15,6 @@ import gzip
 import glob
 import time
 import sys
-from spectral_connectivity import Multitaper, Connectivity
-from spectral_connectivity.transforms import prepare_time_series
 
 #%% preprocessing parameter setting
 # subj_id_array = [670, 671, 673, 695]
@@ -147,7 +145,11 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         # Step 0 – raw ────────────────────────────────────────────────────────
         eeg_trigger = EEG_raw.get_data()[4]
         thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
-        eeg_duration = np.max(np.diff(np.where(eeg_trigger < thres_trigger)[0])) / EEG_raw.info["sfreq"] / 60
+        # check if the trigger goes to 0V or -0.9V when being pressed
+        press_period = eeg_trigger < thres_trigger
+        if np.sum(press_period) > np.sum(~press_period):
+            press_period = ~press_period
+        eeg_duration = np.max(np.diff(np.where(press_period)[0])) / EEG_raw.info["sfreq"] / 60
         print(f"  Valid recording length: {eeg_duration:.1f} min")
 
         _savefig(_make_psd_fig(EEG_raw, ch_names, f"{prefix} – Raw PSD"),
@@ -252,6 +254,16 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         _savefig(_make_timeseries_fig(EEG_step4, ch_names, f"{prefix} – Post-ICA time series"),
                  save_dir, f"{prefix}_step4_ICA_timeseries.png")
 
+        # save preprocessed EEG as .fif
+        fif_dir = os.path.join(data_save_path, f"sub-{vis_subj_id}")
+        os.makedirs(fif_dir, exist_ok=True)
+        fif_path = os.path.join(fif_dir, f"sub-{vis_subj_id}_task-gradCPT_{run_label}_preproc_eeg.fif")
+        if is_overwrite or not os.path.exists(fif_path):
+            EEG_step4.save(fif_path, overwrite=True, verbose=False)
+            print(f"  Saved preprocessed EEG → {fif_path}")
+        else:
+            print(f"  Preprocessed EEG already exists, skipping: {fif_path}")
+
         print(f"  Saved to {save_dir}")
 
         # accumulate per-run results (key format matches eeg_preproc_subj_level output)
@@ -296,7 +308,7 @@ for _sid, _n, _runs in _with_eeg:
 print(f"\nSubjects without EEG folder: {_without_eeg}")
 
 #%% preprocess single subject — all gradCPT runs
-subj_id = 670
+subj_id = 765
 
 _raw_eeg_path = os.path.join(data_path, f"sub-{subj_id}", "eeg")
 _save_dir     = os.path.join(data_save_path, f"sub-{subj_id}")
@@ -343,7 +355,11 @@ for _vhdr_file in _vhdr_files:
     EEG_raw = fix_and_load_brainvision(os.path.join(_raw_eeg_path, _vhdr_file))
     eeg_trigger = EEG_raw.get_data()[4]
     thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
-    eeg_duration = np.max(np.diff(np.where(eeg_trigger < thres_trigger)[0])) / EEG_raw.info["sfreq"] / 60
+    # check if the trigger goes to 0V or -0.9V when being pressed
+    press_period = eeg_trigger < thres_trigger
+    if np.sum(press_period) > np.sum(~press_period):
+        press_period = ~press_period
+    eeg_duration = np.max(np.diff(np.where(press_period)[0])) / EEG_raw.info["sfreq"] / 60
     print(f"  Valid recording length: {eeg_duration:.1f} min")
 
     _savefig(_make_psd_fig(EEG_raw, ch_names, f"{_prefix} – Raw PSD"),
@@ -438,6 +454,14 @@ for _vhdr_file in _vhdr_files:
              _vis_dir, f"{_prefix}_step4_ICA_timeseries.png")
 
     print(f"  Figures saved to {_vis_dir}")
+
+    # save preprocessed EEG as .fif
+    _fif_path = os.path.join(_save_dir, f"sub-{subj_id}_task-gradCPT_{_run_label}_preproc_eeg.fif")
+    if is_overwrite or not os.path.exists(_fif_path):
+        EEG_step4.save(_fif_path, overwrite=True, verbose=False)
+        print(f"  Saved preprocessed EEG → {_fif_path}")
+    else:
+        print(f"  Preprocessed EEG already exists, skipping: {_fif_path}")
 
     _single_subj_EEG_dict[_run_key]   = EEG_step4
     _single_subj_rm_ch_dict[_run_key] = rm_ch_list

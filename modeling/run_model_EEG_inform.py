@@ -16,13 +16,61 @@ import utils
 import model
 from params_setting import *
 from tqdm import tqdm
+import re
 
-#%%
-subj_id_array = [670, 695,721,723,726, 730]
+#%% select model type
 model_type='full_noEEG_rejected_ttest'
-# subj_id_array =[730]
-# subj_id_array = [670, 671, 673, 695, 719, 721, 723, 726, 727, 730, 733]
 
+#%% find subjects with fNIRS and enough EEG epochs
+_project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
+_eeg_deriv = os.path.join(_project_path, 'derivatives', 'eeg')
+_MIN_EPOCHS = 500
+
+_fnirs_subjects = {
+    re.search(r'sub-(\d+)', f).group(1)
+    for f in glob.glob(os.path.join(_project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
+    if re.search(r'sub-(\d+)', f)
+}
+
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_subj_to_fifs = {}
+for _f in _gradcpt_fifs:
+    _m = re.search(r'sub-(\d+)', _f)
+    if _m:
+        _subj_to_fifs.setdefault(_m.group(1), []).append(_f)
+
+_subj_epoch_counts = {}
+for _sid in sorted(_subj_to_fifs):
+    _total = 0
+    for _fif in sorted(_subj_to_fifs[_sid]):
+        _events_tsv = _fif.replace('_preproc_eeg.fif', '_events.tsv')
+        if not os.path.exists(_events_tsv):
+            continue
+        _ev_df = pd.read_csv(_events_tsv, sep='\t')
+        _onsets = _ev_df['onset'].values
+        if len(_onsets) == 0:
+            continue
+        _raw = mne.io.read_raw_fif(_fif, preload=True, verbose=False)
+        _events_arr = np.column_stack([
+            (_onsets * _raw.info['sfreq']).astype(int),
+            np.zeros(len(_onsets), dtype=int),
+            np.ones(len(_onsets), dtype=int),
+        ])
+        _valid = (_events_arr[:, 0] >= 0) & (_events_arr[:, 0] < _raw.n_times)
+        _events_arr = _events_arr[_valid]
+        if len(_events_arr) == 0:
+            continue
+        _epochs = mne.Epochs(_raw, _events_arr, event_id=1,
+                             tmin=-0.2, tmax=1.0,
+                             baseline=None, preload=True, verbose=False)
+        _epochs.drop_bad(reject=dict(eeg=100e-6), verbose=False)
+        _total += len(_epochs)
+    _subj_epoch_counts[_sid] = _total
+
+_enough_sids = {sid for sid, n in _subj_epoch_counts.items() if n >= _MIN_EPOCHS}
+subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
+
+#%% start training GLM for each subject each channel
 for subj_id in tqdm(subj_id_array):
     print(f"Start processing sub-{subj_id}")
     # load HbO

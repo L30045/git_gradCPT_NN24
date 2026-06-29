@@ -173,3 +173,45 @@ print()
 print(f"Subjects with ALL FOUR (fNIRS + pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
       f"(N={len(all_four)}):")
 print("  " + ", ".join(f"sub-{s}" for s in all_four))
+
+# ── 4. EEG trigger check ──────────────────────────────────────────────────────
+# Trigger channel is analog: baseline ~3.3 V, pulse goes low → falling edge = trigger onset
+
+all_eeg_fifs = sorted(glob.glob(
+    os.path.join(eeg_deriv, 'sub-*', '*preproc_eeg.fif')
+))
+
+print()
+print("=" * 60)
+print("EEG trigger check (Trigger channel, falling edge = pulse onset):")
+print("=" * 60)
+
+for fpath in all_eeg_fifs:
+    sid = re.search(r'sub-(\d+)', fpath).group(1)
+    run_m = re.search(r'run-(\d+)', fpath)
+    run_label = f"run-{run_m.group(1)}" if run_m else "run-?"
+    task_m = re.search(r'task-(\w+)', fpath)
+    task_label = task_m.group(1) if task_m else "?"
+
+    try:
+        raw = mne.io.read_raw_fif(fpath, preload=True, verbose=False)
+        trig = raw.get_data(picks=['Trigger'])[0]
+    except Exception as e:
+        print(f"  sub-{sid} {task_label} {run_label}: ERROR reading file ({e})")
+        continue
+
+    thresh = trig.max() / 2
+    low = trig < thresh
+    falling = np.where((~low[:-1]) & (low[1:]))[0] + 1
+
+    if len(falling) == 0:
+        print(f"  sub-{sid} {task_label} {run_label}: no trigger")
+    elif len(falling) == 1:
+        print(f"  sub-{sid} {task_label} {run_label}: 1 trigger, "
+              f"interval from start = {raw.times[falling[0]]:.3f} s")
+    else:
+        intervals = np.diff(raw.times[falling]).tolist()
+        intervals_str = ", ".join(f"{v:.3f}" for v in intervals)
+        print(f"  sub-{sid} {task_label} {run_label}: {len(falling)} triggers, "
+              f"interval from start = {raw.times[falling[0]]:.3f} s, "
+              f"intervals between triggers = [{intervals_str}] s")
