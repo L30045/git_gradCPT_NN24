@@ -35,7 +35,7 @@ print("  " + ", ".join(f"sub-{s}" for s in fnirs_subjects))
 # ── 1. Pupil data ────────────────────────────────────────────────────────────
 physio_files = glob.glob(
     os.path.join(project_path, 'sub-*', 'nirs',
-                 '*task-gradCPT*eyetracking_physio.tsv')
+                 '*task-gradCPT*eyetracking_physio*.tsv')
 )
 pupil_subjects = sorted({
     re.search(r'sub-(\d+)', f).group(1)
@@ -146,6 +146,47 @@ if not_enough:
     for sid, n in sorted(not_enough.items()):
         print(f"  sub-{sid}: {n} epochs")
 
+#%% ── Summary ───────────────────────────────────────────────────────────────────
+pupil_gradcpt = sorted(
+    set(pupil_subjects) & set(enough.keys())
+)
+all_three = sorted(
+    set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
+)
+fnirs_gradcpt = sorted(
+    set(fnirs_subjects) & set(enough.keys())
+)
+fnirs_pupil_gradcpt = sorted(
+    set(fnirs_subjects) & set(pupil_subjects) & set(enough.keys())
+)
+all_four = sorted(
+    set(fnirs_subjects) & set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
+)
+print()
+print("=" * 60)
+print("Individual counts:")
+print(f"  Pupil:                        N={len(pupil_subjects)}")
+print(f"  fNIRS:                        N={len(fnirs_subjects)}")
+print(f"  Resting EEG:                  N={len(rest_subjects)}")
+print(f"  GradCPT EEG ≥{MIN_EPOCHS} epochs:    N={len(enough)}")
+print()
+print(f"Subjects with fNIRS + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in fnirs_gradcpt))
+print()
+print(f"Subjects with pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(pupil_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in pupil_gradcpt))
+print()
+print(f"Subjects with ALL THREE (pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
+      f"(N={len(all_three)}):")
+print("  " + ", ".join(f"sub-{s}" for s in all_three))
+print()
+print(f"Subjects with fNIRS + pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_pupil_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in fnirs_pupil_gradcpt))
+print()
+print(f"Subjects with ALL FOUR (fNIRS + pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
+      f"(N={len(all_four)}):")
+print("  " + ", ".join(f"sub-{s}" for s in all_four))
+
 #%% ── 4. EEG trigger check ──────────────────────────────────────────────────────
 # Trigger channel is analog: baseline ~3.3 V, pulse goes low → falling edge = trigger onset
 
@@ -187,39 +228,3 @@ for fpath in all_eeg_fifs:
         print(f"  sub-{sid} {task_label} {run_label}: {len(falling)} triggers, "
               f"interval from start = {raw.times[falling[0]]:.3f} s, "
               f"intervals between triggers = [{intervals_str}] s")
-
-#%% ── Summary ───────────────────────────────────────────────────────────────────
-pupil_gradcpt = sorted(
-    set(pupil_subjects) & set(enough.keys())
-)
-all_three = sorted(
-    set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
-)
-fnirs_gradcpt = sorted(
-    set(fnirs_subjects) & set(enough.keys())
-)
-fnirs_pupil_gradcpt = sorted(
-    set(fnirs_subjects) & set(pupil_subjects) & set(enough.keys())
-)
-all_four = sorted(
-    set(fnirs_subjects) & set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
-)
-print()
-print("=" * 60)
-print(f"Subjects with fNIRS + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in fnirs_gradcpt))
-print()
-print(f"Subjects with pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(pupil_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in pupil_gradcpt))
-print()
-print(f"Subjects with ALL THREE (pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
-      f"(N={len(all_three)}):")
-print("  " + ", ".join(f"sub-{s}" for s in all_three))
-print()
-print(f"Subjects with fNIRS + pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_pupil_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in fnirs_pupil_gradcpt))
-print()
-print(f"Subjects with ALL FOUR (fNIRS + pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
-      f"(N={len(all_four)}):")
-print("  " + ", ".join(f"sub-{s}" for s in all_four))
-
