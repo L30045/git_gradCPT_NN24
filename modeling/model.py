@@ -330,7 +330,7 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
                 if is_norm:
                     area_list = area_list/np.max(area_list)
                 # store results
-                erp_area_dict[run_key][ch_name] = area_list
+                erp_area_dict[run_key][ch_name.lower()] = area_list
         else:
             erp_area_dict[run_key] = []
     return erp_area_dict

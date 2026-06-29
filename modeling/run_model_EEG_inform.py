@@ -73,12 +73,12 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 
 #%% start training GLM for each subject each channel
 for subj_id in tqdm(subj_id_array):
+    print(f"Start processing sub-{subj_id}")
     save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
     pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}.pkl')
     if not is_overwrite and os.path.exists(pkl_path):
         print(f"Skipping sub-{subj_id}: output already exists.")
         continue
-    print(f"Start processing sub-{subj_id}")
     # load HbO
     hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
     if not os.path.exists(hbo_file):
