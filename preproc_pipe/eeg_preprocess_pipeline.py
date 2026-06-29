@@ -135,6 +135,19 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
             print(f"{prefix}: figures exist, skipping.")
             continue
 
+        # generate events.tsv if missing
+        run_digit_str = run_match.group(1) if run_match else "0"
+        events_tsv_path = os.path.join(
+            data_save_path, f"sub-{vis_subj_id}",
+            f"sub-{vis_subj_id}_task-gradCPT_run-0{int(run_digit_str)}_events.tsv"
+        )
+        if not os.path.exists(events_tsv_path):
+            print(f"  Generating events.tsv for sub-{vis_subj_id} {run_label} ...")
+            try:
+                gen_EEG_event_tsv(vis_subj_id)
+            except Exception as e:
+                print(f"  Could not generate events.tsv: {e}")
+
         print(f"Visualizing {prefix} ...")
         try:
             EEG_raw = fix_and_load_brainvision(os.path.join(raw_EEG_path, vhdr_file))
@@ -349,6 +362,19 @@ for _vhdr_file in _vhdr_files:
     if not is_overwrite and _run_key in _single_subj_EEG_dict:
         print(f"  {_run_key}: already in dict, skipping.")
         continue
+
+    # generate events.tsv if missing
+    _events_tsv_path = os.path.join(
+        _save_dir,
+        f"sub-{subj_id}_task-gradCPT_{_run_label}_events.tsv"
+    )
+    if not os.path.exists(_events_tsv_path):
+        print(f"  Generating events.tsv for sub-{subj_id} {_run_label} ...")
+        try:
+            gen_EEG_event_tsv(subj_id)
+        except Exception as e:
+            print(f"  Could not generate events.tsv: {e}")
+
     print(f"Preprocessing sub-{subj_id} {_run_key} ...")
 
     # ── Step 0: load raw ──────────────────────────────────────────────────────

@@ -1,10 +1,14 @@
 #%%
 import os
+import sys
 import glob
 import re
 import numpy as np
 import pandas as pd
 import mne
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'preproc_pipe'))
+from utils import gen_EEG_event_tsv
 
 project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
 eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -98,6 +102,9 @@ for sid in sorted(subj_to_fifs):
         # companion events file
         events_tsv = fif.replace('_preproc_eeg.fif', '_events.tsv')
         if not os.path.exists(events_tsv):
+            print(f"    Generating events.tsv for sub-{sid} ...")
+            gen_EEG_event_tsv(int(sid), savepath=os.path.dirname(fif))
+        if not os.path.exists(events_tsv):
             continue
         ev_df = pd.read_csv(events_tsv, sep='\t')
         # keep all trials (both city and mountain)
@@ -139,42 +146,7 @@ if not_enough:
     for sid, n in sorted(not_enough.items()):
         print(f"  sub-{sid}: {n} epochs")
 
-#%% ── Summary ───────────────────────────────────────────────────────────────────
-pupil_gradcpt = sorted(
-    set(pupil_subjects) & set(enough.keys())
-)
-all_three = sorted(
-    set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
-)
-fnirs_gradcpt = sorted(
-    set(fnirs_subjects) & set(enough.keys())
-)
-fnirs_pupil_gradcpt = sorted(
-    set(fnirs_subjects) & set(pupil_subjects) & set(enough.keys())
-)
-all_four = sorted(
-    set(fnirs_subjects) & set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
-)
-print()
-print("=" * 60)
-print(f"Subjects with fNIRS + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in fnirs_gradcpt))
-print()
-print(f"Subjects with pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(pupil_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in pupil_gradcpt))
-print()
-print(f"Subjects with ALL THREE (pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
-      f"(N={len(all_three)}):")
-print("  " + ", ".join(f"sub-{s}" for s in all_three))
-print()
-print(f"Subjects with fNIRS + pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_pupil_gradcpt)}):")
-print("  " + ", ".join(f"sub-{s}" for s in fnirs_pupil_gradcpt))
-print()
-print(f"Subjects with ALL FOUR (fNIRS + pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
-      f"(N={len(all_four)}):")
-print("  " + ", ".join(f"sub-{s}" for s in all_four))
-
-# ── 4. EEG trigger check ──────────────────────────────────────────────────────
+#%% ── 4. EEG trigger check ──────────────────────────────────────────────────────
 # Trigger channel is analog: baseline ~3.3 V, pulse goes low → falling edge = trigger onset
 
 all_eeg_fifs = sorted(glob.glob(
@@ -215,3 +187,39 @@ for fpath in all_eeg_fifs:
         print(f"  sub-{sid} {task_label} {run_label}: {len(falling)} triggers, "
               f"interval from start = {raw.times[falling[0]]:.3f} s, "
               f"intervals between triggers = [{intervals_str}] s")
+
+#%% ── Summary ───────────────────────────────────────────────────────────────────
+pupil_gradcpt = sorted(
+    set(pupil_subjects) & set(enough.keys())
+)
+all_three = sorted(
+    set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
+)
+fnirs_gradcpt = sorted(
+    set(fnirs_subjects) & set(enough.keys())
+)
+fnirs_pupil_gradcpt = sorted(
+    set(fnirs_subjects) & set(pupil_subjects) & set(enough.keys())
+)
+all_four = sorted(
+    set(fnirs_subjects) & set(pupil_subjects) & set(rest_subjects) & set(enough.keys())
+)
+print()
+print("=" * 60)
+print(f"Subjects with fNIRS + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in fnirs_gradcpt))
+print()
+print(f"Subjects with pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(pupil_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in pupil_gradcpt))
+print()
+print(f"Subjects with ALL THREE (pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
+      f"(N={len(all_three)}):")
+print("  " + ", ".join(f"sub-{s}" for s in all_three))
+print()
+print(f"Subjects with fNIRS + pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_pupil_gradcpt)}):")
+print("  " + ", ".join(f"sub-{s}" for s in fnirs_pupil_gradcpt))
+print()
+print(f"Subjects with ALL FOUR (fNIRS + pupil + rest EEG + GradCPT EEG ≥{MIN_EPOCHS} epochs) "
+      f"(N={len(all_four)}):")
+print("  " + ", ".join(f"sub-{s}" for s in all_four))
+
