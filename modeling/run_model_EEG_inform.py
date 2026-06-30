@@ -299,7 +299,7 @@ for subj_id in tqdm(subj_id_array):
         hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['f_test_0_eeg'] = t_test_result
+        result_dict['t_test_0_eeg'] = t_test_result
 
     #%% get HRF and MSE for each run
     if model_type!='basis':
