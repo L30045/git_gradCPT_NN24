@@ -215,11 +215,11 @@ for subj_id in tqdm(subj_id_array):
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
-    if model_type.startswith('full'):
+    if model_type.startswith('full') or model_type.endswith('cedalion'):
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all)
     else:
         file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full_noEEG_rejected.pkl'),'rb') as f:
+        with open(os.path.join(file_path,f'sub-{subj_id}_glm_mnt_full_cedalion.pkl'),'rb') as f:
             full_result = pickle.load(f)
             autoReg_dict = full_result['autoReg_dict']
         glm_results, autoReg_dict = model.my_fit(Y_all, dm_all, autoReg=autoReg_dict)
