@@ -1037,7 +1037,7 @@ def calculate_ar_loglikelihood(y, X, beta, ar_coefs, sigma2):
 
 
 #%% Define my AR-IRLS
-def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.HuberT()):
+def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(c=4.685)):
     mask = np.isfinite(y.values)
 
     yorg : pd.Series = pd.Series(y.values[mask].copy())

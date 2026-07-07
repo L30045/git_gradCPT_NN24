@@ -25,7 +25,10 @@ Y_all = dm_dict['Y_all']  # dims: chromo, channel, time
 #%% for each model, load betas and reconstruct the full trial estimation (Y_hat)
 y_hat_dict = dict()
 for model_type in model_types:
-    pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}.pkl')
+    if model_type == 'full_noEEG_rejected_ttest':
+        pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}_20260706.pkl')
+    else:
+        pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}.pkl')
     with open(pkl_path, 'rb') as f:
         result_dict = pickle.load(f)
 
