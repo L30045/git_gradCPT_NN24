@@ -551,12 +551,19 @@ def create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz
                                         )
                 # rescale by Cz area
                 #TODO: allow multiple channels in DM
-                dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
+                # check if cz is there. If not, use pz instead.
+                if 'cz' in ev_dict[run_key][ev_name]['area'].keys():
+                    dm.common = dm.common*ev_dict[run_key][ev_name]['area']['cz'][ev_i]
+                else:
+                    dm.common = dm.common*ev_dict[run_key][ev_name]['area']['pz'][ev_i]
                 # append
                 dm_list.append(dm)
             # for missing event, set the scale to mean EEG scale factor
             if len(ev_dict[run_key][ev_name]['idx']['rejected'])!=0:
-                mean_area = np.mean(ev_dict[run_key][ev_name]['area']['cz'])
+                if 'cz' in ev_dict[run_key][ev_name]['area'].keys():
+                    mean_area = np.mean(ev_dict[run_key][ev_name]['area']['cz'])
+                else:
+                    mean_area = np.mean(ev_dict[run_key][ev_name]['area']['pz'])
                 dm = glm.design_matrix.hrf_regressors(
                                                 target_run,
                                                 target_ev_df.iloc[ev_dict[run_key][ev_name]['idx']['rejected']],
