@@ -219,7 +219,7 @@ for subj_id in tqdm(subj_id_array):
 
     # 3. get betas and covariance
     result_dict = dict()
-    result_dict['resid'] = glm_results.sm.resid
+    # result_dict['resid'] = glm_results.sm.resid
     betas = glm_results.sm.params
     cov_params = glm_results.sm.cov_params()
     result_dict['betas']=betas
