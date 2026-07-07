@@ -74,3 +74,11 @@ cfg_GLM = {
     't_pre' : 2*units.s,
     't_post' : 10*units.s
     }
+
+#%% excluded subject due to low fNIRS quality
+excluded_subj = ['sub-641', 'sub-644', 'sub-655',
+            'sub-657', 'sub-658', 
+            'sub-671', 'sub-673', 
+            'sub-733', 'sub-746',
+            'sub-755',
+            'sub-763', 'sub-764']

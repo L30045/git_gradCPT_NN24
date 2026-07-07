@@ -72,6 +72,9 @@ for _sid in sorted(_subj_to_fifs):
 _enough_sids = {sid for sid, n in _subj_epoch_counts.items() if n >= _MIN_EPOCHS}
 subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 
+# check if any of subject in subj_id_array is in the excluded_subj
+subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
+
 #%% start training GLM for each subject each channel
 for subj_id in tqdm(subj_id_array):
     print(f"Start processing sub-{subj_id}")
