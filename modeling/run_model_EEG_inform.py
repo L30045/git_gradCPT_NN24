@@ -206,6 +206,10 @@ for subj_id in tqdm(subj_id_array):
     else:
         dm_all = basis_dm
 
+    #%% select chromo=HbO only to save time
+    Y_all = Y_all.sel(chromo=['HbO'])
+    dm_all.common = dm_all.common.sel(chromo=['HbO'])
+
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
     if model_type.startswith('full'):
