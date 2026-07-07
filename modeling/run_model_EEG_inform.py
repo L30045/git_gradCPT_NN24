@@ -20,7 +20,7 @@ import re
 import cedalion
 
 #%% select model type
-model_type='full_cedalion'
+model_type='onlyStim_cedalion'
 is_overwrite = False # If True, force re-training GLM.
 
 #%% find subjects with fNIRS and enough EEG epochs
@@ -202,9 +202,9 @@ for subj_id in tqdm(subj_id_array):
     if model_type.startswith('full'):
         # Combine EEG DM with Reduced DM to get full model
         dm_all = model.combine_dm(eeg_dm, stim_dm)
-    elif model_type=='onlyStim':
+    elif model_type.startswith('onlyStim'):
         dm_all = stim_dm
-    elif model_type=='onlyEEG':
+    elif model_type.startswith('onlyEEG'):
         dm_all = model.combine_dm(eeg_dm, basis_dm)
     else:
         dm_all = basis_dm
@@ -256,14 +256,14 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_full_eeg'] = f_test_result
-    elif model_type=='onlyStim':
+    elif model_type.startswith('onlyStim'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = [f'{name} = 0' for name in param_names]
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_stim_basis'] = f_test_result
-    elif model_type=='onlyEEG':
+    elif model_type.startswith('onlyEEG'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
         # Create hypothesis strings
         hypotheses = [f'{name} = 0' for name in param_names]
@@ -294,14 +294,14 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
-    elif model_type=='onlyStim':
+    elif model_type.startswith('onlyStim'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = '+'.join(param_names)+' = 0'
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
-    elif model_type=='onlyEEG':
+    elif model_type.startswith('onlyEEG'):
         param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
         # Create hypothesis strings
         hypotheses = '+'.join(param_names)+' = 0'
@@ -310,7 +310,7 @@ for subj_id in tqdm(subj_id_array):
         result_dict['t_test_0_eeg'] = t_test_result
 
     #%% get HRF and MSE for each run
-    if model_type!='basis':
+    if not model_type.startswith('basis'):
         # 4. estimate HRF and MSE
         trial_type_list = ['mnt-correct','mnt-incorrect']
 
