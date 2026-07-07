@@ -1068,7 +1068,9 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
 
         # Update the AR whitening filter
         arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
-
+        wf = np.hstack([1, -arcoef.params[1:]])
+        p = len(wf) - 1
+        
         # Apply the AR filter to the lhs and rhs of the model
         yf = prewhiten_arp_lfilter(y, arcoef.params[1:])
         xf = prewhiten_design_matrix_lfilter(x, arcoef.params[1:])
