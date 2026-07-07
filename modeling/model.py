@@ -1050,10 +1050,23 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
     if autoReg is not None:
         # use autoReg to prewhiten data and fit reduced model
         # Apply the AR filter to the lhs and rhs of the model
-        yf = prewhiten_arp_lfilter(y, autoReg[1:])
-        xf = prewhiten_design_matrix_lfilter(x, autoReg[1:])
+        wf = np.hstack([1, -autoReg[1:]])
+        p = len(wf) - 1
 
-        rlm_model = sm.RLM(yf, xf, M=M)
+        # Apply the AR filter to the lhs and rhs of the model
+        yf = pd.Series(scipy.signal.lfilter(wf, 1, y))
+
+        xf = np.zeros(x.shape)
+        xx = x.to_numpy()
+        for i in range(xx.shape[1]):
+            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i])
+
+        xf = pd.DataFrame(xf)
+        xf.columns = x.columns
+
+        # fit the model ignoring the first p samples, for which the AR filter is not
+        # yet fully initialized.
+        rlm_model = sm.RLM(yf[p:], xf.iloc[p:], M=M)
         params = rlm_model.fit()
 
         return params, autoReg
@@ -1070,12 +1083,21 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
         arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
         wf = np.hstack([1, -arcoef.params[1:]])
         p = len(wf) - 1
-        
-        # Apply the AR filter to the lhs and rhs of the model
-        yf = prewhiten_arp_lfilter(y, arcoef.params[1:])
-        xf = prewhiten_design_matrix_lfilter(x, arcoef.params[1:])
 
-        rlm_model = sm.RLM(yf, xf, M=M)
+        # Apply the AR filter to the lhs and rhs of the model
+        yf = pd.Series(scipy.signal.lfilter(wf, 1, y))
+
+        xf = np.zeros(x.shape)
+        xx = x.to_numpy()
+        for i in range(xx.shape[1]):
+            xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i])
+
+        xf = pd.DataFrame(xf)
+        xf.columns = x.columns
+
+        # fit the model ignoring the first p samples, for which the AR filter is not
+        # yet fully initialized.
+        rlm_model = sm.RLM(yf[p:], xf.iloc[p:], M=M)
         params = rlm_model.fit()
 
         resid = pd.Series(yorg - xorg @ params.params)
@@ -1151,77 +1173,6 @@ def my_fit(
     reg_results.attrs["description"] = description
 
     return reg_results, autoReg_dict
-
-def prewhiten_arp_lfilter(data, rho_coefficients):
-    """
-    Pre-whiten AR(p) data using lfilter
-    
-    For AR(p): y(t) = ρ₁×y(t-1) + ρ₂×y(t-2) + ... + ρₚ×y(t-p) + ε(t)
-    
-    To recover ε(t): ε(t) = y(t) - ρ₁×y(t-1) - ρ₂×y(t-2) - ... - ρₚ×y(t-p)
-    
-    Parameters:
-    -----------
-    data : array (n,)
-        Time series data
-    rho_coefficients : array (p,)
-        AR coefficients [ρ₁, ρ₂, ..., ρₚ]
-    
-    Returns:
-    --------
-    data_white : array (n,)
-        Pre-whitened data
-
-    NOTE:
-    -------
-    Mathematically, we should scale the first element to keep the variance
-    structure. However, the importance of scaling is small when there are 
-    more than 500 samples.
-
-    To keep things simple, I ignore the scaling issue here.
-    - Chi 2026-02-10
-    """
-        
-    # Filter coefficients 
-    b = np.array([1.0]) 
-    a = np.concatenate([[1.0], -rho_coefficients])
-    
-    # Apply filter (using IIR as FIR, lfilter(a,b,data) instead of lfilter(b,a,data))
-    data_white = lfilter(a, b, data)
-    
-    return data_white
-
-def prewhiten_design_matrix_lfilter(X, rho_coefficients):
-    """
-    Pre-whiten design matrix using lfilter
-    
-    Parameters:
-    -----------
-    X : dataFrame
-
-    rho_coefficients : array (ar_order,) or float
-        AR coefficients
-    
-    Returns:
-    --------
-    X_white : dataFrame
-    """
-    # Handle scalar rho (AR(1))
-    if np.isscalar(rho_coefficients):
-        rho_coefficients = np.array([rho_coefficients])
-    
-    # Handle 1D array
-    if X.ndim == 1:
-        return prewhiten_arp_lfilter(X, rho_coefficients)
-    
-    # Handle 2D array (multiple regressors)
-    X_white = pd.DataFrame(np.zeros_like(X),
-                            columns=X.columns)
-    
-    for col in X.columns:
-        X_white[col] = prewhiten_arp_lfilter(X[col], rho_coefficients)
-    
-    return X_white
 
 def vis_fit(y, x, beta):
     resid = y-x@beta

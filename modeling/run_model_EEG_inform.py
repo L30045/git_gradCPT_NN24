@@ -17,9 +17,10 @@ import model
 from params_setting import *
 from tqdm import tqdm
 import re
+import cedalion
 
 #%% select model type
-model_type='full_noEEG_rejected_ttest'
+model_type='full_cedalion'
 is_overwrite = False # If True, force re-training GLM.
 
 #%% find subjects with fNIRS and enough EEG epochs
@@ -169,7 +170,7 @@ for subj_id in tqdm(subj_id_array):
         ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct-stim'
         ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
         stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
-    reduced_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    stim_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
     Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
 
     # get drift and ss
@@ -188,8 +189,8 @@ for subj_id in tqdm(subj_id_array):
         dm_dict = dict()
         dm_dict['basis']=basis_dm
         dm_dict['onlyEEG']=model.combine_dm(eeg_dm, basis_dm)
-        dm_dict['onlyStim']=reduced_dm
-        dm_dict['full']=model.combine_dm(eeg_dm, reduced_dm)
+        dm_dict['onlyStim']=stim_dm
+        dm_dict['full']=model.combine_dm(eeg_dm, stim_dm)
         dm_dict['Y_all']=Y_all
         with open(save_dm_name,'wb') as f:
             pickle.dump(dm_dict,f)
@@ -197,9 +198,9 @@ for subj_id in tqdm(subj_id_array):
     #%% assign DM
     if model_type.startswith('full'):
         # Combine EEG DM with Reduced DM to get full model
-        dm_all = model.combine_dm(eeg_dm, reduced_dm)
-    elif model_type=='reduced':
-        dm_all = reduced_dm
+        dm_all = model.combine_dm(eeg_dm, stim_dm)
+    elif model_type=='onlyStim':
+        dm_all = stim_dm
     elif model_type=='onlyEEG':
         dm_all = model.combine_dm(eeg_dm, basis_dm)
     else:
@@ -248,7 +249,7 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         f_test_result = glm_results.sm.f_test(hypotheses)
         result_dict['f_test_full_eeg'] = f_test_result
-    elif model_type=='reduced':
+    elif model_type=='onlyStim':
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = [f'{name} = 0' for name in param_names]
@@ -286,7 +287,7 @@ for subj_id in tqdm(subj_id_array):
         # Run F-test
         t_test_result = glm_results.sm.t_test(hypotheses)
         result_dict['t_test_0_stim'] = t_test_result
-    elif model_type=='reduced':
+    elif model_type=='onlyStim':
         param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
         # Create hypothesis strings
         hypotheses = '+'.join(param_names)+' = 0'
