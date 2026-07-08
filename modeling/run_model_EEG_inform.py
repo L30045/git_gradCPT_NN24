@@ -18,10 +18,13 @@ from params_setting import *
 from tqdm import tqdm
 import re
 import cedalion
+import cedalion.sigproc.frequency
 
 #%% select model type
-model_type='onlyStim_cedalion'
+model_type='basis_nohpf_noDrift'
 is_overwrite = False # If True, force re-training GLM.
+is_hpf = 'nohpf' not in model_type # high-pass filter conc_o before building DMs
+hpf_freq = 0.02 * units.Hz
 
 #%% find subjects with fNIRS and enough EEG epochs
 _project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
@@ -166,7 +169,13 @@ for subj_id in tqdm(subj_id_array):
     pruned_chans_list = []
     stim_list = []
     for run_key in run_dict.keys():
-        run_list.append(run_dict[run_key]['run'])
+        local_run = run_dict[run_key]['run']
+        # high pass filter
+        if is_hpf:
+            local_run = cedalion.sigproc.frequency.freq_filter(
+                local_run, fmin=hpf_freq, fmax=0 * units.Hz, butter_order=4
+            )
+        run_list.append(local_run)
         pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
         ev_df = run_dict[run_key]['ev_df'].copy()
         # rename trial_type

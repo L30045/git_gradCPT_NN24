@@ -458,6 +458,7 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
     run_unit = Y_all.pint.units
 
     # Combine drift and short-separation regressors (if any)
+    drift_regressors = None
     if cfg_GLM['do_drift']:
         drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
 
@@ -473,7 +474,8 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
         dms &= reduce(operator.and_, ss_regressors)
     elif len(ss_regressors)>0:
         dms &= reduce(operator.and_, [ss_regressors])
-    dms &= reduce(operator.and_, drift_regressors)
+    if drift_regressors is not None:
+        dms &= reduce(operator.and_, drift_regressors)
     dms.common = dms.common.fillna(0)
 
     return dms

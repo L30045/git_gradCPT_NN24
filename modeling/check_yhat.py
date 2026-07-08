@@ -24,9 +24,10 @@ from tqdm import tqdm
 import re
 import xarray as xr
 import cedalion.xrutils as xrutils
+import copy
 
 #%% settings
-subj_id = 695
+subj_id = 723
 debug_channel = 'S10D127'
 debug_chromo = 'HbO'
 save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
@@ -39,7 +40,7 @@ Y_all = dm_dict['Y_all']  # dims: chromo, channel, time
 y_true = Y_all.sel(channel=[debug_channel])
 
 #%% retrain stim and EEG only
-ar_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_full_noEEG_rejected_ttest_20260706.pkl')
+ar_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_full_cedalion.pkl')
 with open(ar_path, 'rb') as f:
     old_full_result = pickle.load(f)
     autoReg_dict = old_full_result['autoReg_dict']
@@ -147,3 +148,89 @@ plt.legend()
 plt.grid()
 plt.tight_layout()
 plt.show()
+
+
+#%%
+subj_id = 723
+debug_channel = 'S10D127'
+debug_chromo = 'HbO'
+save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
+is_hpf = False
+
+# load HbO
+hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+with gzip.open(hbo_file, 'rb') as f:
+    results = pickle.load(f)
+
+all_runs = results['runs']
+all_chs_pruned = results['chs_pruned']
+all_stims = results['stims']
+geo3d = results['geo3d']
+cfg_GLM['geo3d'] = geo3d
+
+run_dict = dict()
+# Find all event files in project_path
+event_files = glob.glob(os.path.join(project_path, f"sub-{subj_id}", 'nirs', f"sub-{subj_id}_task-gradCPT_run-*_events.tsv"))
+event_files = sorted(event_files)  # Sort to ensure consistent ordering
+
+# Load each event file into run_dict
+for event_file in event_files:
+    # Extract run number from filename (e.g., run-01 -> 1)
+    run_num = event_file.split('run-')[1].split('_')[0]
+    run_key = f'run{run_num}'
+
+    # Initialize run dict if not exists
+    if run_key not in run_dict:
+        run_dict[run_key] = dict()
+
+    # Load event dataframe
+    run_dict[run_key]['ev_df'] = pd.read_csv(event_file, sep='\t')
+# find corresponding runs in all_runs and assign to run_dict
+for r_i, run in enumerate(all_runs):
+    # Match this run to the correct run_dict entry by comparing first event
+    for run_key in run_dict.keys():
+        ev_df = run_dict[run_key]['ev_df']
+        if len(ev_df) > 0 and len(run.stim) > 0 and np.all(run.stim.iloc[0] == ev_df.iloc[0]):
+            run_dict[run_key]['run'] = run[0]
+            run_dict[run_key]['conc_ts'] = run['conc_o']
+            run_dict[run_key]['chs_pruned'] = all_chs_pruned[r_i]
+            break
+
+# epoch HbO
+len_epoch = 12 # seconds
+t_conc_ts = run['conc_o'].time
+sfreq_conc = 1/np.diff(t_conc_ts)[0]
+len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
+
+run_list = []
+pruned_chans_list = []
+stim_list = []
+for run_key in run_dict.keys():
+    local_run = run_dict[run_key]['run']
+    # high pass filter
+    if is_hpf:
+        local_run = cedalion.sigproc.frequency.freq_filter(
+            local_run, fmin=hpf_freq, fmax=0 * units.Hz, butter_order=4
+        )
+    run_list.append(local_run)
+    pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
+    ev_df = run_dict[run_key]['ev_df'].copy()
+    # rename trial_type
+    ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct-stim'
+    ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
+    stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
+stim_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
+
+# get drift and ss
+noDrift_cfg_GLM = copy.deepcopy(cfg_GLM)
+noDrift_cfg_GLM['do_drift']=False
+noDrift_cfg_GLM['do_drift_legendre']=False
+ss_dm = model.create_no_info_dm(run_list, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+Y_test = Y_all.sel(chromo=['HbO'],channel=[debug_channel])
+ss_dm.common = ss_dm.common.sel(chromo=['HbO'])
+
+#
+glm_results, autoReg_dict = model.my_fit(Y_test, ss_dm)

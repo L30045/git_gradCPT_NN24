@@ -6,8 +6,8 @@ Results are organised by analysis method in xSubj_results/<analysis>/.
 import numpy as np
 import datetime
 from scipy import stats
+from statsmodels.stats.multitest import multipletests
 import matplotlib
-matplotlib.use('Agg')  # non-interactive backend for saving figures
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
@@ -39,6 +39,18 @@ analysis_dirs = {
 }
 for d in analysis_dirs.values():
     os.makedirs(d, exist_ok=True)
+
+is_save_fig = False
+if is_save_fig:
+    matplotlib.use('Agg')
+
+def save_or_show_fig(fig, save_path):
+    """Save fig to save_path if is_save_fig else display it interactively."""
+    if is_save_fig:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
 
 #%% preprocessing parameter setting
 subj_id_array = sorted([
@@ -244,8 +256,7 @@ ax.set_title(f'Cross-subject RT Differences ({check_ch.upper()}, n={len(rt_diff_
 ax.legend()
 ax.grid(True, alpha=0.3)
 fig.tight_layout()
-fig.savefig(os.path.join(analysis_dirs['RT_inzone_vs_outzone'], f'xSubj_RT_inzone_vs_outzone_{check_ch}.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
+save_or_show_fig(fig, os.path.join(analysis_dirs['RT_inzone_vs_outzone'], f'xSubj_RT_inzone_vs_outzone_{check_ch}.png'))
 
 #%% Analysis 2 — ERP: city vs mountain (all channels)
 vis_events = ['city_correct', 'mnt_correct']
@@ -283,8 +294,7 @@ for ch in vis_ch:
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(os.path.join(analysis_dirs['ERP_city_vs_mnt'], f'xSubj_ERP_city_vs_mnt_{ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERP_city_vs_mnt'], f'xSubj_ERP_city_vs_mnt_{ch}.png'))
 
 #%% Analysis 3 — ERP Image sorted by VTC (mnt_correct, CZ)
 erp_image_event = 'mnt_correct'
@@ -303,8 +313,7 @@ fig = plt_ERPImage(time_vector, plt_epoch_data,
                    clim=[-10e-6, 10e-6],
                    title_txt=title_txt,
                    ref_onset=plt_react)
-fig.savefig(os.path.join(analysis_dirs['ERPImage'], f'xSubj_ERPImage_{erp_image_event}_{erp_image_ch}.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
+save_or_show_fig(fig, os.path.join(analysis_dirs['ERPImage'], f'xSubj_ERPImage_{erp_image_event}_{erp_image_ch}.png'))
 
 #%% Analysis 4 — ERSP raw power (mnt_correct, CZ)
 ersp_event = 'mnt_correct'
@@ -321,8 +330,7 @@ plt_epoch = mne.concatenate_epochs(combine_epoch_dict[ersp_event][ersp_ch])
                                     time_window_step=time_window_step_ersp)
 fig = plt.gcf()
 fig.suptitle(f'Cross-subject ERSP (raw) — {ersp_event} — {ersp_ch.upper()}')
-fig.savefig(os.path.join(analysis_dirs['ERSP_raw'], f'xSubj_ERSP_raw_{ersp_event}_{ersp_ch}.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
+save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_raw'], f'xSubj_ERSP_raw_{ersp_event}_{ersp_ch}.png'))
 print(f"ERSP (raw): freq res = {multitaper.frequency_resolution:.2f} Hz  ({time.time()-start_time:.1f}s)")
 
 #%% Analysis 5 — ERSP ratio to baseline (mnt_correct, CZ)
@@ -333,8 +341,7 @@ print(f"ERSP (raw): freq res = {multitaper.frequency_resolution:.2f} Hz  ({time.
                                     ratio_to="baseline")
 fig = plt.gcf()
 fig.suptitle(f'Cross-subject ERSP (baseline ratio) — {ersp_event} — {ersp_ch.upper()}')
-fig.savefig(os.path.join(analysis_dirs['ERSP_baseline'], f'xSubj_ERSP_baseline_{ersp_event}_{ersp_ch}.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
+save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_baseline'], f'xSubj_ERSP_baseline_{ersp_event}_{ersp_ch}.png'))
 
 #%% Analysis 6 — ERSP mnt vs city ratio (CZ)
 ref_event = 'city_correct'
@@ -346,8 +353,7 @@ plt_epoch_ref = mne.concatenate_epochs(combine_epoch_dict[ref_event][ersp_ch])
                                     ratio_to=plt_epoch_ref)
 fig = plt.gcf()
 fig.suptitle(f'Cross-subject ERSP (mnt/city ratio) — {ersp_ch.upper()}')
-fig.savefig(os.path.join(analysis_dirs['ERSP_mnt_vs_city'], f'xSubj_ERSP_mnt_vs_city_{ersp_ch}.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
+save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_mnt_vs_city'], f'xSubj_ERSP_mnt_vs_city_{ersp_ch}.png'))
 
 #%% Analysis 7 — ERP in-zone vs out-of-zone (mnt_correct, all channels)
 zone_erp_event = 'mnt_correct'
@@ -395,8 +401,43 @@ for ch in vis_ch:
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(os.path.join(analysis_dirs['ERP_inzone_vs_outzone'], f'xSubj_ERP_inzone_vs_outzone_{zone_erp_event}_{ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERP_inzone_vs_outzone'], f'xSubj_ERP_inzone_vs_outzone_{zone_erp_event}_{ch}.png'))
+
+#%% Analysis 7b — ERP difference (in-zone - out-of-zone) with paired t-test (mnt_correct, all channels)
+alpha_diff = 0.05
+
+for ch in vis_ch:
+    if in_zone_erp[ch] is None or out_zone_erp[ch] is None:
+        continue
+    plt_in  = in_zone_erp[ch]
+    plt_out = out_zone_erp[ch]
+    n = plt_in.shape[0]
+    diff = plt_in - plt_out  # subjects x time
+    mean_diff = np.mean(diff, axis=0)
+    sem_diff  = np.std(diff, axis=0) / np.sqrt(n)
+    t_ms = combine_epoch_dict[zone_erp_event][ch][0].times * 1000
+
+    tvals, pvals = stats.ttest_rel(plt_in, plt_out, axis=0)
+    sig_mask, pvals_fdr, _, _ = multipletests(pvals, alpha=alpha_diff, method='fdr_bh')
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(t_ms, mean_diff, color='purple', linewidth=2, label=f'In-zone - Out-of-zone (n={n})')
+    ax.fill_between(t_ms, mean_diff - 2*sem_diff, mean_diff + 2*sem_diff, alpha=0.3, color='purple')
+    ax.axhline(0, color='k', linestyle='--', linewidth=1)
+    ax.axvline(0, color='k', linestyle='--', linewidth=1)
+    if sig_mask.any():
+        ylim = ax.get_ylim()
+        y_bar = ylim[0] + 0.05 * (ylim[1] - ylim[0])
+        ax.scatter(t_ms[sig_mask], np.full(sig_mask.sum(), y_bar),
+                   color='black', marker='s', s=10,
+                   label=f'FDR-corrected p < {alpha_diff} (paired t-test)')
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Amplitude Difference (V)')
+    ax.set_title(f'Cross-subject ERP Difference (in-zone - out-of-zone) — {zone_erp_event} — {ch.upper()} (n={n})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERP_inzone_vs_outzone'], f'xSubj_ERP_diff_inzone_outzone_{zone_erp_event}_{ch}.png'))
 
 #%% Analysis 8 — ERSP in-zone vs out-of-zone (city_correct_response, CZ)
 inout_event = 'city_correct_response'
@@ -427,8 +468,7 @@ if in_zone_epochs_list:
                                vis_f_range=[1/time_window_duration_inout, 40])
     fig = plt.gcf()
     fig.suptitle(f'Cross-subject ERSP in-zone — {inout_event} — {inout_ch.upper()}')
-    fig.savefig(os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_inzone_{inout_event}_{inout_ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_inzone_{inout_event}_{inout_ch}.png'))
 
 if out_zone_epochs_list:
     ep_out = mne.concatenate_epochs(out_zone_epochs_list)
@@ -440,8 +480,7 @@ if out_zone_epochs_list:
                                vis_f_range=[1/time_window_duration_inout, 40])
     fig = plt.gcf()
     fig.suptitle(f'Cross-subject ERSP out-of-zone — {inout_event} — {inout_ch.upper()}')
-    fig.savefig(os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_outzone_{inout_event}_{inout_ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_outzone_{inout_event}_{inout_ch}.png'))
 
 if in_zone_epochs_list and out_zone_epochs_list:
     (_, multitaper, _) = plt_multitaper(ep_in,
@@ -452,8 +491,7 @@ if in_zone_epochs_list and out_zone_epochs_list:
                                         vis_f_range=[1/time_window_duration_inout, 40])
     fig = plt.gcf()
     fig.suptitle(f'Cross-subject ERSP in/out ratio — {inout_event} — {inout_ch.upper()}')
-    fig.savefig(os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_inout_ratio_{inout_event}_{inout_ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_inzone_outzone'], f'xSubj_ERSP_inout_ratio_{inout_event}_{inout_ch}.png'))
     print(f"ERSP in/out: freq res = {multitaper.frequency_resolution:.2f} Hz  ({time.time()-start_time:.1f}s)")
 
 #%% Analysis 9 — PSD comparison (city & mnt, in/out zone, CZ)
@@ -495,8 +533,7 @@ if len(psd_results) == 2:
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(os.path.join(analysis_dirs['PSD'], f'xSubj_PSD_city_mnt_inout_{psd_ch}.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    save_or_show_fig(fig, os.path.join(analysis_dirs['PSD'], f'xSubj_PSD_city_mnt_inout_{psd_ch}.png'))
 
 print("\nAll analyses complete. Results saved in:", results_root)
 
