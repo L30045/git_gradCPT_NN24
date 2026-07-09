@@ -39,72 +39,6 @@ with open(os.path.join(save_file_path, 'dm_dict.pkl'), 'rb') as f:
 Y_all = dm_dict['Y_all']  # dims: chromo, channel, time
 y_true = Y_all.sel(channel=[debug_channel])
 
-#%% retrain stim and EEG only
-ar_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_full_cedalion.pkl')
-with open(ar_path, 'rb') as f:
-    old_full_result = pickle.load(f)
-    autoReg_dict = old_full_result['autoReg_dict']
-
-beta_dict = dict()
-
-#%% open my_fit
-ts = y_true
-design_matrix = dm_dict['onlyStim']
-autoReg = None
-ar_order = 30
-verbose = False
-
-ts = ts.pint.dequantify()
-
-dim3_name = xrutils.other_dim(design_matrix.common, "time", "regressor")
-
-
-reg_results = xr.DataArray(
-    np.empty((ts.sizes["channel"], ts.sizes[dim3_name]), dtype=object),
-    dims=("channel", dim3_name),
-    coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
-)
-autoReg_dict = dict()
-
-for (
-    dim3,
-    group_channels,
-    group_design_matrix,
-) in design_matrix.iter_computational_groups(ts):
-    group_y = ts.sel({"channel": group_channels, dim3_name: dim3}).transpose(
-        "time", "channel"
-    )
-
-    # pass x as a DataFrame to statsmodel to make it aware of regressor names
-    x = pd.DataFrame(
-        group_design_matrix.values, columns=group_design_matrix.regressor.values
-    )
-
-    for chan in tqdm(group_y.channel.values, disable=not verbose):
-        result = cedalion.math.ar_irls.ar_irls_GLM(group_y.loc[:, chan], x, pmax=ar_order)
-        reg_results.loc[chan, dim3] = result
-
-description='AR_IRLS' # FIXME
-reg_results.attrs["description"] = description
-betas = reg_results.sm.params
-
- # Y_hat = X @ beta, summed over regressors -> dims: time, channel, chromo
-y_hat_ori_stim = (design_matrix.common * betas).sum('regressor')
-y_hat_ori_stim = y_hat_ori_stim.transpose('chromo', 'channel', 'time')
-
-#%% retrain stim-only model using original cedalion ar_irls_GLM instead of my_ar_irls_GLM
-plt.figure(figsize=(14, 4))
-plt.plot(Y_all.time.values, y_true.sel(chromo='HbO').values.flatten(), label='Y (true)', color='k', linewidth=1)
-y_pred = y_hat_ori_stim.sel(channel=debug_channel, chromo=debug_chromo).values
-plt.plot(Y_all.time.values, y_pred, label='Cedalion AR-IRLS', alpha=0.7)
-plt.xlabel('time (s)')
-plt.ylabel(f'{debug_chromo} concentration')
-plt.title(f'sub-{subj_id} channel={debug_channel}')
-plt.legend()
-plt.grid()
-plt.tight_layout()
-plt.show()
-
 #%% train model using my_ar_irls_GLM
 # stim only model
 stim_results, stim_ar = model.my_fit(y_true, dm_dict['onlyStim'], autoReg=None)
@@ -257,6 +191,19 @@ y_hat = (ss_dm.common * betas).sum('regressor')
 y_hat_ss = y_hat.transpose('chromo', 'channel', 'time')
 
 #%% ===================
+# get ss only results (HPF)
+# ===================
+ss_dm = model.create_no_info_dm(run_list_HPF, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+ss_dm.common = ss_dm.common.sel(chromo=['HbO'])
+ss_results, autoReg_dict = model.my_fit(Y_test_HPF, ss_dm)
+
+betas = ss_results.sm.params
+y_hat = (ss_dm.common * betas).sum('regressor')
+y_hat_ss_hpf = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
 # get stim with no drift results
 # ===================
 stim_dm = model.get_GLM_copy_from_pf_DM(run_list, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
@@ -382,14 +329,239 @@ fig.suptitle(f'sub-{subj_id} channel={debug_channel}')
 plt.tight_layout()
 plt.show()
 
-#%% PSD of Y_test
-freqs, psd = scipy.signal.welch(Y_test.values.flatten(), fs=sfreq_conc)
+#%% ===================
+# get drift only results (run by run)
+# ===================
+noSS_cfg_GLM = copy.deepcopy(cfg_GLM)
+noSS_cfg_GLM['do_short_sep']=False
+y_true_list = []
+y_hat_drift_list = []
 
-plt.figure(figsize=(8, 4))
-plt.semilogy(freqs, psd)
-plt.xlabel('frequency (Hz)')
-plt.ylabel('PSD')
-plt.title(f'sub-{subj_id} channel={debug_channel} - Y_test PSD')
-plt.grid()
+for run,chans,stim in zip(run_list,pruned_chans_list,stim_list):
+    y_true = run.sel(chromo=['HbO'],channel=[debug_channel])
+    y_true_list.append(y_true)
+    drift_dm = model.create_no_info_dm([run], noSS_cfg_GLM, noSS_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    # select chromo=HbO only to save time
+    drift_dm.common = drift_dm.common.sel(chromo=['HbO'])
+    drift_results, autoReg_dict = model.my_fit(y_true, drift_dm)
+
+    betas = drift_results.sm.params
+    y_hat = (drift_dm.common * betas).sum('regressor')
+    y_hat_drift = y_hat.transpose('chromo', 'channel', 'time')
+    y_hat_drift_list.append(y_hat_drift)
+
+fig, axs = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+
+for ax_i in range(3):
+    axs[ax_i].plot(y_true_list[ax_i].time.values, y_true_list[ax_i].values.flatten(), label='Y (true)', color='k', linewidth=1)
+    axs[ax_i].plot(y_true_list[ax_i].time.values, y_hat_drift_list[ax_i].values.flatten(),
+            label='Drift only (No HPF)', alpha=0.7)
+    axs[ax_i].set_ylabel(f'{debug_chromo} concentration')
+    axs[ax_i].set_title(f'run {ax_i}')
+    axs[ax_i].legend()
+    axs[ax_i].grid()
+
+#%% ===================================================================
+# Rerun the whole analysis using OLS instead of AR-IRLS
+# Y_all and design matrices are identical to the AR-IRLS run above.
+# ===================================================================
+
+#%% ===================
+# get drift only results (OLS)
+# ===================
+noSS_cfg_GLM = copy.deepcopy(cfg_GLM)
+noSS_cfg_GLM['do_short_sep']=False
+drift_dm_ols = model.create_no_info_dm(run_list, noSS_cfg_GLM, noSS_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+drift_dm_ols.common = drift_dm_ols.common.sel(chromo=['HbO'])
+drift_results_ols, _ = model.my_ols_fit(Y_test, drift_dm_ols)
+
+betas = drift_results_ols.sm.params
+y_hat = (drift_dm_ols.common * betas).sum('regressor')
+y_hat_drift_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get ss only results (OLS)
+# ===================
+noDrift_cfg_GLM = copy.deepcopy(cfg_GLM)
+noDrift_cfg_GLM['do_drift']=False
+noDrift_cfg_GLM['do_drift_legendre']=False
+ss_dm_ols = model.create_no_info_dm(run_list, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+ss_dm_ols.common = ss_dm_ols.common.sel(chromo=['HbO'])
+ss_results_ols, _ = model.my_ols_fit(Y_test, ss_dm_ols)
+
+betas = ss_results_ols.sm.params
+y_hat = (ss_dm_ols.common * betas).sum('regressor')
+y_hat_ss_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get ss only results (HPF, OLS)
+# ===================
+ss_dm_hpf_ols = model.create_no_info_dm(run_list_HPF, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+ss_dm_hpf_ols.common = ss_dm_hpf_ols.common.sel(chromo=['HbO'])
+ss_results_hpf_ols, _ = model.my_ols_fit(Y_test_HPF, ss_dm_hpf_ols)
+
+betas = ss_results_hpf_ols.sm.params
+y_hat = (ss_dm_hpf_ols.common * betas).sum('regressor')
+y_hat_ss_hpf_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get stim with no drift results (OLS)
+# ===================
+stim_dm_noHPF_noDrift_ols = model.get_GLM_copy_from_pf_DM(run_list, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+# select chromo=HbO only to save time
+stim_dm_noHPF_noDrift_ols.common = stim_dm_noHPF_noDrift_ols.common.sel(chromo=['HbO'])
+stim_results_ols, _ = model.my_ols_fit(Y_test, stim_dm_noHPF_noDrift_ols)
+
+betas = stim_results_ols.sm.params
+y_hat = (stim_dm_noHPF_noDrift_ols.common * betas).sum('regressor')
+y_hat_stim_noHPF_noDrift_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get stim only results (HPF, OLS)
+# ===================
+stim_dm_hpf_noDrift_ols = model.get_GLM_copy_from_pf_DM(run_list_HPF, noDrift_cfg_GLM, noDrift_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+# select chromo=HbO only to save time
+stim_dm_hpf_noDrift_ols.common = stim_dm_hpf_noDrift_ols.common.sel(chromo=['HbO'])
+stim_results_hpf_noDrift_ols, _ = model.my_ols_fit(Y_test_HPF, stim_dm_hpf_noDrift_ols)
+
+betas = stim_results_hpf_noDrift_ols.sm.params
+y_hat = (stim_dm_hpf_noDrift_ols.common * betas).sum('regressor')
+y_hat_stim_HPF_noDrift_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get drift+ss results (HPF, OLS)
+# ===================
+basis_dm_hpf_ols = model.create_no_info_dm(run_list_HPF, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+basis_dm_hpf_ols.common = basis_dm_hpf_ols.common.sel(chromo=['HbO'])
+basis_results_hpf_ols, _ = model.my_ols_fit(Y_test_HPF, basis_dm_hpf_ols)
+
+betas = basis_results_hpf_ols.sm.params
+y_hat = (basis_dm_hpf_ols.common * betas).sum('regressor')
+y_hat_basis_hpf_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get stim results (HPF, OLS)
+# ===================
+stim_dm_hpf_ols = model.get_GLM_copy_from_pf_DM(run_list_HPF, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+# select chromo=HbO only to save time
+stim_dm_hpf_ols.common = stim_dm_hpf_ols.common.sel(chromo=['HbO'])
+stim_results_hpf_ols, _ = model.my_ols_fit(Y_test_HPF, stim_dm_hpf_ols)
+
+betas = stim_results_hpf_ols.sm.params
+y_hat = (stim_dm_hpf_ols.common * betas).sum('regressor')
+y_hat_stim_HPF_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get drift+ss results (OLS)
+# ===================
+basis_dm_ols = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+
+# select chromo=HbO only to save time
+basis_dm_ols.common = basis_dm_ols.common.sel(chromo=['HbO'])
+basis_results_ols, _ = model.my_ols_fit(Y_test, basis_dm_ols)
+
+betas = basis_results_ols.sm.params
+y_hat = (basis_dm_ols.common * betas).sum('regressor')
+y_hat_basis_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% ===================
+# get stim results (OLS)
+# ===================
+stim_dm_ols = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+# select chromo=HbO only to save time
+stim_dm_ols.common = stim_dm_ols.common.sel(chromo=['HbO'])
+stim_results_ols, _ = model.my_ols_fit(Y_test, stim_dm_ols)
+
+betas = stim_results_ols.sm.params
+y_hat = (stim_dm_ols.common * betas).sum('regressor')
+y_hat_stim_ols = y_hat.transpose('chromo', 'channel', 'time')
+
+#%% subplot comparing HRF results (OLS): no-HPF (top) vs HPF (bottom)
+fig, axs = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
+
+axs[0].plot(Y_test.time.values, Y_test.values.flatten(), label='Y (true)', color='k', linewidth=1)
+axs[0].plot(Y_test.time.values, y_hat_ss_ols.values.flatten(),
+        label='Basis (No HPF, No Drift)', alpha=0.7)
+axs[0].plot(Y_test.time.values, y_hat_stim_noHPF_noDrift_ols.values.flatten(),
+        label='Stim only (No HPF, No Drift)', alpha=0.7)
+axs[0].set_ylabel(f'{debug_chromo} concentration')
+axs[0].set_title('No HPF, No Drift (OLS)')
+axs[0].legend()
+axs[0].grid()
+
+axs[1].plot(Y_test.time.values, Y_test.values.flatten(), label='Y (true)', color='k', linewidth=1)
+axs[1].plot(Y_test.time.values, y_hat_basis_ols.values.flatten(),
+        label='Basis', alpha=0.7)
+axs[1].plot(Y_test.time.values, y_hat_stim_ols.values.flatten(),
+        label='Stim only', alpha=0.7)
+axs[1].set_xlabel('time (s)')
+axs[1].set_ylabel(f'{debug_chromo} concentration')
+axs[1].set_title('No HPF, Drift (OLS)')
+axs[1].legend()
+axs[1].grid()
+
+axs[2].plot(Y_test_HPF.time.values, Y_test_HPF.values.flatten(), label='Y (true)', color='k', linewidth=1)
+axs[2].plot(Y_test_HPF.time.values, y_hat_ss_hpf_ols.values.flatten(),
+        label='Basis (HPF, No Drift)', alpha=0.7)
+axs[2].plot(Y_test_HPF.time.values, y_hat_stim_HPF_noDrift_ols.values.flatten(),
+        label='Stim only (HPF, No Drift)', alpha=0.7)
+axs[2].set_xlabel('time (s)')
+axs[2].set_ylabel(f'{debug_chromo} concentration')
+axs[2].set_title('HPF (0.02 Hz), No Drift (OLS)')
+axs[2].legend()
+axs[2].grid()
+
+axs[3].plot(Y_test_HPF.time.values, Y_test_HPF.values.flatten(), label='Y (true)', color='k', linewidth=1)
+axs[3].plot(Y_test_HPF.time.values, y_hat_basis_hpf_ols.values.flatten(),
+        label='Basis (HPF)', alpha=0.7)
+axs[3].plot(Y_test_HPF.time.values, y_hat_stim_HPF_ols.values.flatten(),
+        label='Stim only (HPF)', alpha=0.7)
+axs[3].set_xlabel('time (s)')
+axs[3].set_ylabel(f'{debug_chromo} concentration')
+axs[3].set_title('HPF (0.02 Hz), Drift (OLS)')
+axs[3].legend()
+axs[3].grid()
+
+fig.suptitle(f'sub-{subj_id} channel={debug_channel} (OLS)')
 plt.tight_layout()
 plt.show()
+
+#%% ===================
+# get drift only results (run by run, OLS)
+# ===================
+y_true_list_ols = []
+y_hat_drift_list_ols = []
+
+for run,chans,stim in zip(run_list,pruned_chans_list,stim_list):
+    y_true = run.sel(chromo=['HbO'],channel=[debug_channel])
+    y_true_list_ols.append(y_true)
+    drift_dm_run_ols = model.create_no_info_dm([run], noSS_cfg_GLM, noSS_cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+    # select chromo=HbO only to save time
+    drift_dm_run_ols.common = drift_dm_run_ols.common.sel(chromo=['HbO'])
+    drift_results_run_ols, _ = model.my_ols_fit(y_true, drift_dm_run_ols)
+
+    betas = drift_results_run_ols.sm.params
+    y_hat = (drift_dm_run_ols.common * betas).sum('regressor')
+    y_hat_drift_run_ols = y_hat.transpose('chromo', 'channel', 'time')
+    y_hat_drift_list_ols.append(y_hat_drift_run_ols)
+
+fig, axs = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+
+for ax_i in range(3):
+    axs[ax_i].plot(y_true_list_ols[ax_i].time.values, y_true_list_ols[ax_i].values.flatten(), label='Y (true)', color='k', linewidth=1)
+    axs[ax_i].plot(y_true_list_ols[ax_i].time.values, y_hat_drift_list_ols[ax_i].values.flatten(),
+            label='Drift only (No HPF, OLS)', alpha=0.7)
+    axs[ax_i].set_ylabel(f'{debug_chromo} concentration')
+    axs[ax_i].set_title(f'run {ax_i} (OLS)')
+    axs[ax_i].legend()
+    axs[ax_i].grid()
+
+

@@ -1193,6 +1193,78 @@ def my_fit(
 
     return reg_results, autoReg_dict
 
+#%% Define my OLS fit (same interface as my_ar_irls_GLM, no AR-whitening / robust weighting)
+def my_ols_GLM(y, x):
+    mask = np.isfinite(y.values)
+
+    yorg: pd.Series = pd.Series(y.values[mask].copy())
+    xorg: pd.DataFrame = x[mask].reset_index(drop=True)
+
+    ols_model = sm.OLS(yorg, xorg)
+    params = ols_model.fit()
+
+    return params, None
+
+def my_ols_fit(
+    ts: cdt.NDTimeSeries,
+    design_matrix: DesignMatrix,
+    max_jobs: int = -1,
+    verbose: bool = False,
+):
+    # FIXME: unit handling?
+    # shoud the design matrix be dimensionless? -> thetas will have units
+    ts = ts.pint.dequantify()
+
+    dim3_name = xrutils.other_dim(design_matrix.common, "time", "regressor")
+
+    reg_results = xr.DataArray(
+        np.empty((ts.sizes["channel"], ts.sizes[dim3_name]), dtype=object),
+        dims=("channel", dim3_name),
+        coords=xrutils.coords_from_other(ts.isel(time=0), dims=("channel", dim3_name))
+    )
+    autoReg_dict = dict()
+
+    for (
+        dim3,
+        group_channels,
+        group_design_matrix,
+    ) in design_matrix.iter_computational_groups(ts):
+        group_y = ts.sel({"channel": group_channels, dim3_name: dim3}).transpose(
+            "time", "channel"
+        )
+
+        # pass x as a DataFrame to statsmodel to make it aware of regressor names
+        x = pd.DataFrame(
+            group_design_matrix.values, columns=group_design_matrix.regressor.values
+        )
+
+        if max_jobs == 1:
+            for chan in tqdm(group_y.channel.values, disable=not verbose):
+                result = my_ols_GLM(group_y.loc[:, chan], x)
+                reg_results.loc[chan, dim3] = result[0]
+                autoReg_dict[chan] = result[1]
+        else:
+            args_list = []
+            for chan in group_y.channel.values:
+                args_list.append([group_y.loc[:, chan], x])
+
+            with parallel_config(backend='threading', n_jobs=max_jobs):
+                batch_results = tqdm(
+                    Parallel(return_as="generator")(
+                        delayed(my_ols_GLM)(*args) for args in args_list
+                    ),
+                    total=len(args_list)
+                )
+
+            for chan, result in zip(group_y.channel.values, batch_results):
+                reg_results.loc[chan, dim3] = result[0]
+                autoReg_dict[chan] = result[1]
+
+    description = 'OLS'
+    reg_results.attrs["description"] = description
+
+    return reg_results, autoReg_dict
+
 def vis_fit(y, x, beta):
     resid = y-x@beta
     fig, ax = plt.subplots(1,1)
