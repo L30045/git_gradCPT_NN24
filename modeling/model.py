@@ -459,6 +459,7 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
 
     # Combine drift and short-separation regressors (if any)
     drift_regressors = None
+    ss_regressors = None
     if cfg_GLM['do_drift']:
         drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
 
@@ -469,13 +470,22 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
         ss_regressors = get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
 
     # merge all DMs
-    dms = ss_regressors.pop()
-    if len(ss_regressors)>1:
-        dms &= reduce(operator.and_, ss_regressors)
-    elif len(ss_regressors)>0:
-        dms &= reduce(operator.and_, [ss_regressors])
+    if ss_regressors is not None:
+        dms = ss_regressors.pop()
+        if len(ss_regressors)>1:
+            dms &= reduce(operator.and_, ss_regressors)
+        elif len(ss_regressors)>0:
+            dms &= reduce(operator.and_, [ss_regressors])
     if drift_regressors is not None:
-        dms &= reduce(operator.and_, drift_regressors)
+        if ss_regressors is None:
+            dms = drift_regressors.pop()
+        if len(drift_regressors)>1:
+            dms &= reduce(operator.and_, drift_regressors)
+        elif len(drift_regressors)>0:
+            dms &= reduce(operator.and_, [drift_regressors])
+    if ss_regressors is None and drift_regressors is None:
+        print(f"No regressor is assigned.")
+        return None
     dms.common = dms.common.fillna(0)
 
     return dms
