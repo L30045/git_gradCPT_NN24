@@ -1056,7 +1056,7 @@ def calculate_ar_loglikelihood(y, X, beta, ar_coefs, sigma2):
 
 
 #%% Define my AR-IRLS
-def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(c=4.685)):
+def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(c=4.685), verbose=False):
     mask = np.isfinite(y.values)
 
     yorg : pd.Series = pd.Series(y.values[mask].copy())
@@ -1064,6 +1064,26 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
 
     y = yorg.copy()
     x = xorg.copy()
+
+    fit_snapshots = []  # (tag, y_hat) pairs, collected only when verbose
+
+    def _snapshot(tag, params):
+        y_hat = xorg @ params.params
+        fit_snapshots.append((tag, y_hat))
+
+    def _plot_snapshots():
+        n = len(fit_snapshots)
+        fig, axs = plt.subplots(n, 1, figsize=(14, 4 * n), sharex=True)
+        if n == 1:
+            axs = [axs]
+        for ax, (tag, y_hat) in zip(axs, fit_snapshots):
+            ax.plot(yorg.values, label='Y (true)', color='k', linewidth=1)
+            ax.plot(np.asarray(y_hat), label='y_hat', alpha=0.7)
+            ax.set_title(tag)
+            ax.legend()
+            ax.grid()
+        plt.tight_layout()
+        plt.show()
 
     # check if autocorrelation sturcture exist
     if autoReg is not None:
@@ -1088,13 +1108,20 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
         rlm_model = sm.RLM(yf[p:], xf.iloc[p:], M=M)
         params = rlm_model.fit()
 
+        if verbose:
+            _snapshot("autoReg fit", params)
+            _plot_snapshots()
+
         return params, autoReg
 
     rlm_model = sm.RLM(y, x, M=M)
     params = rlm_model.fit()
 
     resid = pd.Series(y - x @ params.params)
-    for _ in range(4):  # TODO - check convergence
+    if verbose:
+        _snapshot("iteration 0 (initial RLM fit, no whitening)", params)
+
+    for it in range(4):  # TODO - check convergence
         y = yorg.copy()
         x = xorg.copy()
 
@@ -1120,6 +1147,12 @@ def my_ar_irls_GLM(y, x, pmax=30, autoReg=None, M=sm.robust.norms.TukeyBiweight(
         params = rlm_model.fit()
 
         resid = pd.Series(yorg - xorg @ params.params)
+
+        if verbose:
+            _snapshot(f"iteration {it + 1}", params)
+
+    if verbose:
+        _plot_snapshots()
 
     return params, arcoef.params
 

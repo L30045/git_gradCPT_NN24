@@ -506,7 +506,9 @@ for ax_i in range(3):
     axs[ax_i].legend()
     axs[ax_i].grid()
 
-#%% Check cedalion.math.ar_irls.py ar_irls_GLM
+#%% ===================
+# Check cedalion.math.ar_irls.py ar_irls_GLM
+# ===================
 ts = Y_test
 stim_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 stim_dm.common = stim_dm.common.sel(chromo=['HbO'])
@@ -553,3 +555,197 @@ axs.set_ylabel(f'{debug_chromo} concentration')
 axs.set_title(f'Cedalion (AR-IRLS)')
 axs.legend()
 axs.grid()
+# %% Plot the fit (Y true vs y_hat) at each iteration of AR-IRLS
+y_chan = group_y.loc[:, debug_channel]
+params_verbose, arcoef_verbose = model.my_ar_irls_GLM(y_chan, x, verbose=True)
+
+# %% my_ar_irls_GLM copied as a script (not a function) so all intermediate
+# variables (yorg, xorg, resid, arcoef, wf, yf, xf, params, ...) stay in the
+# interactive namespace for inspection.
+pmax = 30
+M = sm.robust.norms.TukeyBiweight(c=4.685)
+
+y = y_chan
+mask = np.isfinite(y.values)
+
+yorg = pd.Series(y.values[mask].copy())
+xorg = x[mask].reset_index(drop=True)
+
+y = yorg.copy()
+x_ar = xorg.copy()
+
+rlm_model = sm.RLM(y, x_ar, M=M)
+params = rlm_model.fit()
+
+resid = pd.Series(y - x_ar @ params.params)
+
+resid_list = [resid.copy()]
+xf_list = []
+arcoef_list = []
+
+for it in range(4):  # TODO - check convergence
+    y = yorg.copy()
+    x_ar = xorg.copy()
+
+    # Update the AR whitening filter
+    arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
+    wf = np.hstack([1, -arcoef.params[1:]])
+    p = len(wf) - 1
+
+    # Apply the AR filter to the lhs and rhs of the model
+    yf = pd.Series(scipy.signal.lfilter(wf, 1, y))
+
+    xf = np.zeros(x_ar.shape)
+    xx = x_ar.to_numpy()
+    for i in range(xx.shape[1]):
+        xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i])
+
+    xf = pd.DataFrame(xf)
+    xf.columns = x_ar.columns
+
+    # fit the model ignoring the first p samples, for which the AR filter is not
+    # yet fully initialized.
+    rlm_model = sm.RLM(yf[p:], xf.iloc[p:], M=M)
+    params = rlm_model.fit()
+
+    resid = pd.Series(yorg - xorg @ params.params)
+
+    resid_list.append(resid.copy())
+    xf_list.append(xf.copy())
+    arcoef_list.append(arcoef.params.copy())
+
+# %% plot residual for each AR-IRLS iteration
+iter_tags = ['iteration 0 (initial, no whitening)'] + [f'iteration {i + 1}' for i in range(4)]
+
+fig, axs = plt.subplots(len(resid_list), 1, figsize=(14, 3 * len(resid_list)), sharex=True)
+for ax, r, tag in zip(axs, resid_list, iter_tags):
+    ax.plot(r.values)
+    ax.set_title(f'Residual - {tag}')
+    ax.grid()
+plt.tight_layout()
+plt.show()
+
+drift_cols = [c for c in xorg.columns if str(c).startswith('Drift')]
+
+# %% plot drift regressors before whitening
+fig, axs = plt.subplots(len(drift_cols), 1, figsize=(14, 2 * len(drift_cols)), sharex=True)
+if len(drift_cols) == 1:
+    axs = [axs]
+for ax, col in zip(axs, drift_cols):
+    ax.plot(xorg[col].values)
+    ax.set_ylabel(col, fontsize=8)
+    ax.grid()
+fig.suptitle('Drift regressors - before whitening')
+plt.tight_layout()
+plt.show()
+
+# %% plot whitened drift regressors for each AR-IRLS iteration
+for it, xf_it in enumerate(xf_list):
+    fig, axs = plt.subplots(len(drift_cols), 1, figsize=(14, 2 * len(drift_cols)), sharex=True)
+    if len(drift_cols) == 1:
+        axs = [axs]
+    for ax, col in zip(axs, drift_cols):
+        ax.plot(xf_it[col].values)
+        ax.set_ylabel(col, fontsize=8)
+        ax.grid()
+    fig.suptitle(f'Whitened drift regressors - iteration {it + 1}')
+    plt.tight_layout()
+    plt.show()
+
+# %% ===================
+# Repeat drift regressor visualization with Y_test_HPF
+# ===================
+ts_hpf = Y_test_HPF
+stim_dm_hpf_dbg = model.get_GLM_copy_from_pf_DM(run_list_HPF, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+stim_dm_hpf_dbg.common = stim_dm_hpf_dbg.common.sel(chromo=['HbO'])
+design_matrix_hpf = stim_dm_hpf_dbg
+
+ts_hpf = ts_hpf.pint.dequantify()
+dim3_name_hpf = xrutils.other_dim(design_matrix_hpf.common, "time", "regressor")
+
+for (
+    dim3,
+    group_channels,
+    group_design_matrix,
+) in design_matrix_hpf.iter_computational_groups(ts_hpf):
+    group_y_hpf = ts_hpf.sel({"channel": group_channels, dim3_name_hpf: dim3}).transpose(
+        "time", "channel"
+    )
+    x_hpf = pd.DataFrame(
+        group_design_matrix.values, columns=group_design_matrix.regressor.values
+    )
+
+y_chan_hpf = group_y_hpf.loc[:, debug_channel]
+
+# my_ar_irls_GLM copied as a script, using HPF data
+y = y_chan_hpf
+mask = np.isfinite(y.values)
+
+yorg_hpf = pd.Series(y.values[mask].copy())
+xorg_hpf = x_hpf[mask].reset_index(drop=True)
+
+y = yorg_hpf.copy()
+x_ar = xorg_hpf.copy()
+
+rlm_model = sm.RLM(y, x_ar, M=M)
+params = rlm_model.fit()
+
+resid = pd.Series(y - x_ar @ params.params)
+
+resid_list_hpf = [resid.copy()]
+xf_list_hpf = []
+arcoef_list_hpf = []
+
+for it in range(4):  # TODO - check convergence
+    y = yorg_hpf.copy()
+    x_ar = xorg_hpf.copy()
+
+    arcoef = cedalion.math.ar_model.bic_arfit(resid, pmax=pmax)
+    wf = np.hstack([1, -arcoef.params[1:]])
+    p = len(wf) - 1
+
+    yf = pd.Series(scipy.signal.lfilter(wf, 1, y))
+
+    xf = np.zeros(x_ar.shape)
+    xx = x_ar.to_numpy()
+    for i in range(xx.shape[1]):
+        xf[:, i] = scipy.signal.lfilter(wf, 1, xx[:, i])
+
+    xf = pd.DataFrame(xf)
+    xf.columns = x_ar.columns
+
+    rlm_model = sm.RLM(yf[p:], xf.iloc[p:], M=M)
+    params = rlm_model.fit()
+
+    resid = pd.Series(yorg_hpf - xorg_hpf @ params.params)
+
+    resid_list_hpf.append(resid.copy())
+    xf_list_hpf.append(xf.copy())
+    arcoef_list_hpf.append(arcoef.params.copy())
+
+drift_cols_hpf = [c for c in xorg_hpf.columns if str(c).startswith('Drift')]
+
+# %% plot drift regressors before whitening (HPF)
+fig, axs = plt.subplots(len(drift_cols_hpf), 1, figsize=(14, 2 * len(drift_cols_hpf)), sharex=True)
+if len(drift_cols_hpf) == 1:
+    axs = [axs]
+for ax, col in zip(axs, drift_cols_hpf):
+    ax.plot(xorg_hpf[col].values)
+    ax.set_ylabel(col, fontsize=8)
+    ax.grid()
+fig.suptitle('Drift regressors (HPF) - before whitening')
+plt.tight_layout()
+plt.show()
+
+# %% plot whitened drift regressors for each AR-IRLS iteration (HPF)
+for it, xf_it in enumerate(xf_list_hpf):
+    fig, axs = plt.subplots(len(drift_cols_hpf), 1, figsize=(14, 2 * len(drift_cols_hpf)), sharex=True)
+    if len(drift_cols_hpf) == 1:
+        axs = [axs]
+    for ax, col in zip(axs, drift_cols_hpf):
+        ax.plot(xf_it[col].values)
+        ax.set_ylabel(col, fontsize=8)
+        ax.grid()
+    fig.suptitle(f'Whitened drift regressors (HPF) - iteration {it + 1}')
+    plt.tight_layout()
+    plt.show()
