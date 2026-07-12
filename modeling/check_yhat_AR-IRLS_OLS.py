@@ -27,7 +27,7 @@ import cedalion.xrutils as xrutils
 import copy
 
 #%%
-subj_id = 723
+subj_id = 695
 debug_channel = 'S10D127'
 debug_chromo = 'HbO'
 save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
@@ -43,6 +43,13 @@ all_chs_pruned = results['chs_pruned']
 all_stims = results['stims']
 geo3d = results['geo3d']
 cfg_GLM['geo3d'] = geo3d
+
+# load dm_dict
+with open(os.path.join(save_file_path, 'dm_dict.pkl'), 'rb') as f:
+    dm_dict = pickle.load(f)
+
+Y_all = dm_dict['Y_all']  # dims: chromo, channel, time
+y_true = Y_all.sel(channel=[debug_channel])
 
 run_dict = dict()
 # Find all event files in project_path
@@ -655,6 +662,8 @@ for it, xf_it in enumerate(xf_list):
 # %% ===================
 # Repeat drift regressor visualization with Y_test_HPF
 # ===================
+pmax=30
+M = sm.robust.norms.TukeyBiweight(c=4.685)
 ts_hpf = Y_test_HPF
 stim_dm_hpf_dbg = model.get_GLM_copy_from_pf_DM(run_list_HPF, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 stim_dm_hpf_dbg.common = stim_dm_hpf_dbg.common.sel(chromo=['HbO'])

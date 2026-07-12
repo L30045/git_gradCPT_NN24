@@ -357,6 +357,7 @@ save_or_show_fig(fig, os.path.join(analysis_dirs['ERSP_mnt_vs_city'], f'xSubj_ER
 
 #%% Analysis 7 — ERP in-zone vs out-of-zone (mnt_correct, all channels)
 zone_erp_event = 'mnt_correct'
+vis_ch = ch_names
 in_zone_erp  = {}
 out_zone_erp = {}
 
