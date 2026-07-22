@@ -18,7 +18,58 @@ import statsmodels.api as sm
 from scipy import stats
 from statsmodels.stats.multitest import fdrcorrection
 
-subj_id_array = [670, 695, 721, 723, 726, 730]
+#%% find subjects with fNIRS and enough EEG epochs
+_project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
+_eeg_deriv = os.path.join(_project_path, 'derivatives', 'eeg')
+_MIN_EPOCHS = 500
+
+_fnirs_subjects = {
+    re.search(r'sub-(\d+)', f).group(1)
+    for f in glob.glob(os.path.join(_project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
+    if re.search(r'sub-(\d+)', f)
+}
+
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_subj_to_fifs = {}
+for _f in _gradcpt_fifs:
+    _m = re.search(r'sub-(\d+)', _f)
+    if _m:
+        _subj_to_fifs.setdefault(_m.group(1), []).append(_f)
+
+_subj_epoch_counts = {}
+for _sid in sorted(_subj_to_fifs):
+    _total = 0
+    for _fif in sorted(_subj_to_fifs[_sid]):
+        _events_tsv = _fif.replace('_preproc_eeg.fif', '_events.tsv')
+        if not os.path.exists(_events_tsv):
+            continue
+        _ev_df = pd.read_csv(_events_tsv, sep='\t')
+        _onsets = _ev_df['onset'].values
+        if len(_onsets) == 0:
+            continue
+        _raw = mne.io.read_raw_fif(_fif, preload=True, verbose=False)
+        _events_arr = np.column_stack([
+            (_onsets * _raw.info['sfreq']).astype(int),
+            np.zeros(len(_onsets), dtype=int),
+            np.ones(len(_onsets), dtype=int),
+        ])
+        _valid = (_events_arr[:, 0] >= 0) & (_events_arr[:, 0] < _raw.n_times)
+        _events_arr = _events_arr[_valid]
+        if len(_events_arr) == 0:
+            continue
+        _epochs = mne.Epochs(_raw, _events_arr, event_id=1,
+                             tmin=-0.2, tmax=1.0,
+                             baseline=None, preload=True, verbose=False)
+        _epochs.drop_bad(reject=dict(eeg=100e-6), verbose=False)
+        _total += len(_epochs)
+    _subj_epoch_counts[_sid] = _total
+
+_enough_sids = {sid for sid, n in _subj_epoch_counts.items() if n >= _MIN_EPOCHS}
+subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
+
+# check if any of subject in subj_id_array is in the excluded_subj
+subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
+
 # load template run and geo3d
 subj_id = 695
 hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
@@ -190,11 +241,11 @@ geo3d_695 = results['geo3d']
 
 #%% f test from model results
 sig_list = []
-model_type = 'full'
+model_type = 'full_cedalion'
 model_cmp = 'f_test_full_stim'
 
-# fig, axs = plt.subplots(3,2,figsize=(10,8))
-# axs = axs.flatten()
+fig, axs = plt.subplots(3,2,figsize=(10,8))
+axs = axs.flatten()
 
 for s_i, subj_id in enumerate(subj_id_array):
     filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-{subj_id}"
@@ -208,11 +259,11 @@ for s_i, subj_id in enumerate(subj_id_array):
     clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
 
     # load full model
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}_noEEG_rejected.pkl"), 'rb') as f:
+    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_{model_type}.pkl"), 'rb') as f:
         full_model_result = pickle.load(f)
     # load reduced model
-    with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
-        reduced_model_result = pickle.load(f)
+    # with open(os.path.join(filepath,f"sub-{subj_id}_glm_mnt_reduced.pkl"), 'rb') as f:
+    #     reduced_model_result = pickle.load(f)
     # f_score_full_reduced = model.extract_val_across_channels(full_model_result['f_test'], chromo='HbO', stat_val='F')
     p_val_full_reduced = model.extract_val_across_channels(full_model_result[model_cmp],
                                                            chromo='HbO', stat_val='p')
@@ -222,11 +273,28 @@ for s_i, subj_id in enumerate(subj_id_array):
     rejected, p_values_fdr = fdrcorrection(p_val_full_reduced, alpha=0.05)
     sig_list.append(np.sum(rejected)/len(rejected))
 
+    # visualize which channels are significantly improved (FDR p <= 0.05)
+    plt_sig = np.full(len(hrf_per_subj.channel.values), np.nan)
+    plt_sig[clean_chs_idx[rejected]] = 1
+
+    model.scalp_plot(
+        all_runs[0]['conc_o'],
+        geo3d_695,
+        plt_sig,
+        ax = axs[s_i],
+        cmap='RdBu_r',
+        vmin=0,
+        vmax=1,
+        optode_labels=False,
+        optode_size=6,
+        title=f"Sub-{subj_id}",
+    )
+
     # RSS
-    rss_all = np.sum(full_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
-    rss_reduced = np.sum(reduced_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
-    rss_ratio = np.log(rss_reduced)- np.log(rss_all)
-    rss_ratio[bad_indices] = np.nan
+    # rss_all = np.sum(full_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
+    # rss_reduced = np.sum(reduced_model_result['resid'].sel(chromo='HbO').values**2,axis=1)
+    # rss_ratio = np.log(rss_reduced)- np.log(rss_all)
+    # rss_ratio[bad_indices] = np.nan
 
     # visualize RSS scalp plot (log scale)
     # model.scalp_plot(
@@ -240,6 +308,8 @@ for s_i, subj_id in enumerate(subj_id_array):
     #     optode_labels=False,
     #     optode_size=6,
     # )
+
+plt.tight_layout()
 
 #
 plt.figure()

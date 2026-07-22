@@ -27,7 +27,7 @@ import cedalion.xrutils as xrutils
 import copy
 
 #%%
-subj_id = 695
+subj_id = 723
 debug_channel = 'S10D127'
 debug_chromo = 'HbO'
 save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
@@ -161,7 +161,7 @@ stim_dm.common = stim_dm.common.sel(chromo=['HbO'])
 stim_results, autoReg_dict = model.my_fit(Y_test, stim_dm)
 
 betas = stim_results.sm.params
-y_hat = (stim_dm.common * betas).sum('regressor')
+y_hat = (stim_dm.common * betas).sum('regressor') 
 y_hat_stim_noHPF_noDrift = y_hat.transpose('chromo', 'channel', 'time')
 
 #%% ===================
@@ -543,7 +543,7 @@ group_design_matrix,
                 group_design_matrix.values, columns=group_design_matrix.regressor.values
         )
         for chan in tqdm(group_y.channel.values, disable=not verbose):
-                result = cedalion.math.ar_irls.ar_irls_GLM(group_y.loc[:, chan], x)
+                result = cedalion.math.ar_irls.ar_irls_GLM(group_y.loc[:, chan], x, pmax=30)
                 reg_results.loc[chan, dim3] = result
 
 description = 'Cedalion'
@@ -565,6 +565,39 @@ axs.grid()
 # %% Plot the fit (Y true vs y_hat) at each iteration of AR-IRLS
 y_chan = group_y.loc[:, debug_channel]
 params_verbose, arcoef_verbose = model.my_ar_irls_GLM(y_chan, x, verbose=True)
+
+#%% Compare cedalion.math.ar_irls.ar_irls_GLM results and my_ar_irls_GLM results and see if they are identical
+cedalion_result = reg_results.sel(channel=debug_channel, **{dim3_name: dim3}).item()
+
+# same NaN-masking logic used inside both ar_irls_GLM implementations, so this
+# reproduces exactly the x/y each of them actually fit on
+mask = np.isfinite(y_chan.values)
+xorg_cmp = x[mask].reset_index(drop=True)
+yorg_cmp = pd.Series(y_chan.values[mask])
+
+y_hat_cedalion_cmp = xorg_cmp @ cedalion_result.params
+y_hat_my_cmp = xorg_cmp @ params_verbose.params
+
+params_compare = pd.DataFrame({
+    'cedalion': cedalion_result.params,
+    'my_ar_irls_GLM': params_verbose.params,
+})
+params_compare['diff'] = params_compare['cedalion'] - params_compare['my_ar_irls_GLM']
+print(params_compare)
+print('max abs beta diff:', params_compare['diff'].abs().max())
+print('params allclose:', np.allclose(cedalion_result.params.values, params_verbose.params.values))
+print('y_hat allclose:', np.allclose(y_hat_cedalion_cmp.values, y_hat_my_cmp.values))
+
+fig, ax = plt.subplots(1, 1, figsize=(14, 4))
+ax.plot(yorg_cmp.values, label='Y (true)', color='k', linewidth=1)
+ax.plot(y_hat_cedalion_cmp.values, label='y_hat (cedalion ar_irls_GLM)', alpha=0.7)
+ax.plot(y_hat_my_cmp.values, label='y_hat (my_ar_irls_GLM)', alpha=0.7, linestyle='--')
+ax.set_ylabel(f'{debug_chromo} concentration')
+ax.set_title(f'Cedalion vs my_ar_irls_GLM fit - channel {debug_channel}')
+ax.legend()
+ax.grid()
+plt.tight_layout()
+plt.show()
 
 # %% my_ar_irls_GLM copied as a script (not a function) so all intermediate
 # variables (yorg, xorg, resid, arcoef, wf, yf, xf, params, ...) stay in the
