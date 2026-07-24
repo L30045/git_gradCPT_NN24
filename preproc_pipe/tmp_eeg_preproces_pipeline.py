@@ -206,10 +206,10 @@ for _vhdr_file in _vhdr_files:
         ref = reref_ch if reref_ch else 'average'
         EEG_step3.set_eeg_reference(ref_channels=ref, ch_type='eeg', verbose=False)
 
-    _savefig(_make_psd_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference PSD"),
-             _vis_dir, f"{_prefix}_step3_reref_psd.png")
-    _savefig(_make_timeseries_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference time series"),
-             _vis_dir, f"{_prefix}_step3_reref_timeseries.png")
+        _savefig(_make_psd_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference PSD"),
+                _vis_dir, f"{_prefix}_step3_reref_psd.png")
+        _savefig(_make_timeseries_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference time series"),
+                _vis_dir, f"{_prefix}_step3_reref_timeseries.png")
 
     # ── Step 4: ICA eye-artifact removal ─────────────────────────────────────
     EEG_step4 = EEG_step3.copy()
