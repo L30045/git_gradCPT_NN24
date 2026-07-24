@@ -94,13 +94,13 @@ def check_flat_channels(EEG, flat_dur_sec=5):
             flat_ch_idx.append(eeg_chs[ch_i])
     return flat_ch_idx
 
-def check_abnormal_var_channels(EEG, thres_std=3, is_two_side=False):
+def check_abnormal_var_channels(EEG, thres_std=3, is_two_sided=False):
     eeg_data = EEG.get_data(picks='eeg')
     eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"]==2])
     # calculate variance for each channels and transform to z-score
     eeg_var = np.var(eeg_data,axis=1)
     eeg_var_z = (eeg_var-np.mean(eeg_var))/np.std(eeg_var)
-    if is_two_side:
+    if is_two_sided:
         eeg_var_z = abs(eeg_var_z)
     if np.any(eeg_var_z)>thres_std:
         print(f"Warning: channels with abnormal variance: {eeg_chs[eeg_var_z>thres_std]}")
