@@ -7,6 +7,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import mne
 mne.viz.set_browser_backend("matplotlib")
+import asrpy
 import os
 from utils import *
 from tqdm import tqdm
@@ -25,6 +26,8 @@ is_check_amp = False # check if EEG amplitude exceed 1000 muV
 is_reref = False
 reref_ch = ['tp9h','tp10h']
 # reref_ch = None # reref to average
+is_asr = True
+asr_cutoff = 10 # SD cutoff for ASR rejection; 20-30 conservative, 2.5 aggressive
 is_ica_rmEye = True
 select_event = "mnt_correct"
 baseline_length = -0.2
@@ -39,6 +42,8 @@ preproc_params = dict(
     bp_f_range = bp_f_range,
     is_reref = is_reref,
     reref_ch = reref_ch,
+    is_asr = is_asr,
+    asr_cutoff = asr_cutoff,
     is_ica_rmEye = is_ica_rmEye,
     select_event = select_event,
     baseline_length = baseline_length,
@@ -62,6 +67,48 @@ def _make_psd_fig(EEG, ch_names_pick, title, fmax=60):
     plt.tight_layout()
     return fig
 
+def _make_psd_compare_fig(EEG_pre, EEG_post, ch_names_pick, title, fmax=60,
+                           labels=("pre", "post")):
+    picks = [EEG_pre.ch_names.index(c) for c in ch_names_pick if c in EEG_pre.ch_names]
+    pow_pre, freqs = EEG_pre.compute_psd(picks=picks, fmax=fmax).get_data(return_freqs=True)
+    pow_post = EEG_post.compute_psd(picks=picks, fmax=fmax).get_data()
+    db_pre = 10 * np.log10(pow_pre)
+    db_post = 10 * np.log10(pow_post)
+
+    fig, axes = plt.subplots(len(picks), 1, figsize=(8, 2 * len(picks)), sharex=True)
+    if len(picks) == 1:
+        axes = [axes]
+    for ax, i, ch in zip(axes, range(len(picks)), [EEG_pre.ch_names[p] for p in picks]):
+        ax.plot(freqs, db_pre[i], lw=0.8, color='gray', alpha=0.6, label=labels[0])
+        ax.plot(freqs, db_post[i], lw=0.8, color='C0', alpha=0.9, label=labels[1])
+        ax.set_ylabel(f"{ch}\n(dB)", fontsize=8)
+    axes[0].legend(loc='upper right', fontsize=7)
+    axes[-1].set_xlabel("Frequency (Hz)")
+    fig.suptitle(title)
+    plt.tight_layout()
+    return fig
+
+def _make_timeseries_compare_fig(EEG_pre, EEG_post, ch_names_pick, title,
+                                  t_sec=(0, 10), labels=("pre", "post")):
+    picks = [EEG_pre.ch_names.index(c) for c in ch_names_pick if c in EEG_pre.ch_names]
+    tmin_idx = int(t_sec[0] * EEG_pre.info["sfreq"])
+    tmax_idx = int(t_sec[1] * EEG_pre.info["sfreq"])
+    data_pre = EEG_pre.get_data(picks=picks)[:, tmin_idx:tmax_idx] * 1e6  # V -> µV
+    data_post = EEG_post.get_data(picks=picks)[:, tmin_idx:tmax_idx] * 1e6
+    times = EEG_pre.times[tmin_idx:tmax_idx]
+    fig, axes = plt.subplots(len(picks), 1, figsize=(12, 2 * len(picks)), sharex=True)
+    if len(picks) == 1:
+        axes = [axes]
+    for ax, i, ch in zip(axes, range(len(picks)), [EEG_pre.ch_names[p] for p in picks]):
+        ax.plot(times, data_pre[i], lw=0.8, color='gray', alpha=0.6, label=labels[0])
+        ax.plot(times, data_post[i], lw=0.8, color='C0', alpha=0.9, label=labels[1])
+        ax.set_ylabel(f"{ch}\n(µV)", fontsize=8)
+    axes[0].legend(loc='upper right', fontsize=7)
+    axes[-1].set_xlabel("Time (s)")
+    fig.suptitle(title)
+    plt.tight_layout()
+    return fig
+
 def _make_timeseries_fig(EEG, ch_names_pick, title, t_sec=(0, 10)):
     picks = [EEG.ch_names.index(c) for c in ch_names_pick if c in EEG.ch_names]
     tmin_idx = int(t_sec[0] * EEG.info["sfreq"])
@@ -75,6 +122,34 @@ def _make_timeseries_fig(EEG, ch_names_pick, title, t_sec=(0, 10)):
         ax.plot(times, data[i], lw=0.8)
         ax.set_ylabel(f"{ch}\n(µV)", fontsize=8)
     axes[-1].set_xlabel("Time (s)")
+    fig.suptitle(title)
+    plt.tight_layout()
+    return fig
+
+def _make_ica_sources_fig(ica, EEG, title, t_sec=(0, 10), picks=None):
+    """Plot IC activations manually from ica.get_sources(), with each
+    component's scalp topography plotted next to its time series."""
+    sources = ica.get_sources(EEG)
+    picks = list(range(len(sources.ch_names))) if picks is None else picks
+    tmin_idx = int(t_sec[0] * sources.info["sfreq"])
+    tmax_idx = int(t_sec[1] * sources.info["sfreq"])
+    data = sources.get_data(picks=picks)[:, tmin_idx:tmax_idx]
+    times = sources.times[tmin_idx:tmax_idx]
+
+    components = ica.get_components()  # (n_channels, n_components) mixing matrix
+    pos_info = mne.pick_info(ica.info, mne.pick_types(ica.info, eeg=True, meg=False))
+
+    n = len(picks)
+    fig, axes = plt.subplots(n, 2, figsize=(12, 1.5 * n),
+                              gridspec_kw={'width_ratios': [5, 1]}, sharex=False)
+    if n == 1:
+        axes = axes[np.newaxis, :]
+    for row, p in enumerate(picks):
+        ax_ts, ax_topo = axes[row, 0], axes[row, 1]
+        ax_ts.plot(times, data[row], lw=0.6)
+        ax_ts.set_ylabel(f"IC{p}", fontsize=8, rotation=0, ha='right', va='center')
+        mne.viz.plot_topomap(components[:, p], pos_info, axes=ax_topo, show=False)
+    axes[-1, 0].set_xlabel("Time (s)")
     fig.suptitle(title)
     plt.tight_layout()
     return fig
@@ -142,6 +217,7 @@ for _vhdr_file in _vhdr_files:
     # ── Step 0: load raw ──────────────────────────────────────────────────────
     EEG_raw = fix_and_load_brainvision(os.path.join(_raw_eeg_path, _vhdr_file))
     EEG_raw.set_channel_types({'Trigger': 'misc'})
+    EEG_raw.set_montage(mne.channels.make_standard_montage('standard_1020'), on_missing='ignore')
     eeg_trigger = EEG_raw.get_data(picks='Trigger')
     thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
     # check if the trigger goes to 0V or -0.9V when being pressed
@@ -211,20 +287,36 @@ for _vhdr_file in _vhdr_files:
         _savefig(_make_timeseries_fig(EEG_step3, ch_names, f"{_prefix} – Re-reference time series"),
                 _vis_dir, f"{_prefix}_step3_reref_timeseries.png")
 
-    # ── Step 4: ICA eye-artifact removal ─────────────────────────────────────
+    # ── Step 4: ASR ─────────────────────────────────────────────────────────
     EEG_step4 = EEG_step3.copy()
+    if is_asr:
+        asr = asrpy.ASR(sfreq=EEG_step4.info["sfreq"], cutoff=asr_cutoff)
+        asr.fit(EEG_step4.copy().pick('eeg'))
+        EEG_step4 = asr.transform(EEG_step4)
+
+        _savefig(_make_psd_compare_fig(EEG_step3, EEG_step4, ch_names,
+                                        f"{_prefix} – Pre/Post-ASR PSD", labels=("pre-ASR", "post-ASR")),
+                _vis_dir, f"{_prefix}_step4_asr_psd.png")
+        _savefig(_make_timeseries_compare_fig(EEG_step3, EEG_step4, ch_names,
+                                               f"{_prefix} – Pre/Post-ASR time series", labels=("pre-ASR", "post-ASR")),
+                _vis_dir, f"{_prefix}_step4_asr_timeseries.png")
+
+    # ── Step 5: ICA eye-artifact removal ─────────────────────────────────────
+    EEG_step5 = EEG_step4.copy()
     if is_ica_rmEye:
-        n_eeg = EEG_step4.info.get_channel_types().count('eeg')
+        n_eeg = EEG_step5.info.get_channel_types().count('eeg')
         ica = mne.preprocessing.ICA(n_components=n_eeg, method='infomax', random_state=42, verbose=False)
-        ica.fit(EEG_step4, picks=['eeg'], verbose=False)
-        eog_inds, eog_scores = ica.find_bads_eog(EEG_step4, ch_name=['hEOG', 'vEOG'],
+        ica.fit(EEG_step5, picks=['eeg'], verbose=False)
+
+        fig_sources = _make_ica_sources_fig(ica, EEG_step5, f"{_prefix} – ICA component time series & topographies")
+        _savefig(fig_sources, _vis_dir, f"{_prefix}_step5_ICA_sources_timeseries.png")
+
+        eog_inds, eog_scores = ica.find_bads_eog(EEG_step5, ch_name=['Fp1', 'Fp2'],
                                                   measure='correlation', threshold=0.9,
                                                   verbose=False)
         print(f"  ICA eye components removed: {eog_inds}")
-
-        fig_scores = ica.plot_scores(eog_scores, exclude=eog_inds, show=False)
-        fig_scores.suptitle(f"{_prefix} – ICA EOG scores"); plt.tight_layout()
-        _savefig(fig_scores, _vis_dir, f"{_prefix}_step4_ICA_scores.png")
+        ica.plot_components()
+        _make_ica_sources_fig(ica, EEG_step5, 'Check IC', t_sec=(0, 10), picks=2)
 
         if eog_inds:
             try:
@@ -233,31 +325,30 @@ for _vhdr_file in _vhdr_files:
                     fig_comp = [fig_comp]
                 for fi, fc in enumerate(fig_comp):
                     fc.suptitle(f"{_prefix} – ICA excluded components"); plt.tight_layout()
-                    _savefig(fc, _vis_dir, f"{_prefix}_step4_ICA_components_{fi}.png")
+                    _savefig(fc, _vis_dir, f"{_prefix}_step5_ICA_components_{fi}.png")
             except Exception as e:
                 # QhullError: too few channels remaining for topomap triangulation
                 print(f"  Could not plot ICA components ({type(e).__name__}): {e}")
 
         ica.exclude = eog_inds
-        EEG_step4 = ica.apply(EEG_step4, verbose=False)
-        EEG_step4._data[4] = eeg_trigger
+        EEG_step5 = ica.apply(EEG_step5, verbose=False)
 
-    _savefig(_make_psd_fig(EEG_step4, ch_names, f"{_prefix} – Post-ICA PSD"),
-             _vis_dir, f"{_prefix}_step4_ICA_psd.png")
-    _savefig(_make_timeseries_fig(EEG_step4, ch_names, f"{_prefix} – Post-ICA time series"),
-             _vis_dir, f"{_prefix}_step4_ICA_timeseries.png")
+    _savefig(_make_psd_fig(EEG_step5, ch_names, f"{_prefix} – Post-ICA PSD"),
+             _vis_dir, f"{_prefix}_step5_ICA_psd.png")
+    _savefig(_make_timeseries_fig(EEG_step5, ch_names, f"{_prefix} – Post-ICA time series"),
+             _vis_dir, f"{_prefix}_step5_ICA_timeseries.png")
 
     print(f"  Figures saved to {_vis_dir}")
 
     # save preprocessed EEG as .fif
     _fif_path = os.path.join(_save_dir, f"sub-{subj_id}_task-gradCPT_{_run_label}_preproc_eeg.fif")
     if is_overwrite or not os.path.exists(_fif_path):
-        EEG_step4.save(_fif_path, overwrite=True, verbose=False)
+        EEG_step5.save(_fif_path, overwrite=True, verbose=False)
         print(f"  Saved preprocessed EEG → {_fif_path}")
     else:
         print(f"  Preprocessed EEG already exists, skipping: {_fif_path}")
 
-    _single_subj_EEG_dict[_run_key]   = EEG_step4
+    _single_subj_EEG_dict[_run_key]   = EEG_step5
     _single_subj_rm_ch_dict[_run_key] = rm_ch_list
 
 # ── save ──────────────────────────────────────────────────────────────────────
