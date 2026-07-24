@@ -94,15 +94,17 @@ def check_flat_channels(EEG, flat_dur_sec=5):
             flat_ch_idx.append(eeg_chs[ch_i])
     return flat_ch_idx
 
-def check_abnormal_var_channels(EEG, thres_std=3):
+def check_abnormal_var_channels(EEG, thres_std=3, is_two_side=False):
     eeg_data = EEG.get_data(picks='eeg')
     eeg_chs = np.array([x["ch_name"] for x in EEG.info["chs"] if x["kind"]==2])
     # calculate variance for each channels and transform to z-score
     eeg_var = np.var(eeg_data,axis=1)
     eeg_var_z = (eeg_var-np.mean(eeg_var))/np.std(eeg_var)
-    if np.any(abs(eeg_var_z))>thres_std:
-        print(f"Warning: channels with abnormal variance: {eeg_chs[abs(eeg_var_z)>thres_std]}")
-    return eeg_chs[abs(eeg_var_z)>thres_std]
+    if is_two_side:
+        eeg_var_z = abs(eeg_var_z)
+    if np.any(eeg_var_z)>thres_std:
+        print(f"Warning: channels with abnormal variance: {eeg_chs[eeg_var_z>thres_std]}")
+    return eeg_chs[eeg_var_z>thres_std]
 
 def check_large_amp_channels(EEG, thres_amp=1000):
     """Flag EEG channels whose peak-to-peak amplitude exceeds thres_amp µV."""
