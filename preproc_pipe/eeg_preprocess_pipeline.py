@@ -156,7 +156,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
             continue
 
         # Step 0 – raw ────────────────────────────────────────────────────────
-        eeg_trigger = EEG_raw.get_data()[4]
+        eeg_trigger = EEG_raw.get_data(picks='Trigger') # get data from Trigger channel
         thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
         # check if the trigger goes to 0V or -0.9V when being pressed
         press_period = eeg_trigger < thres_trigger

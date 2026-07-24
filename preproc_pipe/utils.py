@@ -159,14 +159,15 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
     EEG._data[4] = eeg_trigger
     return EEG, rm_ch_list
 
-def gen_EEG_event_tsv(subj_id, savepath=None):
+def gen_EEG_event_tsv(subj_id, savepath=None, gradcpt_path=None):
     """
     TODO: sub-695 run2, mnt_correct number doesn't match with Laura's event file. 2026-01-14
     """
     # setup savepath
     if savepath is None:
         savepath = os.path.join(data_save_path,f'sub-{subj_id}')
-    gradcpt_path = os.path.join(data_path, f'sub-{subj_id}/gradCPT')
+    if gradcpt_path is None:
+        gradcpt_path = os.path.join(data_path, f'sub-{subj_id}/gradCPT')
     # get all files with .mat ext in gradcpt_path
     files = [f for f in os.listdir(gradcpt_path) 
              if os.path.isfile(os.path.join(gradcpt_path, f)) 
