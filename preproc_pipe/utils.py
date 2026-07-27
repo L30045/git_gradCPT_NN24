@@ -802,7 +802,8 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params, interp_
     subj_vtc_dict = dict()
     subj_react_dict = dict()
     # always regenerate event files to ensure response_code matches BIDS nirs convention
-    gen_EEG_event_tsv(int(key_name.split('-')[-1]))
+    # gen_EEG_event_tsv(int(key_name.split('-')[-1]))
+    gen_EEG_event_tsv(key_name.split('-')[-1])
     # for each run
     for run_name in single_subj_EEG_dict.keys():
         if 'gradcpt' not in run_name:
