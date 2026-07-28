@@ -100,176 +100,80 @@ def sort_and_smooth(epochs, vtcs, vis_smooth):
         axis=0, arr=epochs)
     return epochs, vtcs
 
-#%% Detrend sample
-_demo_subj   = 'sub-721'
-_demo_run    = 2
-detrend_order = 2
-f_lowpass=30
-f_downsample=60
-_demo_subj_id = _demo_subj.replace('sub-', '')
-_demo_nirs_dir = os.path.join(project_path, _demo_subj, 'nirs')
-_demo_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', _demo_subj, 'eye_tracking')
-
-_physio_file = os.path.join(_demo_nirs_dir,
-    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
-if not os.path.isfile(_physio_file):
-    _physio_file = os.path.join(_demo_nirs_dir,
-        f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio.tsv")
-
-_neon_dirs = sorted([d for d in os.listdir(_demo_neon_dir) if re.match(r'\d{4}-', d)])
-_neon_data = pd.read_csv(_physio_file, sep='\t')
-_rec = nr.open(os.path.join(_demo_neon_dir, _neon_dirs[_demo_run - 1])) if _neon_dirs else None
-t_neon = _neon_data['timestamps']           # in fNIRS time
-pupil_d = (_neon_data['eyeleft_pupilDiameter'] + _neon_data['eyeright_pupilDiameter']) / 2
-# remove blink periods (t_blink_start/stop and t_neon_ori are in Neon time)
-pupil_d = pupil_d.values.copy().astype(float)
-if _rec:
-    print(f"NeonRecording is presented. Remove blink from pupil data.")
-    t_neon_arr = _neon_data['time'].values # in Neon time. no offset
-    try:
-        t_blink_start = _rec.blinks["start_time"]
-        t_blink_stop  = _rec.blinks["stop_time"]
-        for t_start, t_stop in zip(t_blink_start, t_blink_stop):
-            mask = (t_neon_arr >= t_start) & (t_neon_arr <= t_stop)
-            pupil_d[mask] = np.nan
-    except KeyError:
-        print(f"Warning: blink data unavailable for this recording, skipping blink removal.")
-else:
-    print("No recording data present. Linear interpret missing data.")
-# linear interpolation over blink periods
-valid = ~np.isnan(pupil_d)
-# check if there is too many missing data. If yes, return NaN
-if np.sum(valid)/len(valid) < 0.7:
-    print("Missing more than 30\% of data. Ignore the subject.")
-pupil_d = np.interp(t_neon, t_neon[valid], pupil_d[valid])
-# polynomial detrend (NaN-safe polyfit)
-_t_idx = np.arange(len(pupil_d), dtype=float)
-_valid = np.where(~np.isnan(pupil_d))[0]
-_coef  = np.polyfit(_t_idx[_valid], pupil_d[_valid], detrend_order)
-pupil_ori = pupil_d.copy()
-pupil_d = pupil_d - np.polyval(_coef, _t_idx)
-pupil_detrend = np.polyval(_coef, _t_idx)
-# estimate sampling frequency from timestamps
-t_neon_arr = t_neon.values
-fs = 1.0 / np.median(np.diff(t_neon_arr))
-# lowpass filter
-sos = sp.signal.butter(4, f_lowpass, btype='low', fs=fs, output='sos')
-pupil_d = sp.signal.sosfiltfilt(sos, pupil_d)
-pupil_ori = sp.signal.sosfiltfilt(sos, pupil_ori)
-pupil_detrend = sp.signal.sosfiltfilt(sos, pupil_detrend)
-# downsample
-t_new = np.arange(t_neon_arr[0], t_neon_arr[-1], 1.0 / f_downsample)
-pupil_d = np.interp(t_new, t_neon_arr, pupil_d)
-pupil_ori = np.interp(t_new, t_neon_arr, pupil_ori)
-pupil_detrend = np.interp(t_new, t_neon_arr, pupil_detrend)
-t_neon = t_new
-_t = t_neon
-_x = pupil_ori
-
-fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-axes[0].plot(_t, _x,     color='steelblue', linewidth=0.6, label='Original')
-axes[0].plot(_t, pupil_detrend, color='crimson',   linewidth=1.5, linestyle='--', label='Quadratic fit')
-axes[0].set_ylabel('Pupil diameter (mm)')
-axes[0].set_title(f'Detrend demo — {_demo_subj} run-{_demo_run:02d}: original + fitted polyline')
-axes[0].legend(fontsize=9)
-axes[0].grid()
-
-axes[1].plot(_t, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
-axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
-axes[1].set_ylabel('Pupil diameter (mm)')
-axes[1].set_xlabel('Time (s)')
-axes[1].set_title('After quadratic detrending')
-axes[1].legend(fontsize=9)
-axes[1].grid()
-plt.tight_layout()
-
-# GLM regression demo: remove phasic components and visualize
-_event_file = os.path.join(_demo_nirs_dir,
-    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_events.tsv")
-_events_df = pd.read_csv(_event_file, sep='\t')
-
-_basis, _t_hrf = _build_gaussian_basis(f_downsample,
-                                        t_pre=2.0, t_post=10.0,
-                                        t_delta=1.0, t_std=1.0)
-_stim_conds = {
-    'mnt_correct':    (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] == 0),
-    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
-    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
-    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
-}
-_resp_conds = {
-    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
-    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
-    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
-}
-_X_blocks = []
-for _idx in _stim_conds.values():
-    _onsets = _events_df[_idx]['onset'].values
-    if len(_onsets) > 0:
-        _X_blocks.append(_convolve_onsets(_onsets, t_neon, _basis, _t_hrf, f_downsample))
-for _idx in _resp_conds.values():
-    _sub = _events_df[_idx]
-    _rt_onsets = (_sub['onset'] + _sub['reaction_time']).values
-    if len(_rt_onsets) > 0:
-        _X_blocks.append(_convolve_onsets(_rt_onsets, t_neon, _basis, _t_hrf, f_downsample))
-_X = np.hstack(_X_blocks)
-_X_int = np.hstack([_X, np.ones((len(pupil_d), 1))])
-_beta, _, _, _ = np.linalg.lstsq(_X_int, pupil_d, rcond=None)
-_pupil_phasic   = _X @ _beta[:-1]
-_pupil_residual = pupil_d - _pupil_phasic
-
-fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
-axes[0].plot(t_neon, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
-axes[0].plot(t_neon, _pupil_phasic, color='crimson', linewidth=1.0, label='GLM fit (phasic)')
-axes[0].set_ylabel('Pupil diameter (mm)')
-axes[0].set_title(f'GLM regression demo — {_demo_subj} run-{_demo_run:02d}: detrended + phasic fit')
-axes[0].legend(fontsize=9)
-axes[0].grid()
-
-axes[1].plot(t_neon, _pupil_phasic, color='crimson', linewidth=0.8)
-axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
-axes[1].set_ylabel('Pupil diameter (mm)')
-axes[1].set_title('Phasic component (GLM fit)')
-axes[1].grid()
-
-axes[2].plot(t_neon, _pupil_residual, color='steelblue', linewidth=0.6)
-axes[2].axhline(0, color='k', linewidth=0.8, linestyle='--')
-axes[2].set_ylabel('Pupil diameter (mm)')
-axes[2].set_xlabel('Time (s)')
-axes[2].set_title('After phasic regression')
-axes[2].grid()
-plt.tight_layout()
+def _parse_eyetracking_readme(subj_snirf_raw):
+    """Parse 'Eye-Tracking Folders' section -> {(task_lower, run_int): folder_name}."""
+    readme_file = next(
+        (f for f in sorted(os.listdir(subj_snirf_raw)) if f.upper().startswith("README")),
+        None
+    )
+    if not readme_file:
+        return {}
+    with open(os.path.join(subj_snirf_raw, readme_file)) as _f:
+        readme_text = _f.read()
+    # find the Eye-Tracking Folders section
+    section_match = re.search(
+        r"Eye-Tracking Folders\s*\n(.*?)(?:\n\n|\Z)", readme_text, re.IGNORECASE | re.DOTALL
+    )
+    if not section_match:
+        return {}
+    mapping = {}
+    for line in section_match.group(1).splitlines():
+        line = line.strip()
+        # e.g. "2025-11-13-17-08-36 GradCPT Run 1"
+        m = re.match(r"(\d{4}-\S+)\s+(\S+)\s+Run\s+(\d+)", line, re.IGNORECASE)
+        if m:
+            folder, task, run_num = m.group(1), m.group(2).lower(), int(m.group(3))
+            mapping[(task, run_num)] = folder
+    return mapping
 
 #%% cross subjects epoch analysis
+# raw_data_path = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/sourcedata/raw"
 dirs = os.listdir(project_path)
 subject_list = [d for d in dirs if 'sub' in d] # and d not in excluded]
+physio_version = 'latest'
 
 epoch_length = 12 # sec (fade-in + fade-out)
 baseline_length = 12 # sec (previous event's fade-out phase)
 rt_pre, rt_post = 5, 12  # sec before/after RT
 pupil_dict = {}
+missing_subj_list = []
 for subj in sorted(subject_list):
     subj_id = subj.replace('sub-', '')
     subj_nirs = os.path.join(project_path, subj, 'nirs')
     subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
-    if not os.path.isdir(subj_nirs) or not os.path.isdir(subj_neon_dir):
+    subj_snirf_raw = os.path.join(project_path, "sourcedata", "raw", subj, "nirs")
+    if not os.path.isdir(subj_neon_dir):
+        missing_subj_list.append(f"{subj}: no Neon folder")
+        continue
+    if not os.path.isdir(subj_nirs):
+        missing_subj_list.append(f"{subj}: no nirs folder")
         continue
     snirf_files = sorted([f for f in os.listdir(subj_nirs) if f.endswith('.snirf')])
     neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
     pupil_dict[subj] = {}
     for run_id in range(1, 4):
         snirf_name = f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_nirs.snirf"
-        physio_file = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
+        physio_file = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio_{physio_version}.tsv")
         if not os.path.isfile(physio_file):
             physio_file = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_recording-eyetracking_physio.tsv")
         event_file  = os.path.join(subj_nirs, f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
-        if snirf_name not in snirf_files or not os.path.isfile(physio_file) or not os.path.isfile(event_file):
+        if snirf_name not in snirf_files:
+            missing_subj_list.append(f"{subj}: no snirf")
             continue
-        neon_idx = snirf_files.index(snirf_name)
+        if not os.path.isfile(physio_file):
+            missing_subj_list.append(f"{subj}: no physio file")
+            continue
+        if not os.path.isfile(event_file):
+            missing_subj_list.append(f"{subj}: no event file")
+            continue
+        mapping = _parse_eyetracking_readme(subj_snirf_raw)
         neon_data = pd.read_csv(physio_file, sep='\t')
         # check if the data is recorded by Neon
-        if neon_dirs_subj:
-            rec = nr.open(os.path.join(subj_neon_dir, neon_dirs_subj[neon_idx]))
+        if neon_dirs_subj and len(mapping.keys())>0:
+            if ('gradcpt',run_id) in mapping.keys():
+                rec = nr.open(os.path.join(subj_neon_dir, mapping[('gradcpt',run_id)]))
+            else:
+                rec = None
         else:
             rec = None
         # load events
@@ -305,6 +209,7 @@ for subj in sorted(subject_list):
         # check if subject missing too many data
         if t_neon_s is None:
             print(f"Missing too many data. Skip sub-{subj}")
+            missing_subj_list.append(f"{subj}: Missing too many data")
             continue
         sfreq_neon = np.round(np.median(1 / np.diff(t_neon_s)))
         print(f"{subj} run-{run_id:02d}: sfreq_neon = {sfreq_neon} Hz")
@@ -345,10 +250,11 @@ for subj in sorted(subject_list):
             'epoch_length':                 epoch_length,
         }
 pupil_dict = {subj: runs for subj, runs in pupil_dict.items() if runs}
+missing_subj_list.unique()
 
 #%% Plot Cross-subject results
 conditions = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
-
+is_baseline_correction = True
 # For each subject, pool epochs across runs then compute the per-subject mean time course
 subj_mean = {cond: [] for cond in conditions}
 for subj, runs in pupil_dict.items():
@@ -362,7 +268,10 @@ for subj, runs in pupil_dict.items():
                     continue
                 t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
                 baseline_val = np.nanmean(ep[t_ep < 0])
-                all_epochs.append(ep - baseline_val)
+                if is_baseline_correction:
+                    all_epochs.append(ep - baseline_val)
+                else:
+                    all_epochs.append(ep)
         if len(all_epochs) == 0:
             continue
         try:
@@ -470,6 +379,169 @@ ax.legend(fontsize=8, ncol=2)
 ax.grid()
 plt.tight_layout()
 
+#%% Compare the mean amplitdue of baseline between in-zone and out-of-zone for each trial type
+"""
+Add a session to calculate the baseline average for each type of trials
+"""
+conditions_bl = ['mnt_correct', 'mnt_incorrect', 'city_correct', 'city_incorrect']
+# Time window (relative to stimulus onset, sec) used to compute the amplitude.
+# Negative = before onset, positive = after onset.
+amp_t_start, amp_t_end = -5, 0
+
+# Per subject/condition: subject-level VTC median (in-zone = VTC < median), then
+# mean *uncorrected* pupil amplitude in [amp_t_start, amp_t_end) for in-zone vs out-of-zone trials
+subj_baseline_vtc = {cond: {'in_zone': [], 'out_zone': []} for cond in conditions_bl}
+for subj, runs in pupil_dict.items():
+    for cond in conditions_bl:
+        subj_vtc_all = []
+        for run_data in runs.values():
+            subj_vtc_all.extend(run_data[f'{cond}_vtc'].tolist())
+        if not subj_vtc_all:
+            continue
+        subj_median = np.median(subj_vtc_all)
+
+        in_zone_bl, out_zone_bl = [], []
+        for run_data in runs.values():
+            for ep, vtc_val in zip(run_data[cond], run_data[f'{cond}_vtc']):
+                ep = np.array(ep, dtype=float)
+                if np.all(np.isnan(ep)):
+                    continue
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
+                amp_win = (t_ep >= amp_t_start) & (t_ep < amp_t_end)
+                baseline_val = np.nanmean(ep[amp_win])
+                if np.isnan(baseline_val):
+                    continue
+                if vtc_val < subj_median:
+                    in_zone_bl.append(baseline_val)
+                else:
+                    out_zone_bl.append(baseline_val)
+        if in_zone_bl:
+            subj_baseline_vtc[cond]['in_zone'].append(np.mean(in_zone_bl))
+        if out_zone_bl:
+            subj_baseline_vtc[cond]['out_zone'].append(np.mean(out_zone_bl))
+
+# Paired t-test (in-zone vs out-of-zone) per condition, using subjects with both
+baseline_stats = {}
+for cond in conditions_bl:
+    in_vals  = subj_baseline_vtc[cond]['in_zone']
+    out_vals = subj_baseline_vtc[cond]['out_zone']
+    n_paired = min(len(in_vals), len(out_vals))
+    if n_paired < 2:
+        continue
+    in_arr, out_arr = np.array(in_vals[:n_paired]), np.array(out_vals[:n_paired])
+    t_stat, p_val = sp.stats.ttest_rel(in_arr, out_arr)
+    baseline_stats[cond] = {'t': t_stat, 'p': p_val, 'n': n_paired}
+    print(f"{cond}: baseline in-zone={in_arr.mean():.4f} vs out-of-zone={out_arr.mean():.4f}, "
+          f"t({n_paired-1})={t_stat:.3f}, p={p_val:.4f}")
+
+# Bar plot: mean ± 95% CI baseline amplitude, in-zone vs out-of-zone, per condition
+ci_level = 0.95
+fig, ax = plt.subplots(figsize=(8, 5))
+x = np.arange(len(conditions_bl))
+width = 0.35
+for offset, (zone_key, zone_label, color) in zip(
+        [-1, 1],
+        [('in_zone', 'in-zone', 'steelblue'), ('out_zone', 'out-of-zone', 'indianred')]):
+    means = []
+    cis   = []
+    for cond in conditions_bl:
+        vals = subj_baseline_vtc[cond][zone_key]
+        if vals:
+            n = len(vals)
+            sem = np.std(vals, ddof=1) / np.sqrt(n) if n > 1 else 0.0
+            t_crit = sp.stats.t.ppf((1 + ci_level) / 2, n - 1) if n > 1 else 0.0
+            means.append(np.mean(vals))
+            cis.append(sem * t_crit)
+        else:
+            means.append(np.nan)
+            cis.append(np.nan)
+    ax.bar(x + offset * width / 2, means, width, yerr=cis, label=zone_label,
+           color=color, capsize=3)
+for i, cond in enumerate(conditions_bl):
+    if cond in baseline_stats and baseline_stats[cond]['p'] < 0.05:
+        ax.text(x[i], np.nanmax([m for m in [
+            np.mean(subj_baseline_vtc[cond]['in_zone']) if subj_baseline_vtc[cond]['in_zone'] else np.nan,
+            np.mean(subj_baseline_vtc[cond]['out_zone']) if subj_baseline_vtc[cond]['out_zone'] else np.nan,
+        ]]) * 1.05, '*', ha='center', fontsize=14)
+ax.set_xticks(x)
+ax.set_xticklabels([c.replace('_', ' ') for c in conditions_bl])
+ax.set_ylabel('Baseline pupil diameter (mm)')
+ax.set_title('Mean baseline amplitude: in-zone vs out-of-zone')
+ax.legend()
+ax.grid(axis='y')
+plt.tight_layout()
+
+#%% Overall in-zone vs out-of-zone baseline amplitude (trial type ignored)
+# Per subject: subject-level VTC median pooled across ALL conditions, then
+# mean baseline amplitude for in-zone vs out-of-zone trials, collapsed across trial type
+subj_baseline_vtc_overall = {'in_zone': [], 'out_zone': []}
+for subj, runs in pupil_dict.items():
+    subj_vtc_all = []
+    for run_data in runs.values():
+        for cond in conditions_bl:
+            subj_vtc_all.extend(run_data[f'{cond}_vtc'].tolist())
+    if not subj_vtc_all:
+        continue
+    subj_median = np.median(subj_vtc_all)
+
+    in_zone_bl, out_zone_bl = [], []
+    for run_data in runs.values():
+        for cond in conditions_bl:
+            for ep, vtc_val in zip(run_data[cond], run_data[f'{cond}_vtc']):
+                ep = np.array(ep, dtype=float)
+                if np.all(np.isnan(ep)):
+                    continue
+                t_ep = np.linspace(-run_data['baseline_length'], run_data['epoch_length'], len(ep))
+                amp_win = (t_ep >= amp_t_start) & (t_ep < amp_t_end)
+                baseline_val = np.nanmean(ep[amp_win])
+                if np.isnan(baseline_val):
+                    continue
+                if vtc_val < subj_median:
+                    in_zone_bl.append(baseline_val)
+                else:
+                    out_zone_bl.append(baseline_val)
+    if in_zone_bl:
+        subj_baseline_vtc_overall['in_zone'].append(np.mean(in_zone_bl))
+    if out_zone_bl:
+        subj_baseline_vtc_overall['out_zone'].append(np.mean(out_zone_bl))
+
+# Paired t-test (in-zone vs out-of-zone), using subjects with both
+in_vals_overall  = subj_baseline_vtc_overall['in_zone']
+out_vals_overall = subj_baseline_vtc_overall['out_zone']
+n_paired_overall = min(len(in_vals_overall), len(out_vals_overall))
+overall_stat = None
+if n_paired_overall >= 2:
+    in_arr_overall  = np.array(in_vals_overall[:n_paired_overall])
+    out_arr_overall = np.array(out_vals_overall[:n_paired_overall])
+    t_stat_overall, p_val_overall = sp.stats.ttest_rel(in_arr_overall, out_arr_overall)
+    overall_stat = {'t': t_stat_overall, 'p': p_val_overall, 'n': n_paired_overall}
+    print(f"overall: baseline in-zone={in_arr_overall.mean():.4f} vs out-of-zone={out_arr_overall.mean():.4f}, "
+          f"t({n_paired_overall-1})={t_stat_overall:.3f}, p={p_val_overall:.4f}")
+
+# Bar plot: mean ± 95% CI baseline amplitude, in-zone vs out-of-zone (overall)
+fig, ax = plt.subplots(figsize=(4, 5))
+x_overall = np.arange(2)
+means_overall, cis_overall = [], []
+for vals in [in_vals_overall, out_vals_overall]:
+    if vals:
+        n = len(vals)
+        sem = np.std(vals, ddof=1) / np.sqrt(n) if n > 1 else 0.0
+        t_crit = sp.stats.t.ppf((1 + ci_level) / 2, n - 1) if n > 1 else 0.0
+        means_overall.append(np.mean(vals))
+        cis_overall.append(sem * t_crit)
+    else:
+        means_overall.append(np.nan)
+        cis_overall.append(np.nan)
+ax.bar(x_overall, means_overall, width=0.5, yerr=cis_overall,
+       color=['steelblue', 'indianred'], capsize=3)
+if overall_stat is not None and overall_stat['p'] < 0.05:
+    ax.text(0.5, np.nanmax(means_overall) * 1.05, '*', ha='center', fontsize=14)
+ax.set_xticks(x_overall)
+ax.set_xticklabels(['in-zone', 'out-of-zone'])
+ax.set_ylabel('Baseline pupil diameter (mm)')
+ax.set_title('Overall baseline amplitude:\nin-zone vs out-of-zone')
+ax.grid(axis='y')
+plt.tight_layout()
 
 #%% RT-locked: VTC median split per condition
 rt_vtc_specs = [
@@ -1355,4 +1427,146 @@ ax.set_ylabel('Log Power')
 ax.set_title('city_correct pupil spectrum: in-zone vs out-of-zone (cross-subject mean ± SEM)')
 ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
+plt.tight_layout()
+
+
+
+#%% Detrend sample
+_demo_subj   = 'sub-721'
+_demo_run    = 2
+detrend_order = 2
+f_lowpass=30
+f_downsample=60
+_demo_subj_id = _demo_subj.replace('sub-', '')
+_demo_nirs_dir = os.path.join(project_path, _demo_subj, 'nirs')
+_demo_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', _demo_subj, 'eye_tracking')
+
+_physio_file = os.path.join(_demo_nirs_dir,
+    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio_20260311_correct_idx.tsv")
+if not os.path.isfile(_physio_file):
+    _physio_file = os.path.join(_demo_nirs_dir,
+        f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_recording-eyetracking_physio.tsv")
+
+_neon_dirs = sorted([d for d in os.listdir(_demo_neon_dir) if re.match(r'\d{4}-', d)])
+_neon_data = pd.read_csv(_physio_file, sep='\t')
+_rec = nr.open(os.path.join(_demo_neon_dir, _neon_dirs[_demo_run - 1])) if _neon_dirs else None
+t_neon = _neon_data['timestamps']           # in fNIRS time
+pupil_d = (_neon_data['eyeleft_pupilDiameter'] + _neon_data['eyeright_pupilDiameter']) / 2
+# remove blink periods (t_blink_start/stop and t_neon_ori are in Neon time)
+pupil_d = pupil_d.values.copy().astype(float)
+if _rec:
+    print(f"NeonRecording is presented. Remove blink from pupil data.")
+    t_neon_arr = _neon_data['time'].values # in Neon time. no offset
+    try:
+        t_blink_start = _rec.blinks["start_time"]
+        t_blink_stop  = _rec.blinks["stop_time"]
+        for t_start, t_stop in zip(t_blink_start, t_blink_stop):
+            mask = (t_neon_arr >= t_start) & (t_neon_arr <= t_stop)
+            pupil_d[mask] = np.nan
+    except KeyError:
+        print(f"Warning: blink data unavailable for this recording, skipping blink removal.")
+else:
+    print("No recording data present. Linear interpret missing data.")
+# linear interpolation over blink periods
+valid = ~np.isnan(pupil_d)
+# check if there is too many missing data. If yes, return NaN
+if np.sum(valid)/len(valid) < 0.7:
+    print("Missing more than 30\% of data. Ignore the subject.")
+pupil_d = np.interp(t_neon, t_neon[valid], pupil_d[valid])
+# polynomial detrend (NaN-safe polyfit)
+_t_idx = np.arange(len(pupil_d), dtype=float)
+_valid = np.where(~np.isnan(pupil_d))[0]
+_coef  = np.polyfit(_t_idx[_valid], pupil_d[_valid], detrend_order)
+pupil_ori = pupil_d.copy()
+pupil_d = pupil_d - np.polyval(_coef, _t_idx)
+pupil_detrend = np.polyval(_coef, _t_idx)
+# estimate sampling frequency from timestamps
+t_neon_arr = t_neon.values
+fs = 1.0 / np.median(np.diff(t_neon_arr))
+# lowpass filter
+sos = sp.signal.butter(4, f_lowpass, btype='low', fs=fs, output='sos')
+pupil_d = sp.signal.sosfiltfilt(sos, pupil_d)
+pupil_ori = sp.signal.sosfiltfilt(sos, pupil_ori)
+pupil_detrend = sp.signal.sosfiltfilt(sos, pupil_detrend)
+# downsample
+t_new = np.arange(t_neon_arr[0], t_neon_arr[-1], 1.0 / f_downsample)
+pupil_d = np.interp(t_new, t_neon_arr, pupil_d)
+pupil_ori = np.interp(t_new, t_neon_arr, pupil_ori)
+pupil_detrend = np.interp(t_new, t_neon_arr, pupil_detrend)
+t_neon = t_new
+_t = t_neon
+_x = pupil_ori
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+axes[0].plot(_t, _x,     color='steelblue', linewidth=0.6, label='Original')
+axes[0].plot(_t, pupil_detrend, color='crimson',   linewidth=1.5, linestyle='--', label='Quadratic fit')
+axes[0].set_ylabel('Pupil diameter (mm)')
+axes[0].set_title(f'Detrend demo — {_demo_subj} run-{_demo_run:02d}: original + fitted polyline')
+axes[0].legend(fontsize=9)
+axes[0].grid()
+
+axes[1].plot(_t, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
+axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[1].set_ylabel('Pupil diameter (mm)')
+axes[1].set_xlabel('Time (s)')
+axes[1].set_title('After quadratic detrending')
+axes[1].legend(fontsize=9)
+axes[1].grid()
+plt.tight_layout()
+
+# GLM regression demo: remove phasic components and visualize
+_event_file = os.path.join(_demo_nirs_dir,
+    f"{_demo_subj}_task-gradCPT_run-{_demo_run:02d}_events.tsv")
+_events_df = pd.read_csv(_event_file, sep='\t')
+
+_basis, _t_hrf = _build_gaussian_basis(f_downsample,
+                                        t_pre=2.0, t_post=10.0,
+                                        t_delta=1.0, t_std=1.0)
+_stim_conds = {
+    'mnt_correct':    (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] == 0),
+    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+}
+_resp_conds = {
+    'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+}
+_X_blocks = []
+for _idx in _stim_conds.values():
+    _onsets = _events_df[_idx]['onset'].values
+    if len(_onsets) > 0:
+        _X_blocks.append(_convolve_onsets(_onsets, t_neon, _basis, _t_hrf, f_downsample))
+for _idx in _resp_conds.values():
+    _sub = _events_df[_idx]
+    _rt_onsets = (_sub['onset'] + _sub['reaction_time']).values
+    if len(_rt_onsets) > 0:
+        _X_blocks.append(_convolve_onsets(_rt_onsets, t_neon, _basis, _t_hrf, f_downsample))
+_X = np.hstack(_X_blocks)
+_X_int = np.hstack([_X, np.ones((len(pupil_d), 1))])
+_beta, _, _, _ = np.linalg.lstsq(_X_int, pupil_d, rcond=None)
+_pupil_phasic   = _X @ _beta[:-1]
+_pupil_residual = pupil_d - _pupil_phasic
+
+fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+axes[0].plot(t_neon, pupil_d, color='steelblue', linewidth=0.6, label='Detrended')
+axes[0].plot(t_neon, _pupil_phasic, color='crimson', linewidth=1.0, label='GLM fit (phasic)')
+axes[0].set_ylabel('Pupil diameter (mm)')
+axes[0].set_title(f'GLM regression demo — {_demo_subj} run-{_demo_run:02d}: detrended + phasic fit')
+axes[0].legend(fontsize=9)
+axes[0].grid()
+
+axes[1].plot(t_neon, _pupil_phasic, color='crimson', linewidth=0.8)
+axes[1].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[1].set_ylabel('Pupil diameter (mm)')
+axes[1].set_title('Phasic component (GLM fit)')
+axes[1].grid()
+
+axes[2].plot(t_neon, _pupil_residual, color='steelblue', linewidth=0.6)
+axes[2].axhline(0, color='k', linewidth=0.8, linestyle='--')
+axes[2].set_ylabel('Pupil diameter (mm)')
+axes[2].set_xlabel('Time (s)')
+axes[2].set_title('After phasic regression')
+axes[2].grid()
 plt.tight_layout()
