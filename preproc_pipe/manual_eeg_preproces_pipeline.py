@@ -23,11 +23,12 @@ bp_f_range = [0.1, 45] #band pass filter range (Hz)
 is_check_flat = True # check if there are flat channels in EEG
 is_check_ch_var = True # check if there are channels with abnormal var
 is_check_amp = False # check if EEG amplitude exceed 1000 muV
-is_reref = False
-reref_ch = ['tp9h','tp10h']
+is_reref = True
+reref_ch = ['AF3','AF4']
+# reref_ch = None
 # reref_ch = None # reref to average
 is_asr = True
-asr_cutoff = 15 # SD cutoff for ASR rejection; 20-30 conservative, 2.5 aggressive
+asr_cutoff = 20 # SD cutoff for ASR rejection; 20-30 conservative, 2.5 aggressive
 is_ica_rmEye = True
 select_event = "mnt_correct"
 baseline_length = -0.2
@@ -155,7 +156,6 @@ def _make_ica_sources_fig(ica, EEG, title, t_sec=(0, 10), picks=None):
     return fig
 
 #%% preprocess single subject — all gradCPT runs
-is_overwrite = False
 ch_names = ['Fz','Cz','Pz','Oz']
 subj_id = 'Easycap'
 data_path = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24_pilot/sourcedata/raw"
@@ -188,7 +188,7 @@ if is_overwrite and os.path.isdir(_vis_dir):
     print(f"sub-{subj_id}: cleared existing figures in {_vis_dir}")
 
 #%% Process 1-by-1 due to manual IC removal
-run_id = 3
+run_id = 2
 _vhdr_file = _vhdr_files[run_id-1]
 _run_match = re.search(r'run-(\d+)', _vhdr_file, re.IGNORECASE)
 _run_digit = str(int(_run_match.group(1))) if _run_match else '0'
@@ -306,7 +306,7 @@ if is_asr:
 EEG_step5 = EEG_step4.copy()
 if is_ica_rmEye:
     n_eeg = EEG_step5.info.get_channel_types().count('eeg')
-    ica = mne.preprocessing.ICA(n_components=n_eeg, method='infomax', random_state=42, verbose=False)
+    ica = mne.preprocessing.ICA(n_components=n_eeg-int(is_reref), method='infomax', random_state=42, verbose=False)
     ica.fit(EEG_step5, picks=['eeg'], verbose=False)
 
     fig_sources = _make_ica_sources_fig(ica, EEG_step5, f"{_prefix} – ICA component time series & topographies")
@@ -320,7 +320,7 @@ if is_ica_rmEye:
     
 #%% manual IC removal (eye, common avg., heart)
 _make_ica_sources_fig(ica, EEG_step5, 'Check IC', t_sec=(0, 10), picks=[2])
-rmIC_inds = [0,2,3]
+rmIC_inds = [0,5]
 if eog_inds:
     try:
         fig_comp = ica.plot_components(picks=eog_inds, show=False)

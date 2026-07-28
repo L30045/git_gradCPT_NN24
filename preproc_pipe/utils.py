@@ -161,7 +161,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
     EEG._data[4] = eeg_trigger
     return EEG, rm_ch_list
 
-def gen_EEG_event_tsv(subj_id, savepath=None, gradcpt_path=None):
+def gen_EEG_event_tsv(subj_id, data_path=None, savepath=None, gradcpt_path=None):
     """
     TODO: sub-695 run2, mnt_correct number doesn't match with Laura's event file. 2026-01-14
     """
@@ -197,7 +197,7 @@ def gen_EEG_event_tsv(subj_id, savepath=None, gradcpt_path=None):
         run_id = fname.lower().split("run-0")[-1][0]
         # get EEG trigger
         EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
-        eeg_trigger = EEG.get_data()[4]
+        eeg_trigger = EEG.get_data(picks='Trigger')
         # load corresponding gradCPT
         f_cpt = files[[i for i, x in enumerate(files) if x.split('run-0')[1][0]==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
