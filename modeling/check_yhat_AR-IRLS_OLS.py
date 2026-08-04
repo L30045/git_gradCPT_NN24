@@ -517,7 +517,7 @@ for ax_i in range(3):
 # Check cedalion.math.ar_irls.py ar_irls_GLM
 # ===================
 ts = Y_test
-stim_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+stim_dm = model.get_GLM_copy_from_pf_DM(run_list, noDrift_cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
 stim_dm.common = stim_dm.common.sel(chromo=['HbO'])
 design_matrix = stim_dm
 verbose = False
@@ -791,3 +791,163 @@ for it, xf_it in enumerate(xf_list_hpf):
     fig.suptitle(f'Whitened drift regressors (HPF) - iteration {it + 1}')
     plt.tight_layout()
     plt.show()
+
+
+#%% GLM in parcel space
+subj_id = 723
+print(f"Start processing: sub={subj_id}")
+filepath = f"/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/pipeline_reorder/processed_data/sub-{subj_id}"
+filename = f"sub-{subj_id}_task-gradCPT_adot-probe_spatialdim-vertex_IR_ts.pkl"
+
+# load HbO
+hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+try:
+    with gzip.open(hbo_file, 'rb') as f:
+        results = pickle.load(f)
+except:
+    print(f"Encounter loading error: sub-{subj_id}")
+
+all_runs = results['runs']
+all_chs_pruned = results['chs_pruned']
+all_stims = results['stims']
+geo3d = results['geo3d']
+cfg_GLM['geo3d'] = geo3d
+
+# load parcel
+with open(os.path.join(filepath, filename),'rb') as f:
+    results = pickle.load(f)
+parcel_ts_post = results['parcel_ts_post']
+vertex_mse = results['parcel_mse']
+
+#%% for each run
+roi_parcel_ts_list = []
+roi_var_list = []
+for run_id in range(len(parcel_ts_post)):
+    # select functional network (default mode network, dorsal lateral attention network)
+    """
+    parcel name before '_' is the network it belongs to.
+    """
+    # get unique network
+    network_labels = np.array([x.split('_')[0] for x in parcel_ts_post[run_id]['parcel'].values])
+    unique_networks = np.unique(network_labels)
+    # get data
+    data = parcel_ts_post[run_id].copy()
+    data = data.assign_coords({'channel': ('parcel', network_labels)})
+    # get parcel mse
+    mse = vertex_mse[run_id].copy()
+    mse = mse.groupby('parcel').mean('vertex')
+    mse = mse.assign_coords({'channel': ('parcel', network_labels)})
+
+    # Then I do our weighted averaging across the network dimension:
+    roi_parcel_ts = (data/mse).groupby('channel').sum('parcel') / (1/mse).groupby('channel').sum('parcel')
+    roi_var =  1 / (1/mse).groupby('channel').sum('parcel')
+
+    # store the values
+    roi_parcel_ts_list.append(roi_parcel_ts)
+    roi_var_list.append(roi_var)
+
+#%%
+# load HbO
+hbo_file = os.path.join(project_path,f"derivatives/cedalion/processed_data/sub-{subj_id}/sub-{subj_id}_preprocessed_results_ar_irls.pkl")
+with gzip.open(hbo_file, 'rb') as f:
+    results = pickle.load(f)
+
+all_runs = results['runs']
+all_chs_pruned = results['chs_pruned']
+all_stims = results['stims']
+geo3d = results['geo3d']
+cfg_GLM['geo3d'] = geo3d
+
+#%% get epoched concentration
+run_dict = dict()
+# Find all event files in project_path
+event_files = glob.glob(os.path.join(project_path, f"sub-{subj_id}", 'nirs', f"sub-{subj_id}_task-gradCPT_run-*_events.tsv"))
+event_files = sorted(event_files)  # Sort to ensure consistent ordering
+
+# Load each event file into run_dict
+for event_file in event_files:
+    # Extract run number from filename (e.g., run-01 -> 1)
+    run_num = event_file.split('run-')[1].split('_')[0]
+    run_key = f'run{run_num}'
+
+    # Initialize run dict if not exists
+    if run_key not in run_dict:
+        run_dict[run_key] = dict()
+
+    # Load event dataframe
+    run_dict[run_key]['ev_df'] = pd.read_csv(event_file, sep='\t')
+
+# find corresponding runs in all_runs and assign to run_dict
+sorted_run_time = []
+for r_i, run in enumerate(all_runs):
+    # Match this run to the correct run_dict entry by comparing first event
+    for run_key in run_dict.keys():
+        ev_df = run_dict[run_key]['ev_df']
+        if len(ev_df) > 0 and len(run.stim) > 0 and np.all(run.stim.iloc[0] == ev_df.iloc[0]):
+            sorted_run_time.append(run[0].time.values)
+            break
+
+# find corresponding roi_parcel_ts in roi_parcel_ts_list and assign to run_dict
+for r_i, roi in enumerate(roi_parcel_ts_list):
+    # Match this run to the correct run_dict entry by comparing first event
+    for run_key in run_dict.keys():
+        run_id = int(run_key.split('run')[-1])-1
+        if len(sorted_run_time[run_id]) == len(roi.time.values) and np.all(roi.time.values==sorted_run_time[run_id]):
+            run_dict[run_key]['network'] = roi
+            run_dict[run_key]['network_mse'] = roi_var_list[r_i]
+            break
+
+# epoch HbO
+len_epoch = 12 # seconds
+t_conc_ts = run_dict['run01']['network'].time
+sfreq_conc = np.median(1/np.diff(t_conc_ts))
+len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
+
+#%% Get reduced model DM
+run_list = []
+stim_list = []
+for run_key in run_dict.keys():
+    run_list.append(run_dict[run_key]['network'])
+    ev_df = run_dict[run_key]['ev_df'].copy()
+    # rename trial_type
+    ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct-stim'
+    ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
+    stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
+stim_dm = model.get_GLM_copy_from_pf_DM_network(run_list, cfg_GLM, stim_list)
+stim_dm.common = stim_dm.common.sel(chromo=['HbO'])
+# create no drift DM
+noDrift_cfg_GLM = copy.deepcopy(cfg_GLM)
+noDrift_cfg_GLM['do_drift']=False
+noDrift_cfg_GLM['do_drift_legendre']=False
+noDrift_dm = model.get_GLM_copy_from_pf_DM_network(run_list, noDrift_cfg_GLM, stim_list)
+noDrift_dm.common = noDrift_dm.common.sel(chromo=['HbO'])
+Y_parcel, _, runs_updated = model.concatenate_runs(run_list, stim_list)
+Y_parcel = Y_parcel.assign_coords(samples=('time', np.arange(Y_parcel.sizes['time'])))
+Y_test = Y_parcel.sel(chromo=['HbO'],channel=['DorsAttnA'])
+
+# get drift and ss
+# basis_dm = model.create_no_info_dm_network(run_list, cfg_GLM, stim_list)
+
+#%% get GLM fitting results for each subject from shank Jun 02 2025
+stim_results, stim_autoReg = model.my_fit(Y_test, stim_dm)
+drift_results, noDrift_autoReg = model.my_fit(Y_test, noDrift_dm)
+
+betas = stim_results.sm.params
+y_hat = (stim_dm.common * betas).sum('regressor')
+y_hat_stim = y_hat.transpose('chromo', 'channel', 'time')
+
+betas = drift_results.sm.params
+y_hat = (noDrift_dm.common * betas).sum('regressor')
+y_hat_nodrift = y_hat.transpose('chromo', 'channel', 'time')
+
+fig, axs = plt.subplots(1, 1, figsize=(14, 4), sharex=True)
+
+axs.plot(Y_test.time.values, Y_test.values.flatten(), label='Y (true)', color='k', linewidth=1)
+axs.plot(y_hat_stim.time.values, y_hat_stim.values.flatten(),
+        label='Stim (Cedalion))', alpha=0.7)
+axs.plot(y_hat_nodrift.time.values, y_hat_nodrift.values.flatten(),
+        label='Stim (no drift))', alpha=0.7)
+axs.set_ylabel(f'{debug_chromo} concentration')
+axs.set_title(f'Parcel activities estimation')
+axs.legend()
+axs.grid()

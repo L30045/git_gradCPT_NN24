@@ -188,7 +188,7 @@ if is_overwrite and os.path.isdir(_vis_dir):
     print(f"sub-{subj_id}: cleared existing figures in {_vis_dir}")
 
 #%% Process 1-by-1 due to manual IC removal
-run_id = 2
+run_id = 1
 _vhdr_file = _vhdr_files[run_id-1]
 _run_match = re.search(r'run-(\d+)', _vhdr_file, re.IGNORECASE)
 _run_digit = str(int(_run_match.group(1))) if _run_match else '0'
