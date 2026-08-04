@@ -29,6 +29,8 @@ from cedalion import units
 from scipy.signal import filtfilt, windows
 
 # import my own functions from a different directory
+# sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
+# import processing_func as pf
 sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules')
 import processing_func as pf
 # import image_recon_func as irf
@@ -207,32 +209,14 @@ results, hrf_estimate, hrf_mse, dms = pf.GLM(all_runs, cfg_GLM, geo3d, all_chs_p
 Y_all, stim_df, runs_updated = pf.concatenate_runs(all_runs, stims_pruned_list)
 
 # examine OLS model
-SPLIT_VTC = False
-SAVE_RESIDUAL = False
-USE_GSR = True
 NOISE_MODEL = 'ols'
-root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
-ADOT_FLAG = 'probe'
-weight_flag = 'post'
-spatial_dim = 'vertex'
-hrf_basis = 'cons_gaussians'# double_gamma_deriv, gamma_deriv, cons_gaussians
-flag = ''
-if NOISE_MODEL == 'ols':
-    DO_TDDR = True
-    DO_DRIFT = True
-    DO_DRIFT_LEGENDRE = False
-    DRIFT_ORDER = 3
-    F_MIN = 0 * units.Hz
-    F_MAX = 0.5 * units.Hz
-elif NOISE_MODEL == 'ar_irls':
-    DO_TDDR = False
-    DO_DRIFT = False
-    DO_DRIFT_LEGENDRE = True
-    DRIFT_ORDER = 3
-    F_MAX = 0
-    F_MIN = 0
-else:
-    print('Not a valid noise model - please select ols or ar_irls')
+
+DO_TDDR = True
+DO_DRIFT = True
+DO_DRIFT_LEGENDRE = False
+DRIFT_ORDER = 3
+F_MIN = 0 * units.Hz
+F_MAX = 0.5 * units.Hz
 
 cfg_GLM_ols = {
     'do_drift': DO_DRIFT,
