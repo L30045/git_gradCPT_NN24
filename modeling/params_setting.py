@@ -39,55 +39,13 @@ preproc_params = dict(
 )
 
 #%% GLM setup 
-RUN_PREPROCESS = True
-RUN_HRF_ESTIMATION = True
-SPLIT_VTC = False
-SAVE_RESIDUAL = False
-NOISE_MODEL = 'ar_irls'
-root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
-
-if NOISE_MODEL == 'ols':
-    DO_TDDR = True
-    DO_DRIFT = True
-    DO_DRIFT_LEGENDRE = False
-    DRIFT_ORDER = 3
-    F_MIN = 0 * units.Hz
-    F_MAX = 0.5 * units.Hz
-elif NOISE_MODEL == 'ar_irls':
-    DO_TDDR = False
-    DO_DRIFT = False
-    DO_DRIFT_LEGENDRE = True
-    DRIFT_ORDER = 3
-    F_MAX = 0
-    F_MIN = 0
-else:
-    print('Not a valid noise model - please select ols or ar_irls')
-
-cfg_GLM = {
-    'do_drift': DO_DRIFT,
-    'do_drift_legendre': DO_DRIFT_LEGENDRE,
-    'do_short_sep': True,
-    'drift_order' : DRIFT_ORDER,
-    'distance_threshold' : 20*units.mm, # for ssr
-    'short_channel_method' : 'mean',
-    'noise_model' : NOISE_MODEL,
-    't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
-    't_std' : 1*units.s ,  
-    't_pre' : 2*units.s,
-    't_post' : 10*units.s
-    }
-
-#%% Initial directory and analysis parameters
+# RUN_PREPROCESS = True
+# RUN_HRF_ESTIMATION = True
 # SPLIT_VTC = False
 # SAVE_RESIDUAL = False
-# USE_GSR = False
 # NOISE_MODEL = 'ar_irls'
 # root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
-# ADOT_FLAG = 'probe'
-# weight_flag = 'post'
-# spatial_dim = 'vertex'
-# hrf_basis = 'cons_gaussians'# double_gamma_deriv, gamma_deriv, cons_gaussians
-# flag = ''
+
 # if NOISE_MODEL == 'ols':
 #     DO_TDDR = True
 #     DO_DRIFT = True
@@ -108,34 +66,76 @@ cfg_GLM = {
 # cfg_GLM = {
 #     'do_drift': DO_DRIFT,
 #     'do_drift_legendre': DO_DRIFT_LEGENDRE,
-#     'do_short_sep': False,
+#     'do_short_sep': True,
 #     'drift_order' : DRIFT_ORDER,
-#     'do_GSR': USE_GSR,
-#     'GSR_weight': None,
 #     'distance_threshold' : 20*units.mm, # for ssr
 #     'short_channel_method' : 'mean',
 #     'noise_model' : NOISE_MODEL,
-#     'HRF_basis': hrf_basis, 
-
-#     # double gamma deriv
-#     'peak_time': 4*units.s,
-#     'peak_disp': 1*units.s,
-#     'undershoot_time': 16*units.s,
-#     'undershoot_disp': 1*units.s,
-#     'ratio': 1/6,
-#     'duration': 18*units.s,
-
-#     # gamma deriv
-#     'tau': {'HbO': 1.8*units.s, 'HbR':2.5*units.s}, 
-#     'sigma': {'HbO':3*units.s, 'HbR':3*units.s}, 
-#     'dur': 4*units.s,
-
-#     # consecutive gaussians
 #     't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
 #     't_std' : 1*units.s ,  
 #     't_pre' : 2*units.s,
-#     't_post' : 18*units.s
+#     't_post' : 10*units.s
 #     }
+
+#%% Initial directory and analysis parameters
+SPLIT_VTC = False
+SAVE_RESIDUAL = False
+USE_GSR = True
+NOISE_MODEL = 'ols'
+root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
+ADOT_FLAG = 'probe'
+weight_flag = 'post'
+spatial_dim = 'vertex'
+hrf_basis = 'cons_gaussians'# double_gamma_deriv, gamma_deriv, cons_gaussians
+flag = ''
+if NOISE_MODEL == 'ols':
+    DO_TDDR = True
+    DO_DRIFT = True
+    DO_DRIFT_LEGENDRE = False
+    DRIFT_ORDER = 3
+    F_MIN = 0 * units.Hz
+    F_MAX = 0.5 * units.Hz
+elif NOISE_MODEL == 'ar_irls':
+    DO_TDDR = False
+    DO_DRIFT = False
+    DO_DRIFT_LEGENDRE = True
+    DRIFT_ORDER = 3
+    F_MAX = 0
+    F_MIN = 0
+else:
+    print('Not a valid noise model - please select ols or ar_irls')
+
+cfg_GLM = {
+    'do_drift': DO_DRIFT,
+    'do_drift_legendre': DO_DRIFT_LEGENDRE,
+    'do_short_sep': False,
+    'drift_order' : DRIFT_ORDER,
+    'do_GSR': USE_GSR,
+    'GSR_weight': None,
+    'distance_threshold' : 20*units.mm, # for ssr
+    'short_channel_method' : 'mean',
+    'noise_model' : NOISE_MODEL,
+    'HRF_basis': hrf_basis, 
+
+    # double gamma deriv
+    'peak_time': 4*units.s,
+    'peak_disp': 1*units.s,
+    'undershoot_time': 16*units.s,
+    'undershoot_disp': 1*units.s,
+    'ratio': 1/6,
+    'duration': 18*units.s,
+
+    # gamma deriv
+    'tau': {'HbO': 1.8*units.s, 'HbR':2.5*units.s}, 
+    'sigma': {'HbO':3*units.s, 'HbR':3*units.s}, 
+    'dur': 4*units.s,
+
+    # consecutive gaussians
+    't_delta' : 1*units.s ,   # for seq of Gauss basis func - the temporal spacing between consecutive gaussians
+    't_std' : 1*units.s ,  
+    't_pre' : 2*units.s,
+    't_post' : 18*units.s
+    }
 
 
 #%% excluded subject due to low fNIRS quality

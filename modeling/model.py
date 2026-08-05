@@ -120,6 +120,84 @@ def get_short_regressors(runs, pruned_chans_list, geo3d, cfg_GLM):
 
     return ss_regressors
 
+def get_global_mean_regressor(runs, weights=None):
+
+    gs_regressors = []
+    for i, run in enumerate(runs):
+        if weights is None:
+            gs = _global_mean_regressor(run, weights=weights)
+        else:
+            gs = _global_mean_regressor(run, weights=weights[i])
+
+        gs.common = gs.common.assign_coords({'regressor': [f'GS run {i}']})
+        gs.common = gs.common.reset_coords('samples', drop=True)
+        gs_regressors.append(gs)
+
+    return gs_regressors
+
+
+def _global_mean_regressor(ts, weights=None) -> DesignMatrix:
+    """Create a global regressor by averaging over the spatial dimension.
+
+    Args:
+        ts (NDTimeSeries): time series data (time x spatial_dim x chromo)
+
+    Returns:
+        DesignMatrix: design matrix with one global regressor per chromo
+            common shape: (time x regressor=["global"] x chromo)
+    """
+    # detect the spatial dimension dynamically (channel, parcel, or vertex)
+    spatial_dim = xrutils.other_dim(ts, "time", "chromo")
+
+    # mean over spatial dimension → global signal
+    ts = ts.pint.dequantify()
+    if weights is None:
+        regressor = ts.mean(spatial_dim, skipna=True).expand_dims("regressor")
+    else:
+        regressor = (ts * weights).sum(spatial_dim, skipna=True) /  weights.sum(spatial_dim, skipna=True)
+        regressor = regressor.expand_dims("regressor")
+
+    regressor = regressor.assign_coords({"regressor": ["global"]})
+    regressor = regressor.transpose("time", "regressor", ...)
+
+    return DesignMatrix(common=regressor, channel_wise=[])
+
+#TODO: complete function get_cont_EEG_regressor
+def get_cont_EEG_regressor(runs, sfreq, delay) -> DesignMatrix:
+    """
+    Input:
+        runs: EEG per run
+        sfreq: EEG sampling rate
+        delay: Time delay for FIR regressors (sec)
+    Output:
+        DesignMatrix
+    NOTE:
+        DesignMatrix has removed the delay time at the beginning and the end
+    """
+    # calculate how many regressors in delay
+    n_delay = np.round(delay*sfreq).astype(int)
+
+    eeg_regressors = []
+    for i, run in enumerate(runs):
+        # create regressor values (time x regressor)
+        eeg_reg_value = np.zeros((len(run)+n_delay, n_delay))
+        # assign delayed EEG to the matrix
+        for d_i in range(n_delay):
+            eeg_reg_value[d_i:d_i+len(run),d_i]=run
+        # remove delay time at the beginning and at the end
+        eeg_reg_value = eeg_reg_value[n_delay:len(run),:]
+        # duplicate the matrix for HbO and HbR
+        eeg_reg_value = np.repeat(eeg_reg_value[:, :, np.newaxis], 2, axis=2)
+        eeg_reg_value = xr.DataArray(
+            eeg_reg_value,
+            dims=("time", "regressor", "chromo"),
+            coords={"regressor": [f"delay{d_i}" for d_i in range(n_delay)], "chromo": ["HbO", "HbR"]},
+        )
+        eeg_reg = DesignMatrix(common=eeg_reg_value, channel_wise=[])
+        eeg_regressors.append(eeg_reg)
+
+    return eeg_regressors
+
 def prune_mask_ts(ts, pruned_chans):
     '''
     Function to mask pruned channels with NaN .. essentially repruning channels
@@ -460,6 +538,7 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
     # Combine drift and short-separation regressors (if any)
     drift_regressors = None
     ss_regressors = None
+    gsr_regressors = None
     if cfg_GLM['do_drift']:
         drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
 
@@ -468,6 +547,9 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
 
     if cfg_GLM['do_short_sep']:
         ss_regressors = get_short_regressors(runs_updated, pruned_chans_list, geo3d, cfg_GLM)
+    
+    if cfg_GLM['do_GSR']:
+        gsr_regressors = get_global_mean_regressor(runs_updated, cfg_GLM['GSR_weight'])
 
     # merge all DMs
     if ss_regressors is not None:
@@ -484,8 +566,15 @@ def create_no_info_dm(runs, cfg_GLM, geo3d, pruned_chans_list, stim_list):
         elif len(drift_regressors)>0:
             dms &= reduce(operator.and_, [drift_regressors])
     if ss_regressors is None and drift_regressors is None:
-        print(f"No regressor is assigned.")
-        return None
+        if gsr_regressors is None:    
+            print(f"No regressor is assigned.")
+            return None
+        else:
+            dms = gsr_regressors.pop()
+            if len(gsr_regressors)>1:
+                dms &= reduce(operator.and_, gsr_regressors)
+            elif len(gsr_regressors)>0:
+                dms &= reduce(operator.and_, [gsr_regressors])
     dms.common = dms.common.fillna(0)
 
     return dms
@@ -761,11 +850,11 @@ def combine_dm(eeg_dm, reduced_dm):
     return eeg_dm
 
 # visualize DM
-def vis_dm(plt_dm):
+def vis_dm(plt_dm, vmin=-2, vmax=2):
     # using xr.DataArray.plot
     f, ax = plt.subplots(1,1,figsize=(12,10))
     # plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time<600).T.plot(vmin=-2,vmax=2)
-    plt_dm.common.sel(chromo="HbO").T.plot(vmin=-2,vmax=2)
+    plt_dm.common.sel(chromo="HbO").T.plot(vmin=vmin,vmax=vmax)
     #p.xticks(rotation=90)
     plt.show()
 
@@ -871,27 +960,44 @@ def concatenate_runs_dms(run_dict, dm_dict):
     runs_updated = []
     dm_updated = []
 
-    for run_key in run_dict.keys():
-        ts = run_dict[run_key]['run']
-        dm = dm_dict[run_key]
-        time = ts.time.values
-        new_time = time + CURRENT_OFFSET
+    if isinstance(run_dict, dict):
+        for run_key in run_dict.keys():
+            ts = run_dict[run_key]['run']
+            dm = dm_dict[run_key]
+            time = ts.time.values
+            new_time = time + CURRENT_OFFSET
 
-        ts_new = ts.copy(deep=True)
-        ts_new = ts_new.pint.dequantify().pint.quantify('molar')
-        ts_new = ts_new.assign_coords(time=new_time)
+            ts_new = ts.copy(deep=True)
+            ts_new = ts_new.pint.dequantify().pint.quantify('molar')
+            ts_new = ts_new.assign_coords(time=new_time)
 
-        dm_new = copy.deepcopy(dm)
-        dm_new.common = dm_new.common.assign_coords(time=new_time)
+            dm_new = copy.deepcopy(dm)
+            dm_new.common = dm_new.common.assign_coords(time=new_time)
 
-        runs_updated.append(ts_new)
-        dm_updated.append(dm_new.common)
+            runs_updated.append(ts_new)
+            dm_updated.append(dm_new.common)
 
-        CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+            CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+    else:
+        for ts, dm in zip(run_dict, dm_dict):
+            time = ts.time.values
+            new_time = time + CURRENT_OFFSET
 
+            ts_new = ts.copy(deep=True)
+            ts_new = ts_new.pint.dequantify().pint.quantify('molar')
+            ts_new = ts_new.assign_coords(time=new_time)
+
+            dm_new = copy.deepcopy(dm)
+            dm_new.common = dm_new.common.assign_coords(time=new_time)
+
+            runs_updated.append(ts_new)
+            dm_updated.append(dm_new.common)
+
+            CURRENT_OFFSET = new_time[-1] + (time[1] - time[0])
+
+    dm_all = copy.deepcopy(dm)
     Y_all = xr.concat(runs_updated, dim='time')
     Y_all.time.attrs['units'] = units.s
-    dm_all = copy.deepcopy(dm_dict[run_key])
     dm_all.common = xr.concat(dm_updated, dim="time")
     dm_all.common = dm_all.common.fillna(0)
     

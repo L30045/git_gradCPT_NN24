@@ -203,7 +203,7 @@ for run in all_runs:
 all_runs = all_runs_tmp.copy()
 
 # select only one parcel and one chromo
-all_runs = [x.sel(parcel=['DorsAttnA_ParOcc_1_RH'], chromo=['HbO']) for x in all_runs]
+all_runs = [x.sel(parcel=[select_parcel], chromo=[select_chromo]) for x in all_runs]
 
 results, hrf_estimate, hrf_mse, dms = pf.GLM(all_runs, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
 Y_all, stim_df, runs_updated = pf.concatenate_runs(all_runs, stims_pruned_list)
