@@ -9,6 +9,7 @@ import mne
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'preproc_pipe'))
 from utils import gen_EEG_event_tsv
+from params_setting import excluded_subj
 
 project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
 eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -172,6 +173,13 @@ print(f"  GradCPT EEG ≥{MIN_EPOCHS} epochs:    N={len(enough)}")
 print()
 print(f"Subjects with fNIRS + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(fnirs_gradcpt)}):")
 print("  " + ", ".join(f"sub-{s}" for s in fnirs_gradcpt))
+print()
+
+good_fnirs_good_eeg = sorted(
+    s for s in fnirs_gradcpt if f'sub-{s}' not in excluded_subj
+)
+print(f"Subjects with good fNIRS (not in excluded_subj) + good EEG (N={len(good_fnirs_good_eeg)}):")
+print("  " + ", ".join(f"sub-{s}" for s in good_fnirs_good_eeg))
 print()
 print(f"Subjects with pupil + GradCPT EEG ≥{MIN_EPOCHS} epochs (N={len(pupil_gradcpt)}):")
 print("  " + ", ".join(f"sub-{s}" for s in pupil_gradcpt))

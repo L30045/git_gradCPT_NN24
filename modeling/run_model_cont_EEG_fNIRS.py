@@ -28,7 +28,7 @@ _MIN_EPOCHS = 500
 
 _fnirs_subjects = {
     re.search(r'sub-(\d+)', f).group(1)
-    for f in glob.glob(os.path.join(_project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
+    for f in glob.glob(os.path.join(project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
     if re.search(r'sub-(\d+)', f)
 }
 
@@ -74,8 +74,8 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_cz'
-is_overwrite = True # If True, force re-training GLM.
+model_type='cont_EEG_pc1'
+is_overwrite = False # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 select_chromo='HbO'
 USE_GSR=True
@@ -87,6 +87,12 @@ for subj_id in subj_id_array:
     subject = f"sub-{subj_id}"
     print(f"Start processing {subject}")
     data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
+
+    # check if betas.pkl exist already. If yes, skip this subject.
+    betas_save_path = os.path.join(data_save_path, f'{subject}_{model_type}_betas.pkl')
+    if not is_overwrite and os.path.exists(betas_save_path):
+        print(f"{subject}: betas already exist, skipping.")
+        continue
 
     #%% RUN PREPROCESSING
     der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
@@ -151,10 +157,12 @@ for subj_id in subj_id_array:
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
     single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
     # check if Cz exists
-    cz_removed = any('cz' in [ch.lower() for ch in single_subj_rm_ch_dict[run_key]]
-                    for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
-    if cz_removed:
-        raise ValueError(f"sub-{subj_id}: Cz was removed in at least one run, skipping subject.")
+    if not model_type.endswith('pc1'):
+        cz_removed = any('cz' in [ch.lower() for ch in single_subj_rm_ch_dict[run_key]]
+                        for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
+        if cz_removed:
+            print(f"sub-{subj_id}: Cz was removed in at least one run, skipping subject.")
+            continue
 
     # match each fNIRS run in all_runs to its EEG run (gradcpt1/2/3) via first stim onset in events.tsv
     eeg_ev_files = {
@@ -213,7 +221,8 @@ for subj_id in subj_id_array:
 
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
         cutoff = fnirs_sfreq / 2
-        EEG_filter = EEG.filter(l_freq=None, h_freq=cutoff, h_trans_bandwidth=0.25, picks='cz').copy()
+        filter_picks = 'eeg' if model_type.endswith('pc1') else 'cz'
+        EEG_filter = EEG.filter(l_freq=None, h_freq=cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
         # truncate EEG to the shared event window (clamped to the recording's own bounds)
         EEG_filter.crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG_filter.times[-1]))
@@ -252,8 +261,18 @@ for subj_id in subj_id_array:
 
 
     #%% create EEG DM
-    # extract EEG signal for creating DesignMatrix
-    eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
+    if model_type.endswith('pc1'):
+        # use the first PC across all EEG channels
+        eeg_reg_value_list = []
+        for x in eeg_list:
+            eeg_data = x.get_data(picks='eeg')  # channels x samples
+            eeg_data = eeg_data - eeg_data.mean(axis=1, keepdims=True)
+            u, s, vt = np.linalg.svd(eeg_data, full_matrices=False)
+            pc1 = vt[0] * s[0]
+            eeg_reg_value_list.append(pc1.flatten())
+    else:
+        # extract EEG signal for creating DesignMatrix
+        eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
     # create EEG regressors
     eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay)
     # concatenate all runs and dms
@@ -277,6 +296,5 @@ for subj_id in subj_id_array:
 
     # save betas for later visualization
     if is_save:
-        betas_save_path = os.path.join(data_save_path, f'{subject}_{model_type}_betas.pkl')
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas, f)

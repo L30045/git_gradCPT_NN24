@@ -9,7 +9,7 @@ import scipy.stats as stats
 from params_setting import *
 
 #%% select model type
-model_type = 'cont_EEG_cz'
+model_type = 'cont_EEG_pc1'
 
 #%% load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
