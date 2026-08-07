@@ -74,13 +74,22 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_pc1'
+model_type='cont_EEG_power'
 is_overwrite = False # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 select_chromo='HbO'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
 len_delay = 12 # Delay time in HRF (sec)
+
+# sliding-window bandpower parameters (used when model_type ends with 'power')
+power_win_len = None  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
+power_bands = {
+    'delta': (1, 4),
+    'theta': (4, 8),
+    'alpha': (8, 13),
+    'beta': (13, 30),
+}
 
 #%% main 
 for subj_id in subj_id_array:
@@ -157,7 +166,7 @@ for subj_id in subj_id_array:
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
     single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
     # check if Cz exists
-    if not model_type.endswith('pc1'):
+    if not model_type.endswith('pc1') and not model_type.endswith('power'):
         cz_removed = any('cz' in [ch.lower() for ch in single_subj_rm_ch_dict[run_key]]
                         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
         if cz_removed:
@@ -191,11 +200,14 @@ for subj_id in subj_id_array:
                 run_key_to_run_idx[run_key] = r_i
                 break
 
+    #TODO: sub-695 nirs_ev_files run 1 and run2 are identical! eeg_ev_files are correct.
+
     #%% lowpass and resample EEG
     # fNIRS sampling rate (all_runs' time coordinate is in seconds)
     fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
 
     eeg_list = []
+    eeg_raw_list = []
     all_runs_truncated = []
     run_time_windows = dict()  # run_key -> (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
@@ -221,7 +233,7 @@ for subj_id in subj_id_array:
 
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
         cutoff = fnirs_sfreq / 2
-        filter_picks = 'eeg' if model_type.endswith('pc1') else 'cz'
+        filter_picks = 'eeg' if model_type.endswith('pc1') or model_type.endswith('power') else 'cz'
         EEG_filter = EEG.filter(l_freq=None, h_freq=cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
         # truncate EEG to the shared event window (clamped to the recording's own bounds)
@@ -256,6 +268,7 @@ for subj_id in subj_id_array:
         # append data
         all_runs_truncated.append(fnirs_run)
         eeg_list.append(EEG_resample)
+        eeg_raw_list.append(EEG_raw)
 
     all_runs = all_runs_truncated
 
@@ -270,11 +283,42 @@ for subj_id in subj_id_array:
             u, s, vt = np.linalg.svd(eeg_data, full_matrices=False)
             pc1 = vt[0] * s[0]
             eeg_reg_value_list.append(pc1.flatten())
+    elif model_type.endswith('power'):
+        # sliding-window bandpower (mean across all EEG channels), centered on each fNIRS sample.
+        # Use eeg_list's (untrimmed) sample times, matching what pc1/cz feed into
+        # get_cont_EEG_regressor -- that function trims off the leading n_delay
+        # samples itself, so the input here must NOT be pre-trimmed like all_runs_truncated.
+        win_len = power_win_len if power_win_len is not None else 1 / fnirs_sfreq
+        eeg_reg_value_dict = {band: [] for band in power_bands}
+        for eeg_raw_run, eeg_resample_run in zip(eeg_raw_list, eeg_list):
+            # sample centers in EEG_raw's local time frame (both start at the same crop point)
+            sample_times = eeg_resample_run.times
+            band_power = model.bandpower_sliding_window(eeg_raw_run, sample_times, win_len,
+                                                          power_bands, picks='eeg')
+            for band, power_ts in band_power.items():
+                eeg_reg_value_dict[band].append(power_ts)
+
     else:
         # extract EEG signal for creating DesignMatrix
         eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
+
     # create EEG regressors
-    eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay)
+    if model_type.endswith('power'):
+        # one set of delay-FIR regressors per band, combined with a band-name prefix
+        # so regressor names stay unique when merged across bands
+        per_run_band_regressors = [
+            model.get_cont_EEG_regressor(eeg_reg_value_dict[band], fnirs_sfreq, delay=len_delay,
+                                          name_prefix=f'{band}_')
+            for band in power_bands
+        ]
+        eeg_regressors = []
+        for band_dms in zip(*per_run_band_regressors):
+            run_dm = band_dms[0]
+            for band_dm in band_dms[1:]:
+                run_dm = model.combine_dm(run_dm, band_dm)
+            eeg_regressors.append(run_dm)
+    else:
+        eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay)
     # concatenate all runs and dms
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
     # Add GSR
@@ -291,7 +335,7 @@ for subj_id in subj_id_array:
     results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model']) 
     # extract HRF (delay-regressor betas) per parcel
     betas = results.sm.params
-    eeg_reg = [p for p in betas.regressor.values if p.startswith('delay')]
+    eeg_reg = [p for p in betas.regressor.values if 'delay' in p]
     betas = betas.sel(regressor=eeg_reg)
 
     # save betas for later visualization

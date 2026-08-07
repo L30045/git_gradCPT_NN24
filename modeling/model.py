@@ -163,12 +163,17 @@ def _global_mean_regressor(ts, weights=None) -> DesignMatrix:
     return DesignMatrix(common=regressor, channel_wise=[])
 
 #TODO: complete function get_cont_EEG_regressor
-def get_cont_EEG_regressor(runs, sfreq, delay) -> DesignMatrix:
+def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=True) -> DesignMatrix:
     """
     Input:
         runs: EEG per run
         sfreq: EEG sampling rate
         delay: Time delay for FIR regressors (sec)
+        name_prefix: prefix prepended to each regressor name (e.g. 'alpha_'),
+            used to keep regressor names unique when combining multiple
+            DesignMatrices (e.g. one per EEG band) with combine_dm
+        z_score: if True (default), z-score each run's signal before building
+            the delay copies
     Output:
         DesignMatrix
     NOTE:
@@ -179,6 +184,8 @@ def get_cont_EEG_regressor(runs, sfreq, delay) -> DesignMatrix:
 
     eeg_regressors = []
     for i, run in enumerate(runs):
+        if z_score:
+            run = (run - run.mean()) / run.std()
         # create regressor values (time x regressor)
         eeg_reg_value = np.zeros((len(run)+n_delay, n_delay))
         # assign delayed EEG to the matrix
@@ -191,12 +198,49 @@ def get_cont_EEG_regressor(runs, sfreq, delay) -> DesignMatrix:
         eeg_reg_value = xr.DataArray(
             eeg_reg_value,
             dims=("time", "regressor", "chromo"),
-            coords={"regressor": [f"delay{d_i}" for d_i in range(n_delay)], "chromo": ["HbO", "HbR"]},
+            coords={"regressor": [f"{name_prefix}delay{d_i}" for d_i in range(n_delay)], "chromo": ["HbO", "HbR"]},
         )
         eeg_reg = DesignMatrix(common=eeg_reg_value, channel_wise=[])
         eeg_regressors.append(eeg_reg)
 
     return eeg_regressors
+
+
+def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg'):
+    """
+    Compute per-band EEG power in a sliding window centered on each sample time.
+
+    Input:
+        eeg_raw: mne.io.Raw (or Epochs-free continuous Raw), full sampling rate
+        sample_times: 1D array of times (sec, relative to eeg_raw.times[0]==0) at
+            which to center each sliding window (typically the fNIRS sample times)
+        win_len: sliding window length (sec)
+        bands: dict mapping band name -> (l_freq, h_freq)
+        picks: channel picks passed to mne (default 'eeg', averaged across channels)
+    Output:
+        dict mapping band name -> 1D array (len(sample_times),) of mean bandpower,
+        averaged across the picked channels
+    """
+    sfreq = eeg_raw.info['sfreq']
+    half_win = win_len / 2
+    t0 = eeg_raw.times[0]
+
+    band_power = {band: np.full(len(sample_times), np.nan) for band in bands}
+    for band, (l_freq, h_freq) in bands.items():
+        band_raw = eeg_raw.copy().filter(l_freq=l_freq, h_freq=h_freq, picks=picks, verbose=False)
+        band_data = band_raw.get_data(picks=picks)  # channels x samples
+        band_env = band_data ** 2  # instantaneous power
+        for i, t_center in enumerate(sample_times):
+            win_tmin = t_center - t0 - half_win
+            win_tmax = t_center - t0 + half_win
+            s_start = max(int(np.round(win_tmin * sfreq)), 0)
+            s_stop = min(int(np.round(win_tmax * sfreq)) + 1, band_env.shape[1])
+            if s_stop <= s_start:
+                continue
+            band_power[band][i] = band_env[:, s_start:s_stop].mean()
+
+    return band_power
+
 
 def prune_mask_ts(ts, pruned_chans):
     '''
