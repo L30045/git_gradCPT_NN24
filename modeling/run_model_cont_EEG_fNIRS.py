@@ -20,7 +20,7 @@ from tqdm import tqdm
 import re
 import xarray as xr
 import cedalion.models.glm as glm
-
+from statsmodels.gam.smooth_basis import BSplines
 
 #%% find subjects with fNIRS and enough EEG epochs
 _eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -74,7 +74,7 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_pc1'
+model_type='cont_EEG_cz'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_norm = False # If True, z-score regressors.
@@ -82,6 +82,8 @@ select_chromo='HbO'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
 len_delay = 12 # Delay time in HRF (sec)
+bspline_degree = 3
+n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
 
 # sliding-window bandpower parameters (used when model_type ends with 'power')
 power_win_len = None  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
@@ -203,9 +205,11 @@ for subj_id in subj_id_array:
 
     #TODO: sub-695 nirs_ev_files run 1 and run2 are identical! eeg_ev_files are correct.
 
-    #%% lowpass and resample EEG
+    #%% bandpass and resample EEG
     # fNIRS sampling rate (all_runs' time coordinate is in seconds)
     fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
+    # get highpass filter frequency
+    l_cutoff = np.round(1/len_delay,decimals=2)
 
     eeg_list = []
     eeg_raw_list = []
@@ -233,9 +237,9 @@ for subj_id in subj_id_array:
         EEG_raw = single_subj_EEG_dict[run_key].copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
 
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
-        cutoff = fnirs_sfreq / 2
+        h_cutoff = fnirs_sfreq / 2
         filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
-        EEG_filter = EEG.filter(l_freq=None, h_freq=cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
+        EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
         # truncate EEG to the shared event window (clamped to the recording's own bounds)
         EEG_filter.crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG_filter.times[-1]))
@@ -287,7 +291,7 @@ for subj_id in subj_id_array:
             resid_runs.append(resid)
         all_runs = resid_runs
 
-    #%% create EEG DM
+    #%% Extract EEG values for DM
     if 'pc1' in model_type:
         # use the first PC across all EEG channels
         eeg_reg_value_list = []
@@ -316,7 +320,7 @@ for subj_id in subj_id_array:
         # extract EEG signal for creating DesignMatrix
         eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
 
-    # create EEG regressors
+    #%% create EEG regressors
     if 'power' in model_type:
         # one set of delay-FIR regressors per band, combined with a band-name prefix
         # so regressor names stay unique when merged across bands
@@ -339,18 +343,40 @@ for subj_id in subj_id_array:
     if is_norm:
         dm_all.common = (dm_all.common - dm_all.common.mean('time')) / dm_all.common.std('time')
 
-    # select HbO to fasten training process
+    #%% select HbO to fasten training process
     dm_all.common = dm_all.common.sel(chromo=[select_chromo])
+
+    #%% Low-rank representation of Delay using BSpline
+    len_time, n_regressor, n_chromo = dm_all.common.shape
+    # spline basis evaluated at each delay tap (not at the regressor's data values),
+    # so the FIR delay curve is constrained to a smooth, low-rank subspace
+    delay_idx = np.arange(n_regressor)
+    bspline_basis = BSplines(delay_idx, df=[n_bspline_basis], degree=[bspline_degree],
+                              include_intercept=True).basis  # (n_regressor, n_bspline_basis)
+    basis_da = xr.DataArray(
+        bspline_basis,
+        dims=("regressor", "component"),
+        coords={"regressor": dm_all.common.regressor.values,
+                "component": [f"bspline{i}" for i in range(n_bspline_basis)]},
+    )
+    # project the full-rank delay design matrix onto the low-rank spline basis
+    dm_all.common = xr.dot(dm_all.common, basis_da, dims="regressor").rename({"component": "regressor"})
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start cont_EEG GLM fitting ({subject})")
-    results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model']) 
-    # extract HRF (delay-regressor betas) per parcel
-    betas = results.sm.params
-    eeg_reg = [p for p in betas.regressor.values if 'delay' in p]
-    betas = betas.sel(regressor=eeg_reg)
+    results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
+    # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
+    # bspline coefficients back to full per-delay resolution via the same basis
+    betas_bspline = results.sm.params
+    eeg_reg = [p for p in betas_bspline.regressor.values if 'bspline' in p]
+    betas_bspline = betas_bspline.sel(regressor=eeg_reg).rename({"regressor": "component"})
+    betas = xr.dot(betas_bspline, basis_da, dims="component")
+    betas = betas.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
 
-    # save betas for later visualization
+    #%% save betas for later visualization
     if is_save:
+        betas_dict = dict()
+        betas_dict['betas'] = betas
+        betas_dict['betas_bspline'] = betas_bspline
         with open(betas_save_path, 'wb') as f:
-            pickle.dump(betas, f)
+            pickle.dump(betas_dict, f)

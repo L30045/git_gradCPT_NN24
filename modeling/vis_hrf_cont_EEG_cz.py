@@ -23,7 +23,8 @@ for f in betas_files:
     if f'sub-{m.group(1)}' in excluded_subj:
         continue
     with open(f, 'rb') as fh:
-        subj_betas[subject] = pickle.load(fh)
+        betas_dict = pickle.load(fh)
+        subj_betas[subject] = betas_dict['betas']
 
 #%% group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
 parcel_names = [p for p in next(iter(subj_betas.values())).parcel.values if not p.startswith('Background+FreeSurfer')]
