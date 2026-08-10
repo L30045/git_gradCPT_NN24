@@ -10,6 +10,7 @@ from params_setting import *
 
 #%% select model type
 model_type = 'cont_EEG_pc1'
+len_delay = 12  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
 
 #%% load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
@@ -46,14 +47,14 @@ for ax, net in zip(axs, networks):
     sem_HRF = stats.sem(subj_HRF_net, axis=0)
     ci95 = sem_HRF * stats.t.ppf(0.975, n_subj - 1)
 
-    x = np.arange(len(mean_HRF))
+    x = np.arange(len(mean_HRF)) * (len_delay / len(mean_HRF))
     ax.plot(x, mean_HRF)
     ax.fill_between(x, mean_HRF - ci95, mean_HRF + ci95, alpha=0.3)
     ax.set_title(net)
     ax.grid()
 for ax in axs[len(networks):]:
     ax.set_visible(False)
-fig.supxlabel('Delay regressor index')
+fig.supxlabel('Time (s)')
 fig.supylabel('Beta (HRF estimate)')
 fig.suptitle(f'Average HRF per network across subjects (n={len(subj_betas)})')
 plt.tight_layout()

@@ -74,8 +74,8 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_pc1_norm'
-is_overwrite = False # If True, force re-training GLM.
+model_type='cont_EEG_pc1'
+is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_norm = False # If True, z-score regressors.
 select_chromo='HbO'
@@ -280,8 +280,10 @@ for subj_id in subj_id_array:
         for run, gs_dm in zip(all_runs, gs_regressors):
             gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
             gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
-            resid = run.pint.dequantify() - gsr_pred
-            resid = resid.pint.quantify('molar').transpose(*run.dims)
+            # change unit to molar
+            gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
+            resid = run - gsr_pred
+            resid = resid.transpose(*run.dims)
             resid_runs.append(resid)
         all_runs = resid_runs
 
