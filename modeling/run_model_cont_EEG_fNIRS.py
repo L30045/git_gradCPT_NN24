@@ -77,7 +77,7 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 model_type='cont_EEG_pc1_norm'
 is_overwrite = False # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
-is_norm = True # If True, z-score regressors.
+is_norm = False # If True, z-score regressors.
 select_chromo='HbO'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
@@ -273,6 +273,17 @@ for subj_id in subj_id_array:
 
     all_runs = all_runs_truncated
 
+    #%% Regress GSR out before fitting EEG
+    if USE_GSR:
+        gs_regressors = model.get_global_mean_regressor(all_runs, weights=cfg_GLM['GSR_weight'])
+        resid_runs = []
+        for run, gs_dm in zip(all_runs, gs_regressors):
+            gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
+            gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
+            resid = run.pint.dequantify() - gsr_pred
+            resid = resid.pint.quantify('molar').transpose(*run.dims)
+            resid_runs.append(resid)
+        all_runs = resid_runs
 
     #%% create EEG DM
     if 'pc1' in model_type:
@@ -322,12 +333,6 @@ for subj_id in subj_id_array:
         eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay)
     # concatenate all runs and dms
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
-    # Add GSR
-    if USE_GSR:
-        gs_regressors = model.get_global_mean_regressor(all_runs, weights=cfg_GLM['GSR_weight'])
-        _, gs_dm, _ = model.concatenate_runs_dms(all_runs, gs_regressors)
-        # Merge gsr and eeg_regressors
-        dm_all = model.combine_dm(dm_all, gs_dm)
     # normalized regressors if required
     if is_norm:
         dm_all.common = (dm_all.common - dm_all.common.mean('time')) / dm_all.common.std('time')
