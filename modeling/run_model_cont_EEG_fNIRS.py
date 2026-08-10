@@ -74,9 +74,10 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_power'
+model_type='cont_EEG_pc1_norm'
 is_overwrite = False # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
+is_norm = True # If True, z-score regressors.
 select_chromo='HbO'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
@@ -233,7 +234,7 @@ for subj_id in subj_id_array:
 
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
         cutoff = fnirs_sfreq / 2
-        filter_picks = 'eeg' if model_type.endswith('pc1') or model_type.endswith('power') else 'cz'
+        filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
         EEG_filter = EEG.filter(l_freq=None, h_freq=cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
         # truncate EEG to the shared event window (clamped to the recording's own bounds)
@@ -274,7 +275,7 @@ for subj_id in subj_id_array:
 
 
     #%% create EEG DM
-    if model_type.endswith('pc1'):
+    if 'pc1' in model_type:
         # use the first PC across all EEG channels
         eeg_reg_value_list = []
         for x in eeg_list:
@@ -283,7 +284,7 @@ for subj_id in subj_id_array:
             u, s, vt = np.linalg.svd(eeg_data, full_matrices=False)
             pc1 = vt[0] * s[0]
             eeg_reg_value_list.append(pc1.flatten())
-    elif model_type.endswith('power'):
+    elif 'power' in model_type:
         # sliding-window bandpower (mean across all EEG channels), centered on each fNIRS sample.
         # Use eeg_list's (untrimmed) sample times, matching what pc1/cz feed into
         # get_cont_EEG_regressor -- that function trims off the leading n_delay
@@ -303,7 +304,7 @@ for subj_id in subj_id_array:
         eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
 
     # create EEG regressors
-    if model_type.endswith('power'):
+    if 'power' in model_type:
         # one set of delay-FIR regressors per band, combined with a band-name prefix
         # so regressor names stay unique when merged across bands
         per_run_band_regressors = [
@@ -327,6 +328,10 @@ for subj_id in subj_id_array:
         _, gs_dm, _ = model.concatenate_runs_dms(all_runs, gs_regressors)
         # Merge gsr and eeg_regressors
         dm_all = model.combine_dm(dm_all, gs_dm)
+    # normalized regressors if required
+    if is_norm:
+        dm_all.common = (dm_all.common - dm_all.common.mean('time')) / dm_all.common.std('time')
+
     # select HbO to fasten training process
     dm_all.common = dm_all.common.sel(chromo=[select_chromo])
 
