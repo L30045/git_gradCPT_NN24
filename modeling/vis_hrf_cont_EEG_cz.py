@@ -10,7 +10,6 @@ from params_setting import *
 
 #%% select model type
 model_type = 'cont_EEG_pc1'
-len_delay = 12  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
 
 #%% load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
@@ -24,6 +23,7 @@ for f in betas_files:
         continue
     with open(f, 'rb') as fh:
         betas_dict = pickle.load(fh)
+        len_delay = len(betas_dict['betas_bspline']['component'])  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
         subj_betas[subject] = betas_dict['betas']
 
 #%% group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
@@ -60,3 +60,5 @@ fig.supylabel('Beta (HRF estimate)')
 fig.suptitle(f'Average HRF per network across subjects (n={len(subj_betas)})')
 plt.tight_layout()
 plt.show()
+
+# %%

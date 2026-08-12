@@ -74,14 +74,14 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_cz'
+model_type='cont_EEG_pc1'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_norm = False # If True, z-score regressors.
 select_chromo='HbO'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
-len_delay = 12 # Delay time in HRF (sec)
+len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
 
@@ -121,6 +121,7 @@ for subj_id in subj_id_array:
     print('LOADING IMAGE SPACE RESULTS')
     folder =  os.path.join(der_dir, subject)
     filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}.pkl'
+
 
     with open(filepath, 'rb') as f:
         image_results = pickle.load(f)
@@ -238,6 +239,7 @@ for subj_id in subj_id_array:
 
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
         h_cutoff = fnirs_sfreq / 2
+        h_cutoff = 1
         filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
         EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
