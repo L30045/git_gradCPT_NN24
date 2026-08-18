@@ -206,7 +206,8 @@ def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=True) -> 
     return eeg_regressors
 
 
-def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg'):
+def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
+                              method='bandpass', bandwidth=None):
     """
     Compute per-band EEG power in a sliding window centered on each sample time.
 
@@ -217,6 +218,15 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg')
         win_len: sliding window length (sec)
         bands: dict mapping band name -> (l_freq, h_freq)
         picks: channel picks passed to mne (default 'eeg', averaged across channels)
+        method: 'bandpass' (default) filters the signal into each band and squares
+            the result (mean squared amplitude in the window). 'multitaper' estimates
+            the power spectral density of each window with DPSS tapers (via
+            mne.time_frequency.psd_array_multitaper) and integrates the PSD over
+            each band's frequency range.
+        bandwidth: multitaper time-bandwidth-derived frequency smoothing (Hz),
+            passed through to psd_array_multitaper as `bandwidth`. Only used when
+            method='multitaper'; if None, MNE's default (~4x the frequency
+            resolution set by win_len) is used.
     Output:
         dict mapping band name -> 1D array (len(sample_times),) of mean bandpower,
         averaged across the picked channels
@@ -226,18 +236,47 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg')
     t0 = eeg_raw.times[0]
 
     band_power = {band: np.full(len(sample_times), np.nan) for band in bands}
-    for band, (l_freq, h_freq) in bands.items():
-        band_raw = eeg_raw.copy().filter(l_freq=l_freq, h_freq=h_freq, picks=picks, verbose=False)
-        band_data = band_raw.get_data(picks=picks)  # channels x samples
-        band_env = band_data ** 2  # instantaneous power
+
+    if method == 'bandpass':
+        for band, (l_freq, h_freq) in bands.items():
+            band_raw = eeg_raw.copy().filter(l_freq=l_freq, h_freq=h_freq, picks=picks, verbose=False)
+            band_data = band_raw.get_data(picks=picks)  # channels x samples
+            band_env = band_data ** 2  # instantaneous power
+            for i, t_center in enumerate(sample_times):
+                win_tmin = t_center - t0 - half_win
+                win_tmax = t_center - t0 + half_win
+                s_start = max(int(np.round(win_tmin * sfreq)), 0)
+                s_stop = min(int(np.round(win_tmax * sfreq)) + 1, band_env.shape[1])
+                if s_stop <= s_start:
+                    continue
+                band_power[band][i] = band_env[:, s_start:s_stop].mean()
+
+    elif method == 'multitaper':
+        from mne.time_frequency import psd_array_multitaper
+        data = eeg_raw.get_data(picks=picks)  # channels x samples
+        n_times = data.shape[1]
+        fmin = min(l_freq for l_freq, h_freq in bands.values())
+        fmax = max(h_freq for l_freq, h_freq in bands.values())
         for i, t_center in enumerate(sample_times):
             win_tmin = t_center - t0 - half_win
             win_tmax = t_center - t0 + half_win
             s_start = max(int(np.round(win_tmin * sfreq)), 0)
-            s_stop = min(int(np.round(win_tmax * sfreq)) + 1, band_env.shape[1])
+            s_stop = min(int(np.round(win_tmax * sfreq)) + 1, n_times)
             if s_stop <= s_start:
                 continue
-            band_power[band][i] = band_env[:, s_start:s_stop].mean()
+            psd, freqs = psd_array_multitaper(
+                data[:, s_start:s_stop], sfreq=sfreq, fmin=fmin, fmax=fmax,
+                bandwidth=bandwidth, adaptive=False, normalization='full',
+                verbose=False,
+            )  # psd: channels x freqs
+            for band, (l_freq, h_freq) in bands.items():
+                f_mask = (freqs >= l_freq) & (freqs <= h_freq)
+                if not f_mask.any():
+                    continue
+                band_power[band][i] = psd[:, f_mask].mean()
+
+    else:
+        raise ValueError(f"Unknown method '{method}'; expected 'bandpass' or 'multitaper'")
 
     return band_power
 

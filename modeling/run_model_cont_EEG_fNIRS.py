@@ -74,7 +74,7 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_pc1'
+model_type='cont_EEG_power'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_norm = False # If True, z-score regressors.
@@ -93,6 +93,8 @@ power_bands = {
     'alpha': (8, 13),
     'beta': (13, 30),
 }
+power_method = 'multitaper'  # 'bandpass' (filter + square) or 'multitaper' (DPSS PSD)
+power_bandwidth = None  # multitaper frequency smoothing (Hz); None uses MNE's default
 
 #%% main 
 for subj_id in subj_id_array:
@@ -237,14 +239,15 @@ for subj_id in subj_id_array:
         EEG = single_subj_EEG_dict[run_key].copy()
         EEG_raw = single_subj_EEG_dict[run_key].copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
 
+        #NOTE: No need to lowpass filter EEG before resampling since raw.resample function does it by itself.
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
-        h_cutoff = fnirs_sfreq / 2
-        h_cutoff = 1
-        filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
-        EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
+        # h_cutoff = fnirs_sfreq / 2
+        # h_cutoff = 1
+        # filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
+        # EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
-        # truncate EEG to the shared event window (clamped to the recording's own bounds)
-        EEG_filter.crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG_filter.times[-1]))
+        # # truncate EEG to the shared event window (clamped to the recording's own bounds)
+        # EEG_filter.crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG_filter.times[-1]))
 
         # truncate fNIRS to the same shared event window
         fnirs_run = fnirs_run.sel(time=slice(max(nirs_t_start, fnirs_run.time.values[0]),
@@ -253,7 +256,7 @@ for subj_id in subj_id_array:
         
 
         # downsample EEG to match the number of sample points in fNIRS
-        EEG_resample = EEG_filter.copy()
+        EEG_resample = EEG_raw.copy()
         EEG_resample.resample(fnirs_sfreq, npad='auto')
 
         # enforce exact sample-count match with the truncated fNIRS run
@@ -282,10 +285,12 @@ for subj_id in subj_id_array:
     #%% Regress GSR out before fitting EEG
     if USE_GSR:
         gs_regressors = model.get_global_mean_regressor(all_runs, weights=cfg_GLM['GSR_weight'])
+        pred_runs = []
         resid_runs = []
         for run, gs_dm in zip(all_runs, gs_regressors):
             gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
             gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
+            pred_runs.append(gsr_pred)
             # change unit to molar
             gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
             resid = run - gsr_pred
@@ -314,7 +319,9 @@ for subj_id in subj_id_array:
             # sample centers in EEG_raw's local time frame (both start at the same crop point)
             sample_times = eeg_resample_run.times
             band_power = model.bandpower_sliding_window(eeg_raw_run, sample_times, win_len,
-                                                          power_bands, picks='eeg')
+                                                          power_bands, picks='eeg',
+                                                          method=power_method,
+                                                          bandwidth=power_bandwidth)
             for band, power_ts in band_power.items():
                 eeg_reg_value_dict[band].append(power_ts)
 
