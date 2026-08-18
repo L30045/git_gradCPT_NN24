@@ -21,6 +21,7 @@ import re
 import xarray as xr
 import cedalion.models.glm as glm
 from statsmodels.gam.smooth_basis import BSplines
+from scipy.signal import butter, sosfiltfilt
 
 #%% find subjects with fNIRS and enough EEG epochs
 _eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -79,6 +80,7 @@ is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_norm = False # If True, z-score regressors.
 select_chromo='HbO'
+select_parcel='DorsAttnA_ParOcc_1_RH'
 USE_GSR=True
 cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
@@ -167,7 +169,6 @@ for subj_id in subj_id_array:
     if select_chromo is not None:
         all_runs = [x.sel(chromo=[select_chromo]) for x in all_runs]
 
-
     #%% get continous EEG
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
     single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
@@ -177,7 +178,7 @@ for subj_id in subj_id_array:
                         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
         if cz_removed:
             print(f"sub-{subj_id}: Cz was removed in at least one run, skipping subject.")
-            continue
+            # continue
 
     # match each fNIRS run in all_runs to its EEG run (gradcpt1/2/3) via first stim onset in events.tsv
     eeg_ev_files = {
@@ -202,9 +203,13 @@ for subj_id in subj_id_array:
     for run_key, nirs_file in matched_nirs_file.items():
         nirs_onset0 = nirs_ev_dfs[nirs_file]['onset'].values[0]
         for r_i, stim in enumerate(all_stims):
-            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.05):
+            print(np.sum(nirs_ev_dfs[nirs_file]['onset'].values-stim['onset'].values))
+            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
                 run_key_to_run_idx[run_key] = r_i
                 break
+    
+    # check if run_key repeat
+    print(run_key_to_run_idx.items())
 
     #TODO: sub-695 nirs_ev_files run 1 and run2 are identical! eeg_ev_files are correct.
 
@@ -217,10 +222,23 @@ for subj_id in subj_id_array:
     eeg_list = []
     eeg_raw_list = []
     all_runs_truncated = []
+    fnirs_raw_list = []
     run_time_windows = dict()  # run_key -> (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
         run_idx = run_key_to_run_idx[run_key]
         fnirs_run = all_runs[run_idx]
+        fnirs_run_raw = fnirs_run.copy()
+
+        # highpass fNIRS to remove drift
+        fnirs_units = fnirs_run.pint.units
+        sos = butter(4, l_cutoff, btype='highpass', fs=fnirs_sfreq, output='sos')
+        fnirs_run = xr.apply_ufunc(
+            sosfiltfilt, sos, fnirs_run.pint.dequantify(),
+            input_core_dims=[[], ['time']],
+            output_core_dims=[['time']],
+            exclude_dims={'time'},
+        ).transpose(*fnirs_run.dims).pint.quantify(fnirs_units)
+        fnirs_run = fnirs_run.assign_coords({'time': all_runs[run_idx].time})
 
         # EEG <-> fNIRS clock offset for this run (nirs_time = eeg_time + t_offset)
         eeg_ev_df = eeg_ev_dfs[run_key]
@@ -253,7 +271,8 @@ for subj_id in subj_id_array:
         fnirs_run = fnirs_run.sel(time=slice(max(nirs_t_start, fnirs_run.time.values[0]),
                                             min(nirs_t_stop, fnirs_run.time.values[-1])))
         n_fnirs_samples = len(fnirs_run.time)
-        
+        fnirs_run_raw = fnirs_run_raw.sel(time=slice(max(nirs_t_start, fnirs_run_raw.time.values[0]),
+                                            min(nirs_t_stop, fnirs_run_raw.time.values[-1])))
 
         # downsample EEG to match the number of sample points in fNIRS
         EEG_resample = EEG_raw.copy()
@@ -265,17 +284,21 @@ for subj_id in subj_id_array:
         elif EEG_resample.n_times < n_fnirs_samples:
             fnirs_run = fnirs_run.isel(time=slice(0, EEG_resample.n_times))
             n_fnirs_samples = EEG_resample.n_times
+            fnirs_run_raw = fnirs_run_raw.isel(time=slice(0, EEG_resample.n_times))
 
         # truncate fNIRS so the delay at the beginning of the recording is removed
         fnirs_run = fnirs_run.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
+        fnirs_run_raw = fnirs_run_raw.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
 
         # reset fnirs_run.time to 0
         fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
+        fnirs_run_raw = fnirs_run_raw.assign_coords(time=fnirs_run_raw.time.values - fnirs_run_raw.time.values[0])
 
         # remember this run's time window so it can be reapplied to an all-parcel copy later
         run_time_windows[run_key] = (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
 
         # append data
+        fnirs_raw_list.append(fnirs_run_raw)
         all_runs_truncated.append(fnirs_run)
         eeg_list.append(EEG_resample)
         eeg_raw_list.append(EEG_raw)
@@ -297,6 +320,21 @@ for subj_id in subj_id_array:
             resid = resid.transpose(*run.dims)
             resid_runs.append(resid)
         all_runs = resid_runs
+
+    #%% fNIRS check
+    run_i = 2
+    raw_run = fnirs_raw_list[run_i]
+    hpf_run = all_runs_truncated[run_i]
+    range_i = [0,1000]
+    plt.figure()
+    plt.plot(raw_run.time[range_i[0]:range_i[1]], raw_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Raw fNIRS', alpha=0.7)
+    plt.plot(hpf_run.time[range_i[0]:range_i[1]], hpf_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='HRF fNIRS', alpha=0.7)
+    plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
+    plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
+    plt.xlabel('Time (s)')
+    plt.title('GSR on HRF fNIRS')
+    plt.grid()
+    plt.legend()
 
     #%% Extract EEG values for DM
     if 'pc1' in model_type:

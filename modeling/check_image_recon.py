@@ -31,7 +31,8 @@ from scipy.signal import filtfilt, windows
 # import my own functions from a different directory
 # sys.path.append("/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules/")
 # import processing_func as pf
-sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules')
+# sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/imaging_paper_figure_code/modules')
+sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/processing_modules_v26/')
 import processing_func as pf
 # import image_recon_func as irf
 
@@ -118,21 +119,23 @@ geo3d = results['geo3d']
 
 print('LOADING IMAGE SPACE RESULTS')
 folder =  os.path.join(der_dir, subject)
-filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}.pkl'
+filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}_v26.pkl'
 
 with open(filepath, 'rb') as f:
     image_results = pickle.load(f)
 
-if weight_flag == 'aca':
-    all_runs = image_results['parcel_ts_aca']
-    vv = image_results['vertex_aca']
-elif weight_flag == 'post': 
-    all_runs = image_results['parcel_ts_post']
-    vv = image_results['vertex_mse']
-else: 
-    all_runs = image_results['parcel_ts_none']
-    vv = image_results['vertex_mse']
+# if weight_flag == 'aca':
+#     all_runs = image_results['parcel_ts_aca']
+#     vv = image_results['vertex_aca']
+# elif weight_flag == 'post': 
+#     all_runs = image_results['parcel_ts_post']
+#     vv = image_results['vertex_mse']
+# else: 
+#     all_runs = image_results['parcel_ts_none']
+#     vv = image_results['vertex_mse']
 
+all_runs = image_results['parcel_ts']
+vv = image_results['vertex_mse']
 n_runs = len(vv)
 vv = xr.concat(vv, dim='run').sum('run') / n_runs**2
 vp = vv.groupby('parcel').sum('vertex') / vv.groupby('parcel').count()**2
