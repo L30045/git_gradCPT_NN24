@@ -90,10 +90,10 @@ n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the de
 # sliding-window bandpower parameters (used when model_type ends with 'power')
 power_win_len = None  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
 power_bands = {
-    'delta': (1, 4),
-    'theta': (4, 8),
+    # 'delta': (1, 4),
+    # 'theta': (4, 8),
     'alpha': (8, 13),
-    'beta': (13, 30),
+    # 'beta': (13, 30),
 }
 power_method = 'multitaper'  # 'bandpass' (filter + square) or 'multitaper' (DPSS PSD)
 power_bandwidth = None  # multitaper frequency smoothing (Hz); None uses MNE's default
@@ -184,26 +184,26 @@ for subj_id in subj_id_array:
     eeg_ev_files = {
         run_key: os.path.join(eeg_der_dir, subject, f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv")
         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']
-    }
+    } 
     eeg_ev_dfs = {run_key: pd.read_csv(f, sep='\t') for run_key, f in eeg_ev_files.items()}
 
     nirs_ev_files = sorted(glob.glob(os.path.join(project_path, subject, 'nirs', f"{subject}_task-gradCPT_run-*_events.tsv")))
     nirs_ev_dfs = {f: pd.read_csv(f, sep='\t') for f in nirs_ev_files}
 
     matched_nirs_file = dict()
+    matched_t_offset = dict()  # run_key -> t_offset (nirs_time = eeg_time + t_offset)
     for run_key, ev_df in eeg_ev_dfs.items():
-        eeg_onset0 = ev_df['onset'].values[0]
+        run_num = f"{run_key[-1]:0>2}"  # e.g. 'gradcpt1' -> '01'
         for nirs_file, nirs_df in nirs_ev_dfs.items():
-            if len(nirs_df) == len(ev_df) and np.allclose(nirs_df['onset'].values - nirs_df['onset'].values[0],
-                                                            ev_df['onset'].values - eeg_onset0, atol=0.05):
+            if f"run-{run_num}" in os.path.basename(nirs_file):
                 matched_nirs_file[run_key] = nirs_file
+                matched_t_offset[run_key] = nirs_df['onset'].values[0] - ev_df['onset'].values[0]
                 break
 
     run_key_to_run_idx = dict()
     for run_key, nirs_file in matched_nirs_file.items():
         nirs_onset0 = nirs_ev_dfs[nirs_file]['onset'].values[0]
         for r_i, stim in enumerate(all_stims):
-            print(np.sum(nirs_ev_dfs[nirs_file]['onset'].values-stim['onset'].values))
             if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
                 run_key_to_run_idx[run_key] = r_i
                 break
@@ -243,9 +243,7 @@ for subj_id in subj_id_array:
         # EEG <-> fNIRS clock offset for this run (nirs_time = eeg_time + t_offset)
         eeg_ev_df = eeg_ev_dfs[run_key]
         nirs_ev_df = nirs_ev_dfs[matched_nirs_file[run_key]]
-        eeg_onset0 = eeg_ev_df['onset'].values[0]
-        nirs_onset0 = nirs_ev_df['onset'].values[0]
-        t_offset = nirs_onset0 - eeg_onset0
+        t_offset = matched_t_offset[run_key]
 
         # window from the first event onset to the last event's end (onset + duration), in fNIRS time
         nirs_t_start = nirs_ev_df['onset'].values[0]
@@ -322,7 +320,7 @@ for subj_id in subj_id_array:
         all_runs = resid_runs
 
     #%% fNIRS check
-    run_i = 2
+    run_i = 0
     raw_run = fnirs_raw_list[run_i]
     hpf_run = all_runs_truncated[run_i]
     range_i = [0,1000]
@@ -332,7 +330,7 @@ for subj_id in subj_id_array:
     plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
     plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
     plt.xlabel('Time (s)')
-    plt.title('GSR on HRF fNIRS')
+    plt.title(f'GSR on HRF fNIRS (sub-{subj_id}_run-0{run_i+1})')
     plt.grid()
     plt.legend()
 
