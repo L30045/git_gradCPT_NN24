@@ -110,7 +110,8 @@ for subj_id in subj_id_array:
     data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
 
     # check if betas.pkl exist already. If yes, skip this subject.
-    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_betas.pkl')
+    hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -451,16 +452,16 @@ for subj_id in subj_id_array:
 
     #%% Combine drift and GSR regressors (if any)
     if cfg_GLM['do_drift']:
-        drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
-        dm_all &= reduce(operator.and_, drift_regressors)
+        drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
+        dm_all &= model.reduce(model.operator.and_, drift_regressors)
 
     if cfg_GLM['do_drift_legendre']:
-        drift_regressors = get_drift_legendre_regressors(runs_updated, cfg_GLM)
-        dm_all &= reduce(operator.and_, drift_regressors)
+        drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        dm_all &= model.reduce(model.operator.and_, drift_regressors)
 
     if cfg_GLM['do_GSR'] and not is_GSR_then_Others:
-        gsr = get_global_mean_regressor(runs_updated)
-        dm_all &= reduce(operator.and_, gsr)
+        gsr = model.get_global_mean_regressor(runs_updated)
+        dm_all &= model.reduce(model.operator.and_, gsr)
 
     dm_all.common = dm_all.common.fillna(0)
 
@@ -476,15 +477,15 @@ for subj_id in subj_id_array:
     results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
     # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
     # bspline coefficients back to full per-delay resolution via the same basis
-    betas_bspline = results.sm.params.copy()
-    eeg_reg = [p for p in betas_bspline.regressor.values if 'bspline' in p]
-    betas_bspline = betas_bspline.sel(regressor=eeg_reg).rename({"regressor": "component"})
-    betas = xr.dot(betas_bspline, basis_da, dims="component")
-    betas = betas.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
+    betas_all = results.sm.params.copy()
+    eeg_reg = [p for p in betas_all.regressor.values if 'bspline' in p]
+    betas_bspline = betas_all.sel(regressor=eeg_reg).rename({"regressor": "component"})
+    betas_eeg = xr.dot(betas_bspline, basis_da, dims="component")
+    betas_eeg = betas_eeg.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
 
     #%% visual check fit results and HRF
     if is_plot:
-        parcel_names = [p for p in betas.parcel.values if not p.startswith('Background+FreeSurfer')]
+        parcel_names = [p for p in betas_eeg.parcel.values if not p.startswith('Background+FreeSurfer')]
         select_network = select_parcel.split('_')[0]
         net_parcels = [p for p in parcel_names if p.split('_')[0] == select_network]
 
@@ -506,19 +507,18 @@ for subj_id in subj_id_array:
         axs[0].legend()
         axs[0].grid()
         t_betas = np.arange(0,len_delay,1/fnirs_sfreq)
-        axs[1].plot(t_betas, betas.sel(parcel=select_parcel).values.flatten(), label=f'HRF ({select_parcel})')
-        axs[1].plot(t_betas, betas.sel(parcel=net_parcels).mean('parcel').values.flatten(), label=f'HRF ({select_network})')
+        axs[1].plot(t_betas, betas_eeg.sel(parcel=select_parcel).values.flatten(), label=f'HRF ({select_parcel})')
+        axs[1].plot(t_betas, betas_eeg.sel(parcel=net_parcels).mean('parcel').values.flatten(), label=f'HRF ({select_network})')
         axs[1].set_title(f'HRF estimation using Alpha power')
         axs[1].legend()
         axs[1].grid()
 
-
-
-
     #%% save betas for later visualization
     if is_save:
         betas_dict = dict()
-        betas_dict['betas'] = betas
+        betas_dict['betas'] = betas_all
+        betas_dict['betas_eeg'] = betas_eeg
         betas_dict['betas_bspline'] = betas_bspline
+        betas_dict['basis_da'] = basis_da
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
