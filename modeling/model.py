@@ -205,7 +205,7 @@ def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=True) -> 
 
 
 def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
-                              method='bandpass', bandwidth=None):
+                              method='bandpass', bandwidth=None, sum_method=np.median):
     """
     Compute per-band EEG power in a sliding window centered on each sample time.
 
@@ -249,7 +249,7 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
                 s_stop = min(int(np.round(win_tmax * sfreq)) + 1, band_env.shape[1])
                 if s_stop <= s_start:
                     continue
-                band_power[band][i] = band_env[:, s_start:s_stop].median()
+                band_power[band][i] = sum_method(band_env[:, s_start:s_stop])
 
     elif method == 'multitaper':
         from mne.time_frequency import psd_array_multitaper
@@ -273,7 +273,7 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
                 f_mask = (freqs >= l_freq) & (freqs <= h_freq)
                 if not f_mask.any():
                     continue
-                band_power[band][i] = psd[:, f_mask].mean()
+                band_power[band][i] = sum_method(psd[:, f_mask])
 
     else:
         raise ValueError(f"Unknown method '{method}'; expected 'bandpass' or 'multitaper'")
