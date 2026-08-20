@@ -82,7 +82,6 @@ def estimate_HRF_from_beta(betas, basis_hrf):
 def get_drift_regressors(runs, cfg_GLM):
     
     drift_regressors = []
-    i=0
     for i, run  in enumerate(runs):
         drift = glm.design_matrix.drift_regressors(run, cfg_GLM['drift_order'])
         drift.common = drift.common.assign_coords({'regressor': [f'Drift {x} run {i}' for x in range(cfg_GLM['drift_order']+1)]})
@@ -93,7 +92,6 @@ def get_drift_regressors(runs, cfg_GLM):
 def get_drift_legendre_regressors(runs, cfg_GLM):
 
     drift_regressors = []
-    i=0
     for i, run  in enumerate(runs):
 
         drift = glm.design_matrix.drift_legendre_regressors(run, cfg_GLM['drift_order'])
@@ -233,7 +231,7 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
     """
     sfreq = eeg_raw.info['sfreq']
     half_win = win_len / 2
-    t0 = eeg_raw.times[0]
+    # t0 = eeg_raw.times[0]
 
     band_power = {band: np.full(len(sample_times), np.nan) for band in bands}
 
@@ -243,13 +241,15 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
             band_data = band_raw.get_data(picks=picks)  # channels x samples
             band_env = band_data ** 2  # instantaneous power
             for i, t_center in enumerate(sample_times):
-                win_tmin = t_center - t0 - half_win
-                win_tmax = t_center - t0 + half_win
+                # win_tmin = t_center - t0 - half_win
+                # win_tmax = t_center - t0 + half_win
+                win_tmin = t_center - half_win
+                win_tmax = t_center + half_win
                 s_start = max(int(np.round(win_tmin * sfreq)), 0)
                 s_stop = min(int(np.round(win_tmax * sfreq)) + 1, band_env.shape[1])
                 if s_stop <= s_start:
                     continue
-                band_power[band][i] = band_env[:, s_start:s_stop].mean()
+                band_power[band][i] = band_env[:, s_start:s_stop].median()
 
     elif method == 'multitaper':
         from mne.time_frequency import psd_array_multitaper

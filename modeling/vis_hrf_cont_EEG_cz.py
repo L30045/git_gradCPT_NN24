@@ -9,11 +9,11 @@ import scipy.stats as stats
 from params_setting import *
 
 #%% select model type
-model_type = 'cont_EEG_power'
+eeg_reg_type = 'cont_EEG_power'
 
 #load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{model_type}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_betas.pkl')))
 
 subj_betas = dict()
 for f in betas_files:

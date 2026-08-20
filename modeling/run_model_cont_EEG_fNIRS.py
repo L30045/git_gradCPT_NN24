@@ -76,7 +76,7 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-model_type='cont_EEG_power'
+eeg_reg_type = 'cont_EEG_power'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
@@ -92,7 +92,7 @@ len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
 
-# sliding-window bandpower parameters (used when model_type ends with 'power')
+# sliding-window bandpower parameters (used when eeg_reg_type ends with 'power')
 power_bands = {
     # 'delta': (1, 4),
     # 'theta': (4, 8),
@@ -110,7 +110,7 @@ for subj_id in subj_id_array:
     data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
 
     # check if betas.pkl exist already. If yes, skip this subject.
-    betas_save_path = os.path.join(data_save_path, f'{subject}_{model_type}_betas.pkl')
+    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_betas.pkl')
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -119,7 +119,7 @@ for subj_id in subj_id_array:
     der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
 
     print('LOADING PREPROCESSED CHANNEL DATA')
-    with gzip.open( os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}.pkl'), 'rb') as f:
+    with gzip.open( os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl'), 'rb') as f:
         results = pickle.load(f)
 
     # all_runs = results['runs']
@@ -129,7 +129,7 @@ for subj_id in subj_id_array:
 
     print('LOADING IMAGE SPACE RESULTS')
     folder =  os.path.join(der_dir, subject)
-    filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}.pkl'
+    filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}_v26.pkl'
 
     with open(filepath, 'rb') as f:
         image_results = pickle.load(f)
@@ -217,7 +217,7 @@ for subj_id in subj_id_array:
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
     single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
     # check if Cz exists
-    if not model_type.endswith('pc1') and not model_type.endswith('power'):
+    if not eeg_reg_type.endswith('pc1') and not eeg_reg_type.endswith('power'):
         cz_removed = any('cz' in [ch.lower() for ch in single_subj_rm_ch_dict[run_key]]
                         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
         if cz_removed:
@@ -253,7 +253,7 @@ for subj_id in subj_id_array:
                 break
     
     # check if run_key repeat
-    print(run_key_to_run_idx.items())
+    # print(run_key_to_run_idx.items())
 
     #TODO: sub-695 nirs_ev_files run 1 and run2 are identical! eeg_ev_files are correct.
 
@@ -304,7 +304,7 @@ for subj_id in subj_id_array:
         # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
         # h_cutoff = fnirs_sfreq / 2
         # h_cutoff = 1
-        # filter_picks = 'eeg' if 'pc1' in model_type or 'power' in model_type else 'cz'
+        # filter_picks = 'eeg' if 'pc1' in eeg_reg_type or 'power' in eeg_reg_type else 'cz'
         # EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
 
         # # truncate EEG to the shared event window (clamped to the recording's own bounds)
@@ -324,6 +324,7 @@ for subj_id in subj_id_array:
         # enforce exact sample-count match with the truncated fNIRS run
         if EEG_resample.n_times > n_fnirs_samples:
             EEG_resample.crop(tmax=EEG_resample.times[n_fnirs_samples - 1])
+            EEG_raw.crop(tmax=EEG_resample.times[n_fnirs_samples - 1])
         elif EEG_resample.n_times < n_fnirs_samples:
             fnirs_run = fnirs_run.isel(time=slice(0, EEG_resample.n_times))
             n_fnirs_samples = EEG_resample.n_times
@@ -349,40 +350,39 @@ for subj_id in subj_id_array:
     all_runs = all_runs_truncated
 
     #%% Regress GSR out before fitting EEG
-    if USE_GSR:
+    if USE_GSR and is_GSR_then_Others:
         gs_regressors = model.get_global_mean_regressor(all_runs)
-        if is_GSR_then_Others:    
-            pred_runs = []
-            resid_runs = []
-            for run, gs_dm in zip(all_runs, gs_regressors):
-                gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
-                gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
-                pred_runs.append(gsr_pred)
-                # change unit to molar
-                gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
-                resid = run - gsr_pred
-                resid = resid.transpose(*run.dims)
-                resid_runs.append(resid)
-            all_runs = resid_runs
-            
-            # fNIRS check
-            if is_plot:
-                run_i = 0
-                raw_run = fnirs_raw_list[run_i]
-                hpf_run = all_runs_truncated[run_i]
-                range_i = [0,1000]
-                plt.figure()
-                plt.plot(raw_run.time[range_i[0]:range_i[1]], raw_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Raw fNIRS', alpha=0.7)
-                plt.plot(hpf_run.time[range_i[0]:range_i[1]], hpf_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='HRF fNIRS', alpha=0.7)
-                plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
-                plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
-                plt.xlabel('Time (s)')
-                plt.title(f'GSR on HRF fNIRS (sub-{subj_id}_run-0{run_i+1})')
-                plt.grid()
-                plt.legend()
+        pred_runs = []
+        resid_runs = []
+        for run, gs_dm in zip(all_runs, gs_regressors):
+            gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
+            gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
+            pred_runs.append(gsr_pred)
+            # change unit to molar
+            gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
+            resid = run - gsr_pred
+            resid = resid.transpose(*run.dims)
+            resid_runs.append(resid)
+        all_runs = resid_runs
+
+        # fNIRS check
+        if is_plot:
+            run_i = 0
+            raw_run = fnirs_raw_list[run_i]
+            hpf_run = all_runs_truncated[run_i]
+            range_i = [0,1000]
+            plt.figure()
+            plt.plot(raw_run.time[range_i[0]:range_i[1]], raw_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Raw fNIRS', alpha=0.7)
+            plt.plot(hpf_run.time[range_i[0]:range_i[1]], hpf_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='HRF fNIRS', alpha=0.7)
+            plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
+            plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
+            plt.xlabel('Time (s)')
+            plt.title(f'GSR on HRF fNIRS (sub-{subj_id}_run-0{run_i+1})')
+            plt.grid()
+            plt.legend()
 
     #%% Extract EEG values for DM
-    if 'pc1' in model_type:
+    if 'pc1' in eeg_reg_type:
         # use the first PC across all EEG channels
         eeg_reg_value_list = []
         for x in eeg_list:
@@ -391,7 +391,7 @@ for subj_id in subj_id_array:
             u, s, vt = np.linalg.svd(eeg_data, full_matrices=False)
             pc1 = vt[0] * s[0]
             eeg_reg_value_list.append(pc1.flatten())
-    elif 'power' in model_type:
+    elif 'power' in eeg_reg_type:
         # sliding-window bandpower (mean across all EEG channels), centered on each fNIRS sample.
         # Use eeg_list's (untrimmed) sample times, matching what pc1/cz feed into
         # get_cont_EEG_regressor -- that function trims off the leading n_delay
@@ -412,13 +412,13 @@ for subj_id in subj_id_array:
         # extract EEG signal for creating DesignMatrix
         eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
 
-    #%% create EEG regressors
-    if 'power' in model_type:
+    # create EEG regressors
+    if 'power' in eeg_reg_type:
         # one set of delay-FIR regressors per band, combined with a band-name prefix
         # so regressor names stay unique when merged across bands
         per_run_band_regressors = [
             model.get_cont_EEG_regressor(eeg_reg_value_dict[band], fnirs_sfreq, delay=len_delay,
-                                          name_prefix=f'{band}_')
+                                          name_prefix=f'{band}_',z_score=is_norm)
             for band in power_bands
         ]
         eeg_regressors = []
@@ -428,15 +428,10 @@ for subj_id in subj_id_array:
                 run_dm = model.combine_dm(run_dm, band_dm)
             eeg_regressors.append(run_dm)
     else:
-        eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay)
+        eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay, z_score=is_norm)
+    
     # concatenate all runs and dms
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
-    # normalized regressors if required
-    if is_norm:
-        dm_all.common = (dm_all.common - dm_all.common.mean('time')) / dm_all.common.std('time')
-
-    #%% select HbO to fasten training process
-    dm_all.common = dm_all.common.sel(chromo=[select_chromo])
 
     #%% Low-rank representation of Delay using BSpline
     len_time, n_regressor, n_chromo = dm_all.common.shape
@@ -453,6 +448,28 @@ for subj_id in subj_id_array:
     )
     # project the full-rank delay design matrix onto the low-rank spline basis
     dm_all.common = xr.dot(dm_all.common, basis_da, dims="regressor").rename({"component": "regressor"})
+
+    #%% Combine drift and GSR regressors (if any)
+    if cfg_GLM['do_drift']:
+        drift_regressors = get_drift_regressors(runs_updated, cfg_GLM)
+        dm_all &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_drift_legendre']:
+        drift_regressors = get_drift_legendre_regressors(runs_updated, cfg_GLM)
+        dm_all &= reduce(operator.and_, drift_regressors)
+
+    if cfg_GLM['do_GSR'] and not is_GSR_then_Others:
+        gsr = get_global_mean_regressor(runs_updated)
+        dm_all &= reduce(operator.and_, gsr)
+
+    dm_all.common = dm_all.common.fillna(0)
+
+    # normalized regressors if required
+    if is_norm:
+        dm_all.common = (dm_all.common - dm_all.common.mean('time')) / dm_all.common.std('time')
+
+    #%% select HbO to fasten training process
+    dm_all.common = dm_all.common.sel(chromo=[select_chromo])
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start cont_EEG GLM fitting ({subject})")
