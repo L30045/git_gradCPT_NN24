@@ -496,6 +496,30 @@ def get_ERP_area(ev_name, single_subj_epoch_dict, is_norm=True):
             erp_area_dict[run_key] = []
     return erp_area_dict
 
+# get per-epoch alpha power (drop-in replacement for get_ERP_area)
+def get_alpha_power(ev_name, single_subj_epoch_dict, band=(8, 13), is_norm=True):
+    """
+    Per-epoch, per-channel alpha bandpower, computed with the same
+    {run_key: {ch_name: np.array([value_per_trial, ...])}} structure as
+    get_ERP_area, so it can be passed to create_eeg_dm unchanged.
+    """
+    alpha_power_dict = dict()
+    for run_key in single_subj_epoch_dict.keys():
+        alpha_power_dict[run_key] = dict()
+        if len(single_subj_epoch_dict[run_key][ev_name]) > 0:
+            ev_eeg = single_subj_epoch_dict[run_key][ev_name].copy().pick(picks='eeg')
+            psd = ev_eeg.compute_psd(method='multitaper', fmin=band[0], fmax=band[1], verbose=False)
+            # psd.get_data(): epochs x channels x freqs
+            band_power = psd.get_data().mean(axis=-1)
+            for ch_i, ch_name in enumerate(ev_eeg.ch_names):
+                power_list = band_power[:, ch_i]
+                if is_norm:
+                    power_list = power_list / np.max(power_list)
+                alpha_power_dict[run_key][ch_name.lower()] = power_list
+        else:
+            alpha_power_dict[run_key] = []
+    return alpha_power_dict
+
 # add events to design matrix
 # add events per run.
 def add_ev_to_dm(run_dict, ev_dict, cfg_GLM, select_event=None, select_chs=['cz'], model_mode='stim'):

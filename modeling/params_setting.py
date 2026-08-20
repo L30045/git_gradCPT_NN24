@@ -81,13 +81,13 @@ preproc_params = dict(
 SPLIT_VTC = False
 SAVE_RESIDUAL = False
 USE_GSR = True
-NOISE_MODEL = 'ols'
+NOISE_MODEL = 'ar_irls'
 root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
 ADOT_FLAG = 'probe'
-weight_flag = 'post'
 spatial_dim = 'vertex'
-hrf_basis = 'cons_gaussians'# double_gamma_deriv, gamma_deriv, cons_gaussians
+hrf_basis = 'cons_gaussians' # double_gamma_deriv, gamma_deriv, cons_gaussians
 flag = ''
+
 if NOISE_MODEL == 'ols':
     DO_TDDR = True
     DO_DRIFT = True

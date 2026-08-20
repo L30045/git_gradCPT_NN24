@@ -20,8 +20,9 @@ from tqdm import tqdm
 import re
 import xarray as xr
 import cedalion.models.glm as glm
+from cedalion.sigproc import frequency
 from statsmodels.gam.smooth_basis import BSplines
-from scipy.signal import butter, sosfiltfilt
+from scipy.signal import butter, sosfiltfilt, filtfilt, windows
 
 #%% find subjects with fNIRS and enough EEG epochs
 _eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -78,24 +79,28 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 model_type='cont_EEG_power'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
+is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
 is_norm = False # If True, z-score regressors.
+is_plot = False # If True, generate visualization plots
 select_chromo='HbO'
-select_parcel='DorsAttnA_ParOcc_1_RH'
+# select_parcel='DorsAttnA_ParOcc_1_RH'
+select_parcel='DefaultA_PFCd_1_LH'
 USE_GSR=True
+is_GSR_then_Others = False # If True, use OLS to regress out GSR first, then use the residuals to fit other regressors.
 cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
 
 # sliding-window bandpower parameters (used when model_type ends with 'power')
-power_win_len = None  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
 power_bands = {
     # 'delta': (1, 4),
     # 'theta': (4, 8),
     'alpha': (8, 13),
     # 'beta': (13, 30),
 }
-power_method = 'multitaper'  # 'bandpass' (filter + square) or 'multitaper' (DPSS PSD)
+power_win_len = 1  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
+power_method = 'bandpass'  # 'bandpass' (filter + square) or 'multitaper' (DPSS PSD)
 power_bandwidth = None  # multitaper frequency smoothing (Hz); None uses MNE's default
 
 #%% main 
@@ -126,34 +131,71 @@ for subj_id in subj_id_array:
     folder =  os.path.join(der_dir, subject)
     filepath = folder + f'/{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}.pkl'
 
-
     with open(filepath, 'rb') as f:
         image_results = pickle.load(f)
-
-    if weight_flag == 'aca':
-        all_runs = image_results['parcel_ts_aca']
-        vv = image_results['vertex_aca']
-    elif weight_flag == 'post': 
-        all_runs = image_results['parcel_ts_post']
-        vv = image_results['vertex_mse']
-    else: 
-        all_runs = image_results['parcel_ts_none']
-        vv = image_results['vertex_mse']
+    
+    all_runs = image_results['parcel_ts']
+    vv = image_results['vertex_mse']
 
     n_runs = len(vv)
     vv = xr.concat(vv, dim='run').sum('run') / n_runs**2
     vp = vv.groupby('parcel').sum('vertex') / vv.groupby('parcel').count()**2
 
-    if cfg_GLM['do_GSR']: 
-        aca_lst = image_results['vertex_aca']
-        aca_p_lst = []
-        for aca in aca_lst:
-            aca_p = aca.groupby('parcel').sum('vertex') / aca.groupby('parcel').count()**2
-            aca_p = aca_p.sel(parcel = aca_p.parcel != 'scalp')
-            aca_p_lst.append(aca_p)
+    # RUN HRF ESTIMATION
+    L = 20  # <-- set this appropriately
+    W = windows.gaussian(L, std=L/6) / 2  
+                        
+    if SPLIT_VTC:
+        possible_trial_types = ['mnt-correct-in', 'mnt-correct-out', 'mnt-incorrect', 'city-incorrect']
+    else:
+        possible_trial_types = ['mnt-correct', 'mnt-incorrect']    
 
-        cfg_GLM['GSR_weight'] = aca_p_lst
+    trial_presence_list = []
+    stims_pruned_list = []
+    
+    all_runs_tmp = []
+    for stim, run in zip(all_stims, all_runs):
+        mnt_trials = stim[stim['trial_type'] == 'mnt'].copy()
+        mnt_trials.loc[mnt_trials['response_code'] == 0, 'trial_type'] = 'mnt-correct'
+        mnt_trials.loc[mnt_trials['response_code'] == -2, 'trial_type'] = 'mnt-incorrect'
 
+        # city_trials = stim[(stim['trial_type'] == 'city') & (stim['response_code'] == -1)]
+        # city_trials['trial_type'] = 'city-incorrect'
+        
+        if SPLIT_VTC:
+            VTC = stim['VTC'].to_numpy()
+            VTC = filtfilt(W, sum(W), VTC)
+            median = np.median(VTC)
+
+            in_zone = np.where(VTC <= median)[0]
+            out_zone = np.where(VTC > median)[0]
+            mnt_trials.loc[
+                            (mnt_trials['trial_type'] == 'mnt-correct') & 
+                            (mnt_trials.index.isin(in_zone)),
+                            'trial_type'
+                        ] = 'mnt-correct-in'
+
+            mnt_trials.loc[
+                            (mnt_trials['trial_type'] == 'mnt-correct') & 
+                            (mnt_trials.index.isin(out_zone)),
+                            'trial_type'
+                        ] = 'mnt-correct-out'
+
+
+        # Combine the filtered trials
+        # stims_pruned = pd.concat(, ignore_index=True)
+        # run.stim = stims_pruned
+        if F_MIN > 0: 
+            # TODO HP the timeseries data 
+            run.time.attrs['units'] = units.s
+            run_filt = frequency.freq_filter(run, 
+                                        F_MIN*units.Hz, 
+                                        F_MAX*units.Hz)
+            all_runs_tmp.append(run_filt)
+        else:
+            all_runs_tmp.append(run)
+
+        stims_pruned_list.append(mnt_trials)
 
     # run_ts_list = [image_results['parcel_ts_weights']]
     all_runs = [run.assign_coords({'samples': ('time', np.arange(len(run.time)))}) for run in all_runs]
@@ -168,6 +210,8 @@ for subj_id in subj_id_array:
     # select only one parcel and one chromo
     if select_chromo is not None:
         all_runs = [x.sel(chromo=[select_chromo]) for x in all_runs]
+    
+    ori_all_runs = all_runs.copy()
 
     #%% get continous EEG
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
@@ -178,7 +222,7 @@ for subj_id in subj_id_array:
                         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
         if cz_removed:
             print(f"sub-{subj_id}: Cz was removed in at least one run, skipping subject.")
-            # continue
+            continue
 
     # match each fNIRS run in all_runs to its EEG run (gradcpt1/2/3) via first stim onset in events.tsv
     eeg_ev_files = {
@@ -226,19 +270,20 @@ for subj_id in subj_id_array:
     run_time_windows = dict()  # run_key -> (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
         run_idx = run_key_to_run_idx[run_key]
-        fnirs_run = all_runs[run_idx]
-        fnirs_run_raw = fnirs_run.copy()
+        fnirs_run = ori_all_runs[run_idx].copy()
+        fnirs_run_raw = ori_all_runs[run_idx]
 
         # highpass fNIRS to remove drift
-        fnirs_units = fnirs_run.pint.units
-        sos = butter(4, l_cutoff, btype='highpass', fs=fnirs_sfreq, output='sos')
-        fnirs_run = xr.apply_ufunc(
-            sosfiltfilt, sos, fnirs_run.pint.dequantify(),
-            input_core_dims=[[], ['time']],
-            output_core_dims=[['time']],
-            exclude_dims={'time'},
-        ).transpose(*fnirs_run.dims).pint.quantify(fnirs_units)
-        fnirs_run = fnirs_run.assign_coords({'time': all_runs[run_idx].time})
+        if is_hp_fNIRS:
+            fnirs_units = fnirs_run.pint.units
+            sos = butter(4, l_cutoff, btype='highpass', fs=fnirs_sfreq, output='sos')
+            fnirs_run = xr.apply_ufunc(
+                sosfiltfilt, sos, fnirs_run.pint.dequantify(),
+                input_core_dims=[[], ['time']],
+                output_core_dims=[['time']],
+                exclude_dims={'time'},
+            ).transpose(*fnirs_run.dims).pint.quantify(fnirs_units)
+            fnirs_run = fnirs_run.assign_coords({'time': all_runs[run_idx].time})
 
         # EEG <-> fNIRS clock offset for this run (nirs_time = eeg_time + t_offset)
         eeg_ev_df = eeg_ev_dfs[run_key]
@@ -305,34 +350,36 @@ for subj_id in subj_id_array:
 
     #%% Regress GSR out before fitting EEG
     if USE_GSR:
-        gs_regressors = model.get_global_mean_regressor(all_runs, weights=cfg_GLM['GSR_weight'])
-        pred_runs = []
-        resid_runs = []
-        for run, gs_dm in zip(all_runs, gs_regressors):
-            gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
-            gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
-            pred_runs.append(gsr_pred)
-            # change unit to molar
-            gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
-            resid = run - gsr_pred
-            resid = resid.transpose(*run.dims)
-            resid_runs.append(resid)
-        all_runs = resid_runs
-
-    #%% fNIRS check
-    run_i = 0
-    raw_run = fnirs_raw_list[run_i]
-    hpf_run = all_runs_truncated[run_i]
-    range_i = [0,1000]
-    plt.figure()
-    plt.plot(raw_run.time[range_i[0]:range_i[1]], raw_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Raw fNIRS', alpha=0.7)
-    plt.plot(hpf_run.time[range_i[0]:range_i[1]], hpf_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='HRF fNIRS', alpha=0.7)
-    plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
-    plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
-    plt.xlabel('Time (s)')
-    plt.title(f'GSR on HRF fNIRS (sub-{subj_id}_run-0{run_i+1})')
-    plt.grid()
-    plt.legend()
+        gs_regressors = model.get_global_mean_regressor(all_runs)
+        if is_GSR_then_Others:    
+            pred_runs = []
+            resid_runs = []
+            for run, gs_dm in zip(all_runs, gs_regressors):
+                gsr_results = glm.fit(run, gs_dm, noise_model=cfg_GLM['noise_model'])
+                gsr_pred = glm.predict(run, gsr_results.sm.params, gs_dm)
+                pred_runs.append(gsr_pred)
+                # change unit to molar
+                gsr_pred = gsr_pred.pint.dequantify().pint.quantify('molar')
+                resid = run - gsr_pred
+                resid = resid.transpose(*run.dims)
+                resid_runs.append(resid)
+            all_runs = resid_runs
+            
+            # fNIRS check
+            if is_plot:
+                run_i = 0
+                raw_run = fnirs_raw_list[run_i]
+                hpf_run = all_runs_truncated[run_i]
+                range_i = [0,1000]
+                plt.figure()
+                plt.plot(raw_run.time[range_i[0]:range_i[1]], raw_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Raw fNIRS', alpha=0.7)
+                plt.plot(hpf_run.time[range_i[0]:range_i[1]], hpf_run.sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='HRF fNIRS', alpha=0.7)
+                plt.plot(pred_runs[run_i].time[range_i[0]:range_i[1]], pred_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='GSR pred', alpha=0.7)
+                plt.plot(resid_runs[run_i].time[range_i[0]:range_i[1]], resid_runs[run_i].sel(parcel=select_parcel).values.flatten()[range_i[0]:range_i[1]], label='Resid', alpha=0.7)
+                plt.xlabel('Time (s)')
+                plt.title(f'GSR on HRF fNIRS (sub-{subj_id}_run-0{run_i+1})')
+                plt.grid()
+                plt.legend()
 
     #%% Extract EEG values for DM
     if 'pc1' in model_type:
@@ -412,11 +459,44 @@ for subj_id in subj_id_array:
     results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
     # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
     # bspline coefficients back to full per-delay resolution via the same basis
-    betas_bspline = results.sm.params
+    betas_bspline = results.sm.params.copy()
     eeg_reg = [p for p in betas_bspline.regressor.values if 'bspline' in p]
     betas_bspline = betas_bspline.sel(regressor=eeg_reg).rename({"regressor": "component"})
     betas = xr.dot(betas_bspline, basis_da, dims="component")
     betas = betas.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
+
+    #%% visual check fit results and HRF
+    if is_plot:
+        parcel_names = [p for p in betas.parcel.values if not p.startswith('Background+FreeSurfer')]
+        select_network = select_parcel.split('_')[0]
+        net_parcels = [p for p in parcel_names if p.split('_')[0] == select_network]
+
+        vis_betas = results.sm.params.copy()
+        eeg_reg = [p for p in vis_betas.regressor.values if 'bspline' in p]
+        vis_betas = vis_betas.sel(regressor=eeg_reg)
+        y_hat = xr.dot(dm_all.common, vis_betas, dims='regressor')
+        #
+        fig, axs = plt.subplots(2, 1, figsize=(18, 8), sharex=False)
+        y_true = Y_all.sel(parcel=select_parcel).values.flatten()
+        y_hat_vals = y_hat.sel(parcel=select_parcel).values.flatten()
+
+
+        axs[0].plot(Y_all.time.values, y_true, label='Y (true)', color='k', linewidth=2)
+        axs[0].plot(y_hat.time.values, y_hat_vals,'b',
+                label='y_hat (EEG)', alpha=0.5)
+        axs[0].set_ylabel(f'HbO concentration')
+        axs[0].set_title(f'Parcel activities estimation ({select_parcel})')
+        axs[0].legend()
+        axs[0].grid()
+        t_betas = np.arange(0,len_delay,1/fnirs_sfreq)
+        axs[1].plot(t_betas, betas.sel(parcel=select_parcel).values.flatten(), label=f'HRF ({select_parcel})')
+        axs[1].plot(t_betas, betas.sel(parcel=net_parcels).mean('parcel').values.flatten(), label=f'HRF ({select_network})')
+        axs[1].set_title(f'HRF estimation using Alpha power')
+        axs[1].legend()
+        axs[1].grid()
+
+
+
 
     #%% save betas for later visualization
     if is_save:

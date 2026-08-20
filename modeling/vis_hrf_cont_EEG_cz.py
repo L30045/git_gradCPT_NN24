@@ -9,9 +9,9 @@ import scipy.stats as stats
 from params_setting import *
 
 #%% select model type
-model_type = 'cont_EEG_cz_1Hz'
+model_type = 'cont_EEG_power'
 
-#%% load betas for all subjects
+#load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{model_type}_betas.pkl')))
 
@@ -26,11 +26,11 @@ for f in betas_files:
         len_delay = len(betas_dict['betas_bspline']['component'])  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
         subj_betas[subject] = betas_dict['betas']
 
-#%% group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
+# group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
 parcel_names = [p for p in next(iter(subj_betas.values())).parcel.values if not p.startswith('Background+FreeSurfer')]
 networks = sorted(set(p.split('_')[0] for p in parcel_names))
 
-#%% for each network, average across parcels within a subject, then summarize across subjects (mean and 95% CI)
+# for each network, average across parcels within a subject, then summarize across subjects (mean and 95% CI)
 n_cols = 3
 n_rows = int(np.ceil(len(networks) / n_cols))
 fig, axs = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True, sharey=True)
