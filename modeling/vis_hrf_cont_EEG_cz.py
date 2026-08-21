@@ -63,4 +63,76 @@ fig.suptitle(f'Average HRF per network across subjects (n={len(subj_betas)})')
 plt.tight_layout()
 plt.show()
 
-# %%
+#%% visualize indivisual subject's HRF
+# same layout as above, but one figure per subject: solid line is the average
+# across parcels within a network, shaded area is the 95% CI across those parcels
+for subject, betas in subj_betas.items():
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True, sharey=True)
+    axs = np.atleast_1d(axs).flatten()
+    for ax, net in zip(axs, networks):
+        net_parcels = [p for p in parcel_names if p.split('_')[0] == net]
+        # parcels x delay
+        parcel_HRF_net = betas.sel(parcel=net_parcels).values.reshape(len(net_parcels), -1)
+
+        n_parcel = parcel_HRF_net.shape[0]
+        mean_HRF = parcel_HRF_net.mean(axis=0)
+        sem_HRF = stats.sem(parcel_HRF_net, axis=0)
+        ci95 = sem_HRF * stats.t.ppf(0.975, n_parcel - 1)
+
+        x = np.arange(len(mean_HRF)) * (len_delay / len(mean_HRF))
+        ax.plot(x, mean_HRF)
+        ax.fill_between(x, mean_HRF - ci95, mean_HRF + ci95, alpha=0.3)
+        ax.set_title(net)
+        ax.grid()
+    for ax in axs[len(networks):]:
+        ax.set_visible(False)
+    fig.supxlabel('Time (s)')
+    fig.supylabel('Beta (HRF estimate)')
+    fig.suptitle(f'{subject}: average HRF per network across parcels')
+    plt.tight_layout()
+    plt.show()
+
+#%% gather only parcel with a maximum peak around 5 seconds
+# same layout/summary as line 36 (mean + 95% CI across subjects), but restricted to
+# parcels whose peak beta falls within 1s of t=5s; each subject's own mean (within
+# their qualifying parcels) is overlaid and labeled 'sub-xxx (n parcels)'
+peak_time = 5.0
+peak_tol = 2
+
+fig, axs = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True, sharey=True)
+axs = np.atleast_1d(axs).flatten()
+for ax, net in zip(axs, networks):
+    net_parcels = [p for p in parcel_names if p.split('_')[0] == net]
+
+    subj_HRF_net = []
+    for subject, betas in subj_betas.items():
+        parcel_HRF_net = betas.sel(parcel=net_parcels).values.reshape(len(net_parcels), -1)
+        x = np.arange(parcel_HRF_net.shape[1]) * (len_delay / parcel_HRF_net.shape[1])
+
+        peak_t = x[np.argmax(abs(parcel_HRF_net), axis=1)]
+        is_peak_near_5s = np.abs(peak_t - peak_time) <= peak_tol
+        if not np.any(is_peak_near_5s):
+            continue
+
+        subj_mean_HRF = parcel_HRF_net[is_peak_near_5s].mean(axis=0)
+        subj_HRF_net.append(subj_mean_HRF)
+        ax.plot(x, subj_mean_HRF, alpha=0.5, linewidth=1, label=f'{subject} ({is_peak_near_5s.sum()}/{len(net_parcels)})')
+
+    subj_HRF_net = np.stack(subj_HRF_net)
+    n_subj = subj_HRF_net.shape[0]
+    mean_HRF = subj_HRF_net.mean(axis=0)
+    sem_HRF = stats.sem(subj_HRF_net, axis=0)
+    ci95 = sem_HRF * stats.t.ppf(0.975, n_subj - 1)
+
+    ax.plot(x, mean_HRF, color='k', linewidth=2)
+    ax.fill_between(x, mean_HRF - ci95, mean_HRF + ci95, color='k', alpha=0.3)
+    ax.set_title(net)
+    ax.legend(fontsize=6)
+    ax.grid()
+for ax in axs[len(networks):]:
+    ax.set_visible(False)
+fig.supxlabel('Time (s)')
+fig.supylabel('Beta (HRF estimate)')
+fig.suptitle(f'Average HRF per network across subjects, parcels peaking near {peak_time:g}s')
+plt.tight_layout()
+plt.show()
