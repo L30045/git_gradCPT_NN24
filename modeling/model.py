@@ -258,8 +258,10 @@ def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
         fmin = min(l_freq for l_freq, h_freq in bands.values())
         fmax = max(h_freq for l_freq, h_freq in bands.values())
         for i, t_center in enumerate(sample_times):
-            win_tmin = t_center - t0 - half_win
-            win_tmax = t_center - t0 + half_win
+            # win_tmin = t_center - t0 - half_win
+            # win_tmax = t_center - t0 + half_win
+            win_tmin = t_center - half_win
+            win_tmax = t_center + half_win
             s_start = max(int(np.round(win_tmin * sfreq)), 0)
             s_stop = min(int(np.round(win_tmax * sfreq)) + 1, n_times)
             if s_stop <= s_start:

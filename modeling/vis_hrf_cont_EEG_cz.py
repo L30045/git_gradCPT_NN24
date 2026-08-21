@@ -9,11 +9,13 @@ import scipy.stats as stats
 from params_setting import *
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_power'
+eeg_reg_type = 'cont_EEG_cz'
+is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
+hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 
 #load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
 
 subj_betas = dict()
 for f in betas_files:
@@ -24,7 +26,7 @@ for f in betas_files:
     with open(f, 'rb') as fh:
         betas_dict = pickle.load(fh)
         len_delay = len(betas_dict['betas_bspline']['component'])  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
-        subj_betas[subject] = betas_dict['betas']
+        subj_betas[subject] = betas_dict['betas_eeg']
 
 # group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
 parcel_names = [p for p in next(iter(subj_betas.values())).parcel.values if not p.startswith('Background+FreeSurfer')]

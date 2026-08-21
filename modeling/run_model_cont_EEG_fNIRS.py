@@ -76,7 +76,8 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_power'
+# eeg_reg_type = 'cont_EEG_allBandPower-bandpass'
+eeg_reg_type = 'cont_EEG_cz'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
@@ -101,6 +102,7 @@ power_bands = {
 }
 power_win_len = 1  # sliding window length (sec); if None, defaults to 1/fnirs_sfreq at runtime
 power_method = 'bandpass'  # 'bandpass' (filter + square) or 'multitaper' (DPSS PSD)
+sum_method = np.mean # method for summarizing power across channels
 power_bandwidth = None  # multitaper frequency smoothing (Hz); None uses MNE's default
 
 #%% main 
@@ -218,7 +220,7 @@ for subj_id in subj_id_array:
     eeg_der_dir = os.path.join(project_path, "derivatives", "eeg")
     single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
     # check if Cz exists
-    if not eeg_reg_type.endswith('pc1') and not eeg_reg_type.endswith('power'):
+    if 'cz' in eeg_reg_type:
         cz_removed = any('cz' in [ch.lower() for ch in single_subj_rm_ch_dict[run_key]]
                         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3'])
         if cz_removed:
@@ -392,7 +394,7 @@ for subj_id in subj_id_array:
             u, s, vt = np.linalg.svd(eeg_data, full_matrices=False)
             pc1 = vt[0] * s[0]
             eeg_reg_value_list.append(pc1.flatten())
-    elif 'power' in eeg_reg_type:
+    elif 'power' in eeg_reg_type.lower():
         # sliding-window bandpower (mean across all EEG channels), centered on each fNIRS sample.
         # Use eeg_list's (untrimmed) sample times, matching what pc1/cz feed into
         # get_cont_EEG_regressor -- that function trims off the leading n_delay
@@ -405,7 +407,8 @@ for subj_id in subj_id_array:
             band_power = model.bandpower_sliding_window(eeg_raw_run, sample_times, win_len,
                                                           power_bands, picks='eeg',
                                                           method=power_method,
-                                                          bandwidth=power_bandwidth)
+                                                          bandwidth=power_bandwidth,
+                                                          sum_method=sum_method)
             for band, power_ts in band_power.items():
                 eeg_reg_value_dict[band].append(power_ts)
 
@@ -414,7 +417,7 @@ for subj_id in subj_id_array:
         eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
 
     # create EEG regressors
-    if 'power' in eeg_reg_type:
+    if 'power' in eeg_reg_type.lower():
         # one set of delay-FIR regressors per band, combined with a band-name prefix
         # so regressor names stay unique when merged across bands
         per_run_band_regressors = [
@@ -435,18 +438,40 @@ for subj_id in subj_id_array:
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
 
     #%% Low-rank representation of Delay using BSpline
-    len_time, n_regressor, n_chromo = dm_all.common.shape
     # spline basis evaluated at each delay tap (not at the regressor's data values),
     # so the FIR delay curve is constrained to a smooth, low-rank subspace
-    delay_idx = np.arange(n_regressor)
-    bspline_basis = BSplines(delay_idx, df=[n_bspline_basis], degree=[bspline_degree],
-                              include_intercept=True).basis  # (n_regressor, n_bspline_basis)
-    basis_da = xr.DataArray(
-        bspline_basis,
-        dims=("regressor", "component"),
-        coords={"regressor": dm_all.common.regressor.values,
-                "component": [f"bspline{i}" for i in range(n_bspline_basis)]},
-    )
+    all_regressor_names = dm_all.common.regressor.values
+    if 'power' in eeg_reg_type:
+        # one bspline basis per band, applied only to that band's delay taps,
+        # so each band's FIR delay curve is smoothed independently rather than
+        # sharing a single basis across all bands' concatenated delay indices
+        basis_blocks = []
+        for band in power_bands:
+            band_regressor_names = [name for name in all_regressor_names
+                                     if name.startswith(f'{band}_delay')]
+            n_band_regressor = len(band_regressor_names)
+            delay_idx = np.arange(n_band_regressor)
+            bspline_basis = BSplines(delay_idx, df=[n_bspline_basis], degree=[bspline_degree],
+                                      include_intercept=True).basis  # (n_band_regressor, n_bspline_basis)
+            basis_blocks.append(xr.DataArray(
+                bspline_basis,
+                dims=("regressor", "component"),
+                coords={"regressor": band_regressor_names,
+                        "component": [f"{band}_bspline{i}" for i in range(n_bspline_basis)]},
+            ))
+        basis_da = xr.concat(basis_blocks, dim="component").fillna(0)
+        basis_da = basis_da.sel(regressor=all_regressor_names)
+    else:
+        n_regressor = len(all_regressor_names)
+        delay_idx = np.arange(n_regressor)
+        bspline_basis = BSplines(delay_idx, df=[n_bspline_basis], degree=[bspline_degree],
+                                  include_intercept=True).basis  # (n_regressor, n_bspline_basis)
+        basis_da = xr.DataArray(
+            bspline_basis,
+            dims=("regressor", "component"),
+            coords={"regressor": all_regressor_names,
+                    "component": [f"bspline{i}" for i in range(n_bspline_basis)]},
+        )
     # project the full-rank delay design matrix onto the low-rank spline basis
     dm_all.common = xr.dot(dm_all.common, basis_da, dims="regressor").rename({"component": "regressor"})
 
