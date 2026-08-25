@@ -6,7 +6,14 @@ import os
 import re
 import matplotlib.pyplot as plt
 import scipy.stats as stats
-from params_setting import *
+# from params_setting import *
+import xarray as xr
+import cedalion.dot
+from cedalion.vis.anatomy.image_recon import image_recon_multi_view
+head = cedalion.dot.get_standard_headmodel('icbm152')
+vertex_parcel = head.brain.vertices.parcel.values
+n_vertex = head.brain.nvertices
+
 
 #%% select model type
 eeg_reg_type = 'cont_EEG_cz'
@@ -32,7 +39,7 @@ for f in betas_files:
 parcel_names = [p for p in next(iter(subj_betas.values())).parcel.values if not p.startswith('Background+FreeSurfer')]
 networks = sorted(set(p.split('_')[0] for p in parcel_names))
 
-# for each network, average across parcels within a subject, then summarize across subjects (mean and 95% CI)
+#%% for each network, average across parcels within a subject, then summarize across subjects (mean and 95% CI)
 n_cols = 3
 n_rows = int(np.ceil(len(networks) / n_cols))
 fig, axs = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True, sharey=True)
@@ -140,10 +147,6 @@ plt.show()
 #%% visualize group-average parcel HRF on the brain surface
 # broadcast each parcel's group-average beta at a chosen delay time onto the
 # ICBM152 brain surface vertices and render with cedalion's image reconstruction plots
-import xarray as xr
-import cedalion.dot
-from cedalion.vis.anatomy.image_recon import image_recon_multi_view
-
 head = cedalion.dot.get_standard_headmodel('icbm152')
 vertex_parcel = head.brain.vertices.parcel.values
 n_vertex = head.brain.nvertices
@@ -178,9 +181,20 @@ image_recon_multi_view(head=head, **group_plot_params)
 
 #%% same plot, but for sub-723 only
 select_subj = 'sub-723'
+beta_file = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/sub-723/sub-723_cont_EEG_cz_ar_irls_noHp_betas.pkl'
+# beta_file = 'sub-723_cont_EEG_cz_ar_irls_noHp_betas.pkl'
+with open(beta_file, 'rb') as fh:
+    betas_dict = pickle.load(fh)
+    len_delay = len(betas_dict['betas_bspline']['component'])  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
+    subj_beta = betas_dict['betas_eeg']
 
-subj_betas_parcel_1 = subj_betas[select_subj].sel(chromo='HbO').values  # parcel x delay
-beta_by_parcel_1 = dict(zip(parcel_values, subj_betas_parcel_1[:, delay_idx]))
+delay_x = np.arange(mean_betas_parcel.shape[1]) * (len_delay / mean_betas_parcel.shape[1])
+plot_time = 5.0  # seconds; delay time point to display
+delay_idx = np.argmin(np.abs(delay_x - plot_time))
+parcel_values = subj_beta.parcel.values
+
+subj_beta = subj_beta.sel(chromo='HbO').values  # parcel x delay
+beta_by_parcel_1 = dict(zip(parcel_values, subj_beta[:, delay_idx]))
 vertex_vals_1 = np.array([beta_by_parcel_1.get(p, np.nan) for p in vertex_parcel])
 
 X_surf_1 = xr.DataArray(
@@ -210,4 +224,16 @@ with open(out_path, 'wb') as fh:
     }, fh)
 print(f'Saved plot parameters to {out_path}')
 
-#%%
+#%% Vis HRF on brain surface
+image_recon_multi_view(
+        X_ts = foo_img_v,
+        head = head,
+        cmap = 'jet',
+        # clim = [-6,6],
+        view_type = 'hbo_brain',
+        title_str = 'HbO T-stat: in-out',
+        filename = None,
+        SAVE = False,
+        wdw_size = (1300, 768)
+    )
+
