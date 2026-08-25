@@ -136,3 +136,78 @@ fig.supylabel('Beta (HRF estimate)')
 fig.suptitle(f'Average HRF per network across subjects, parcels peaking near {peak_time:g}s')
 plt.tight_layout()
 plt.show()
+
+#%% visualize group-average parcel HRF on the brain surface
+# broadcast each parcel's group-average beta at a chosen delay time onto the
+# ICBM152 brain surface vertices and render with cedalion's image reconstruction plots
+import xarray as xr
+import cedalion.dot
+from cedalion.vis.anatomy.image_recon import image_recon_multi_view
+
+head = cedalion.dot.get_standard_headmodel('icbm152')
+vertex_parcel = head.brain.vertices.parcel.values
+n_vertex = head.brain.nvertices
+
+# group-average beta per parcel (subjects x parcel x delay -> mean over subjects)
+subj_betas_parcel = np.stack([betas.sel(chromo='HbO').values for betas in subj_betas.values()])  # subj x parcel x delay
+mean_betas_parcel = subj_betas_parcel.mean(axis=0)  # parcel x delay
+parcel_values = next(iter(subj_betas.values())).parcel.values
+delay_x = np.arange(mean_betas_parcel.shape[1]) * (len_delay / mean_betas_parcel.shape[1])
+
+plot_time = 5.0  # seconds; delay time point to display
+delay_idx = np.argmin(np.abs(delay_x - plot_time))
+
+beta_by_parcel = dict(zip(parcel_values, mean_betas_parcel[:, delay_idx]))
+vertex_vals = np.array([beta_by_parcel.get(p, np.nan) for p in vertex_parcel])
+
+X_surf = xr.DataArray(
+    np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
+    dims=['vertex', 'chromo'],
+    coords={'chromo': ['HbO', 'HbR'],
+            'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
+)
+
+clim_max = np.nanmax(np.abs(vertex_vals))
+group_plot_params = dict(
+    X_ts=X_surf, cmap='seismic', clim=(-clim_max, clim_max),
+    view_type='hbo_brain',
+    title_str=f'Group-average HRF beta at t={plot_time:g}s (n={len(subj_betas)})',
+    SAVE=False, wdw_size=(1600, 800),
+)
+image_recon_multi_view(head=head, **group_plot_params)
+
+#%% same plot, but for sub-723 only
+select_subj = 'sub-723'
+
+subj_betas_parcel_1 = subj_betas[select_subj].sel(chromo='HbO').values  # parcel x delay
+beta_by_parcel_1 = dict(zip(parcel_values, subj_betas_parcel_1[:, delay_idx]))
+vertex_vals_1 = np.array([beta_by_parcel_1.get(p, np.nan) for p in vertex_parcel])
+
+X_surf_1 = xr.DataArray(
+    np.stack([vertex_vals_1, np.zeros(n_vertex)], axis=-1),
+    dims=['vertex', 'chromo'],
+    coords={'chromo': ['HbO', 'HbR'],
+            'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
+)
+
+clim_max_1 = np.nanmax(np.abs(vertex_vals_1))
+subj_plot_params = dict(
+    X_ts=X_surf_1, cmap='seismic', clim=(-clim_max_1, clim_max_1),
+    view_type='hbo_brain',
+    title_str=f'{select_subj} HRF beta at t={plot_time:g}s',
+    SAVE=False, wdw_size=(1600, 800),
+)
+image_recon_multi_view(head=head, **subj_plot_params)
+
+#%% save the plot parameters
+# `head` is shared across plots and stored once to avoid duplicating the full mesh
+xsubj_dir = os.path.join(project_path, 'derivatives', 'eeg', 'xSubj_results')
+out_path = os.path.join(xsubj_dir, f'{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_brain_surface_plot_params.pkl')
+with open(out_path, 'wb') as fh:
+    pickle.dump({
+        'head': head,
+        'plots': {'group': group_plot_params, select_subj: subj_plot_params},
+    }, fh)
+print(f'Saved plot parameters to {out_path}')
+
+#%%
