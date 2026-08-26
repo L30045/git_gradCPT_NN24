@@ -306,4 +306,16 @@ for parcel in near_cz_parcels:
     fig.savefig(os.path.join(near_cz_dir, f'{parcel}_HRF.png'))
     plt.close(fig)
 
-#%%
+#%% Vis HRF on brain surface
+image_recon_multi_view(
+        X_ts = foo_img_v,
+        head = head,
+        cmap = 'jet',
+        # clim = [-6,6],
+        view_type = 'hbo_brain',
+        title_str = 'HbO T-stat: in-out',
+        filename = None,
+        SAVE = False,
+        wdw_size = (1300, 768)
+    )
+
