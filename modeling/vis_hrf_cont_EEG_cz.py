@@ -5,6 +5,7 @@ import glob
 import os
 import re
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 import scipy.stats as stats
 from params_setting import *
 import xarray as xr
@@ -16,7 +17,7 @@ n_vertex = head.brain.nvertices
 
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_cz'
+eeg_reg_type = 'cont_EEG_cz_bspline_first'
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/HRF_surf'
@@ -194,8 +195,6 @@ image_recon_multi_view(
 #%% visualize DorsAttn and Default network parcels on the brain surface
 # highlight parcels belonging to the DorsAttn (A/B, red) and Default (A/B/C, blue) networks;
 # all parcels within the same network share one fixed color, other parcels are left blank (NaN)
-from matplotlib.colors import ListedColormap
-
 network_group = {'DorsAttnA': 0, 'DorsAttnB': 0, 'DefaultA': 1, 'DefaultB': 1, 'DefaultC': 1}
 vertex_idx_highlight = np.array([network_group.get(p.split('_')[0], np.nan) for p in vertex_parcel])
 highlight_cmap = ListedColormap(['red', 'blue'])
