@@ -268,7 +268,6 @@ for subj_id in subj_id_array:
     eeg_raw_list = []
     all_runs_truncated = []
     fnirs_raw_list = []
-    run_time_windows = dict()  # run_key -> (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
         run_idx = run_key_to_run_idx[run_key]
         fnirs_run = ori_all_runs[run_idx].copy()
@@ -295,7 +294,7 @@ for subj_id in subj_id_array:
         nirs_t_start = nirs_ev_df['onset'].values[0]
         # nirs_t_stop = (nirs_ev_df['onset'] + nirs_ev_df['duration']).values[-1]
         nirs_t_stop = (nirs_ev_df['onset']).values[-1]+len_delay # second
-        eeg_t_start = nirs_t_start - t_offset
+        eeg_t_start = nirs_t_start - t_offset- len_delay # second. extract len_delay of data prior to nirs_t_start so we don't have to reject first len_delay of fNIRS.
         eeg_t_stop = nirs_t_stop - t_offset
 
         EEG = single_subj_EEG_dict[run_key].copy()
@@ -308,16 +307,13 @@ for subj_id in subj_id_array:
         fnirs_run_raw = fnirs_run_raw.sel(time=slice(max(nirs_t_start, fnirs_run_raw.time.values[0]),
                                             min(nirs_t_stop, fnirs_run_raw.time.values[-1])))
 
-        # truncate fNIRS so the delay at the beginning of the recording is removed
-        fnirs_run = fnirs_run.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
-        fnirs_run_raw = fnirs_run_raw.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
+        # # truncate fNIRS so the delay at the beginning of the recording is removed
+        # fnirs_run = fnirs_run.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
+        # fnirs_run_raw = fnirs_run_raw.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
 
-        # reset fnirs_run.time to 0
+        # # reset fnirs_run.time to 0
         fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
         fnirs_run_raw = fnirs_run_raw.assign_coords(time=fnirs_run_raw.time.values - fnirs_run_raw.time.values[0])
-
-        # remember this run's time window so it can be reapplied to an all-parcel copy later
-        run_time_windows[run_key] = (run_idx, nirs_t_start, nirs_t_stop, n_fnirs_samples)
 
         # append data
         fnirs_raw_list.append(fnirs_run_raw)
@@ -463,9 +459,9 @@ for subj_id in subj_id_array:
                                             npad='auto', axis=-1)
 
         # enforce exact sample-count match with the truncated fNIRS run
-        n_dm_samples = dm_resampled.shape[-1]
+        n_dm_samples = dm_resampled.shape[-1]-np.round(len_delay*fnirs_sfreq)
         if n_dm_samples > n_fnirs_samples:
-            dm_resampled = dm_resampled[..., :n_fnirs_samples]
+            dm_resampled = dm_resampled[..., :n_fnirs_samples+np.round(len_delay*fnirs_sfreq).astype(int)]
             n_dm_samples = n_fnirs_samples
         elif n_dm_samples < n_fnirs_samples:
             all_runs[eeg_i] = fnirs_run.isel(time=slice(0, n_dm_samples))

@@ -77,7 +77,7 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
 # eeg_reg_type = 'cont_EEG_allBandPower-bandpass'
-eeg_reg_type = 'cont_EEG_cz'
+eeg_reg_type = 'cont_EEG_cz_add_15s'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
@@ -298,10 +298,10 @@ for subj_id in subj_id_array:
         eeg_t_start = nirs_t_start - t_offset - len_delay # second. extract len_delay of data prior to nirs_t_start so we don't have to reject first len_delay of fNIRS.
         eeg_t_stop = nirs_t_stop - t_offset
 
-        if eeg_t_start<0:
-            raise(f"eeg_t_start <0 : {subject}")
-        if eeg_t_stop>EEG.times[-1]:
-            raise(f"eeg_t_stop >EEG.times : {subject}")
+        # if eeg_t_start<0:
+        #     raise ValueError(f"eeg_t_start <0 : {subject}")
+        # if eeg_t_stop>EEG.times[-1]:
+        #     raise ValueError(f"eeg_t_stop >EEG.times : {subject}")
 
         EEG = single_subj_EEG_dict[run_key].copy()
         EEG_raw = single_subj_EEG_dict[run_key].copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
@@ -329,12 +329,12 @@ for subj_id in subj_id_array:
 
         # enforce exact sample-count match with the truncated fNIRS run
         if EEG_resample.n_times-np.round(len_delay*fnirs_sfreq) > n_fnirs_samples:
-            EEG_resample.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq) - 1])
-            EEG_raw.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq) - 1])
+            EEG_resample.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq).astype(int) - 1])
+            EEG_raw.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq).astype(int) - 1])
         elif EEG_resample.n_times-np.round(len_delay*fnirs_sfreq) < n_fnirs_samples:
-            fnirs_run = fnirs_run.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq)))
+            fnirs_run = fnirs_run.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq).astype(int)))
             n_fnirs_samples = EEG_resample.n_times
-            fnirs_run_raw = fnirs_run_raw.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq)))
+            fnirs_run_raw = fnirs_run_raw.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq).astype(int)))
 
         # truncate fNIRS so the delay at the beginning of the recording is removed
         # fnirs_run = fnirs_run.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
