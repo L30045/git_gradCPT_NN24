@@ -115,6 +115,7 @@ for subj_id in subj_id_array:
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
+    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl') 
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -539,6 +540,56 @@ for subj_id in subj_id_array:
     betas_bspline = betas_all.sel(regressor=eeg_reg).rename({"regressor": "component"})
     betas_eeg = xr.dot(betas_bspline, basis_da, dims="component")
     betas_eeg = betas_eeg.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
+    # covariance
+    cov_params = results.sm.cov_params()
+    run_unit = Y_all.pint.units
+    
+    #%% f test
+    stats_dict = dict()
+    # test if EEG can explain more variance
+    param_names = [name for name in results.sm.params.regressor.values if 'bspline' in name]
+    # Create hypothesis strings
+    hypotheses = [f'{name} = 0' for name in param_names]
+    # Run F-test
+    f_test_result = results.sm.f_test(hypotheses)
+    stats_dict['f_test_full_noEEG'] = f_test_result
+    # test if EEG and VTC can explain more variance
+    param_names = [name for name in results.sm.params.regressor.values if ('bspline' in name) or ('VTC' in name)]
+    # Create hypothesis strings
+    hypotheses = [f'{name} = 0' for name in param_names]
+    # Run F-test
+    f_test_result = results.sm.f_test(hypotheses)
+    stats_dict['f_test_full_basis'] = f_test_result
+    # test if VTC can explain more variance
+    param_names = [name for name in results.sm.params.regressor.values if 'VTC' in name]
+    # Create hypothesis strings
+    hypotheses = [f'{name} = 0' for name in param_names]
+    # Run F-test
+    f_test_result = results.sm.f_test(hypotheses)
+    stats_dict['f_test_full_noVTC'] = f_test_result
+
+    #%% contrast t test
+    # test if EEG betas sums to 0
+    param_names = [name for name in results.sm.params.regressor.values if 'bspline' in name]
+    # Create hypothesis strings
+    hypotheses = '+'.join(param_names)+' = 0'
+    # Run F-test
+    t_test_result = results.sm.t_test(hypotheses)
+    stats_dict['t_test_0_eeg'] = t_test_result
+    # test if EEG and VTC betas sums to 0
+    param_names = [name for name in results.sm.params.regressor.values if ('bspline' in name) or ('VTC' in name)]
+    # Create hypothesis strings
+    hypotheses = '+'.join(param_names)+' = 0'
+    # Run F-test
+    t_test_result = results.sm.t_test(hypotheses)
+    stats_dict['t_test_0_eeg_vtc'] = t_test_result
+    # test if VTC beta is 0
+    param_names = [name for name in results.sm.params.regressor.values if 'VTC' in name]
+    # Create hypothesis strings
+    hypotheses = '+'.join(param_names)+' = 0'
+    # Run F-test
+    t_test_result = results.sm.t_test(hypotheses)
+    stats_dict['t_test_0_vtc'] = t_test_result
 
     #%% visual check fit results and HRF
     if is_plot:
@@ -578,5 +629,11 @@ for subj_id in subj_id_array:
         betas_dict['betas_eeg'] = betas_eeg
         betas_dict['betas_bspline'] = betas_bspline
         betas_dict['basis_da'] = basis_da
+        betas_dict['cov_params'] = cov_params
+        betas_dict['run_unit'] = run_unit
+
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        with open(stats_save_path, 'wb') as f:
+            pickle.dump(stats_dict, f)
