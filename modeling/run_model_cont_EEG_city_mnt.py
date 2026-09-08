@@ -118,6 +118,9 @@ for subj_id in subj_id_array:
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
+    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl')
+    Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
+    dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -543,6 +546,25 @@ for subj_id in subj_id_array:
         betas_eeg = betas_eeg.sel(regressor=type_regressor_names)
         betas_eeg_per_type[prefix] = betas_eeg
 
+    #%% f test and contrast t test (per trial type)
+    stats_dict = dict()
+    for prefix in trial_type_prefixes:
+        # test if EEG can explain more variance
+        param_names = [name for name in results.sm.params.regressor.values if name.startswith(f'{prefix}_') and 'bspline' in name]
+        if len(param_names) == 0:
+            continue
+        # Create hypothesis strings
+        hypotheses = [f'{name} = 0' for name in param_names]
+        # Run F-test
+        f_test_result = results.sm.f_test(hypotheses)
+        stats_dict[f'f_test_full_noEEG_{prefix}'] = f_test_result
+
+        # test if EEG betas sums to 0
+        hypotheses = '+'.join(param_names)+' = 0'
+        # Run F-test
+        t_test_result = results.sm.t_test(hypotheses)
+        stats_dict[f't_test_0_eeg_{prefix}'] = t_test_result
+
     #%% visual check fit results and HRF
     if is_plot:
         plt_type = 'mnt'
@@ -583,3 +605,14 @@ for subj_id in subj_id_array:
         betas_dict['basis_da'] = basis_da
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        with open(stats_save_path, 'wb') as f:
+            pickle.dump(stats_dict, f)
+
+        # save Y_true and design matrix in separate files (used by vis_EV_on_surface.py
+        # to compute Y_hat = dm_all.common @ betas and explained variance per parcel)
+        with gzip.open(Y_all_save_path, 'wb') as f:
+            pickle.dump(Y_all, f)
+
+        with gzip.open(dm_all_save_path, 'wb') as f:
+            pickle.dump(dm_all, f)
