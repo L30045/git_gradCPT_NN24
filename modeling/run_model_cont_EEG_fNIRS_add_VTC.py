@@ -115,7 +115,9 @@ for subj_id in subj_id_array:
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
-    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl') 
+    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl')
+    Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
+    dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -637,3 +639,11 @@ for subj_id in subj_id_array:
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)
+
+        # save Y_true and design matrix in separate files (used by vis_EV_on_surface.py
+        # to compute Y_hat = dm_all.common @ betas and explained variance per parcel)
+        with gzip.open(Y_all_save_path, 'wb') as f:
+            pickle.dump(Y_all, f)
+
+        with gzip.open(dm_all_save_path, 'wb') as f:
+            pickle.dump(dm_all, f)

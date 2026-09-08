@@ -18,7 +18,7 @@ n_vertex = head.brain.nvertices
 
 #%% select model type
 # eeg_reg_type = 'cont_EEG_cz_add_15s'
-eeg_reg_type = 'cont_EEG_cz'
+eeg_reg_type = 'cont_EEG_cz_add_VTC'
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/HRF_surf'
@@ -37,6 +37,7 @@ for f in betas_files:
         betas_dict = pickle.load(fh)
         len_delay = len(betas_dict['betas_bspline']['component'])  # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
         subj_betas[subject] = betas_dict['betas_eeg']
+        # subj_betas[subject] = betas_dict['betas'].sel(regressor=['VTC run 0', 'VTC run 1', 'VTC run 2'])
 
 # group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
 parcel_names = [p for p in next(iter(subj_betas.values())).parcel.values if not p.startswith('Background+FreeSurfer')]
