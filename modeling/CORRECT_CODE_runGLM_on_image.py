@@ -9,6 +9,7 @@ import glob
 import re 
 
 import pandas as pd 
+ 
 import numpy as np 
 import xarray as xr
 import matplotlib.pyplot as plt
@@ -32,13 +33,14 @@ warnings.filterwarnings('ignore')
 #%%
 # subject = str(sys.argv[1])
 subject = 'sub-723' 
-select_parcel='DorsAttnA_ParOcc_1_RH'
+# select_parcel='DorsAttnA_ParOcc_1_RH'
+select_parcel='SalVentAttnA_FrMed_5_LH'
 select_chromo='HbO'
 
 # Initial root directory and analysis parameters
 SPLIT_VTC = False
 SAVE_RESIDUAL = False
-USE_GSR = False
+USE_GSR = True
 NOISE_MODEL = 'ar_irls'
 root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
 ADOT_FLAG = 'probe'
@@ -192,6 +194,24 @@ all_runs = all_runs_tmp.copy()
 # select only one parcel and one chromo
 all_runs = [x.sel(parcel=[select_parcel], chromo=[select_chromo]) for x in all_runs]
 
+# reorder all_runs to match the event order (gradcpt1, gradcpt2, gradcpt3)
+# find each run-0x's events.tsv, then match its first onset time to the corresponding
+# entry in all_stims to recover which index in all_runs is gradcpt1/2/3
+nirs_ev_files = sorted(glob.glob(os.path.join(root_dir, subject, 'nirs', f"{subject}_task-gradCPT_run-*_events.tsv")))
+nirs_ev_dfs = {f: pd.read_csv(f, sep='\t') for f in nirs_ev_files}
+
+run_key_to_run_idx = dict()
+for run_num, (nirs_file, nirs_df) in enumerate(nirs_ev_dfs.items(), start=1):
+    nirs_onset0 = nirs_df['onset'].values[0]
+    for r_i, stim in enumerate(all_stims):
+        if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
+            run_key_to_run_idx[f'gradcpt{run_num}'] = r_i
+            break
+
+assert len(run_key_to_run_idx) == len(all_runs), "could not match all runs to a gradcpt run key"
+reorder_idx = [run_key_to_run_idx[f'gradcpt{i}'] for i in range(1, len(all_runs) + 1)]
+all_runs = [all_runs[i] for i in reorder_idx]
+
 #
 results, hrf_estimate, hrf_mse, dms = pf.GLM(all_runs, cfg_GLM, geo3d, all_chs_pruned, stims_pruned_list)
 Y_all, stim_df, runs_updated = pf.concatenate_runs(all_runs, stims_pruned_list)
@@ -219,3 +239,5 @@ axs[0].grid()
 axs[1].plot(Y_all.time.values, y_true-y_hat_vals, label='Resid')
 axs[1].legend()
 axs[1].grid()
+
+# %%

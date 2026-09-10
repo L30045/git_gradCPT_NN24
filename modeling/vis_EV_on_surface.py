@@ -6,6 +6,7 @@ import glob
 import os
 import re
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import scipy.stats as stats
 from sklearn.metrics import explained_variance_score
 from params_setting import *
@@ -17,7 +18,7 @@ vertex_parcel = head.brain.vertices.parcel.values
 n_vertex = head.brain.nvertices
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_cz_add_VTC'
+eeg_reg_type = 'cont_EEG_cz_add_15s'
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 select_chromo = 'HbO'
@@ -53,7 +54,8 @@ for f in betas_files:
 
     y_true = Y_all.sel(chromo=select_chromo).transpose('time', 'parcel').values
     y_pred = y_hat.sel(chromo=select_chromo).transpose('time', 'parcel').values
-    ev_vals = explained_variance_score(y_true, y_pred, multioutput='raw_values')
+    ev_vals = explained_variance_score(y_true, y_pred, multioutput='raw_values',
+                                    force_finite=False)
 
     subj_ev[subject] = xr.DataArray(ev_vals, dims='parcel', coords={'parcel': Y_all.parcel.values})
 
@@ -107,8 +109,9 @@ for subject, ev in subj_ev.items():
     fig.savefig(os.path.join(subj_ev_dir, f'{subject}_EV_by_network.png'))
     plt.close(fig)
 
-#%% function to render one parcel-wise scalar map (e.g. EV) on the brain surface
+#%% function to render one parcel-wise scalar map (e.g. EV or a p-value) on the brain surface
 def plot_scalar_on_surf(parcel_vals, parcel_values, label, out_path, clim=None,
+                         cmap=None, title_suffix='explained variance',
                          head=head, vertex_parcel=vertex_parcel, n_vertex=n_vertex):
     """Render a single brain-surface snapshot of one scalar value per parcel.
 
@@ -118,13 +121,22 @@ def plot_scalar_on_surf(parcel_vals, parcel_values, label, out_path, clim=None,
         parcel_values: parcel labels aligned with parcel_vals.
         label: used in the plot title.
         out_path: output filename (without extension) for the saved PNG.
-        clim: (vmin, vmax) color limits; defaults to (0, 99th percentile).
+        clim: (vmin, vmax) color limits; defaults to (0, 1).
+        cmap: colormap; defaults to white=0/red=1 (use pval_cmap for red=0/white=1).
+            If None, clim (when not explicitly given) is set from the data's
+            20th/80th percentile instead of the (0, 1) default.
+        title_suffix: appended to label in the plot title.
     """
     beta_by_parcel = dict(zip(parcel_values, parcel_vals))
     vertex_vals = np.array([beta_by_parcel.get(p, np.nan) for p in vertex_parcel])
 
+    if cmap is None:
+        cmap = ev_cmap
+        if clim is None:
+            clim = (np.nanpercentile(vertex_vals, 20), np.nanpercentile(vertex_vals, 80))
+
     if clim is None:
-        clim = (0, np.nanpercentile(vertex_vals, 99))
+        clim = (0, 1)
 
     X_surf = xr.DataArray(
         np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
@@ -134,23 +146,75 @@ def plot_scalar_on_surf(parcel_vals, parcel_values, label, out_path, clim=None,
     )
 
     image_recon_multi_view(
-        X_ts=X_surf, head=head, cmap='viridis', clim=clim,
+        X_ts=X_surf, head=head, cmap=cmap, clim=clim,
         view_type='hbo_brain',
-        title_str=f'{label} explained variance',
+        title_str=f'{label} {title_suffix}',
         SAVE=True, filename=out_path,
         wdw_size=(1600, 800),
     )
 
 #%% group-average EV on the brain surface
+ev_cmap = LinearSegmentedColormap.from_list('blue_white_red', ['blue', 'white', 'red'])
 group_ev_dir = os.path.join(plot_dir, 'group', eeg_reg_type)
 os.makedirs(group_ev_dir, exist_ok=True)
 
 group_ev = np.stack([ev.values for ev in subj_ev.values()]).mean(axis=0)  # parcel
 group_parcel_values = next(iter(subj_ev.values())).parcel.values
-plot_scalar_on_surf(group_ev, group_parcel_values, f'group (n={n_subj})', os.path.join(group_ev_dir, 'group_EV'))
+plot_scalar_on_surf(group_ev, group_parcel_values, f'group (n={n_subj})', os.path.join(group_ev_dir, 'group_EV'),
+                     clim=(-1, 1))
 
 #%% per-subject EV on the brain surface
 for subject, ev in subj_ev.items():
     subj_ev_dir = os.path.join(plot_dir, subject, eeg_reg_type)
     os.makedirs(subj_ev_dir, exist_ok=True)
-    plot_scalar_on_surf(ev.values, ev.parcel.values, subject, os.path.join(subj_ev_dir, f'{subject}_EV'))
+    plot_scalar_on_surf(ev.values, ev.parcel.values, subject, os.path.join(subj_ev_dir, f'{subject}_EV'),
+                         clim=(-1, 1))
+
+#%% for each subject, load the F-test p-value (does EEG explain more variance?) per parcel,
+# expressed as -log10(p) so smaller p-values (more significant) map to larger numbers
+pval_clim_blue = -np.log10(0.2)   # p=0.2
+pval_clim_white = -np.log10(0.05)  # p=0.05 (center)
+pval_clim_red = -np.log10(0.01)   # p=0.01
+pval_clim = (pval_clim_blue, pval_clim_red)
+pval_white_pos = (pval_clim_white - pval_clim_blue) / (pval_clim_red - pval_clim_blue)
+pval_cmap = LinearSegmentedColormap.from_list(
+    'blue_white_red_pval', [(0.0, 'blue'), (pval_white_pos, 'white'), (1.0, 'red')])
+subj_neg_log10_pval = dict()
+for f in betas_files:
+    m = re.search(r'sub-(\d+)', f)
+    subject = f'sub-{m.group(1)}'
+    if subject not in subj_ev:
+        continue  # already excluded/skipped above
+
+    stats_path = f.replace('_betas.pkl', '_stats.pkl')
+    if not os.path.exists(stats_path):
+        print(f'{subject}: missing stats.pkl, skipping p-value map.')
+        continue
+
+    with open(stats_path, 'rb') as fh:
+        stats_dict = pickle.load(fh)
+    f_test_da = stats_dict['f_test_full_noEEG'].sel(chromo=select_chromo)
+    pvals = np.array([r.pvalue for r in f_test_da.values])
+    neg_log10_pvals = -np.log10(np.clip(pvals, 1e-300, None))
+
+    subj_neg_log10_pval[subject] = xr.DataArray(neg_log10_pvals, dims='parcel', coords={'parcel': f_test_da.parcel.values})
+
+#%% group-average F-test -log10(p-value) on the brain surface (blue=p0.2, white=p0.05, red=p0.01)
+group_pval_dir = os.path.join(plot_dir, 'group', eeg_reg_type)
+os.makedirs(group_pval_dir, exist_ok=True)
+
+group_neg_log10_pval = np.stack([p.values for p in subj_neg_log10_pval.values()]).mean(axis=0)  # parcel
+group_pval_parcel_values = next(iter(subj_neg_log10_pval.values())).parcel.values
+plot_scalar_on_surf(group_neg_log10_pval, group_pval_parcel_values, f'group (n={len(subj_neg_log10_pval)})',
+                     os.path.join(group_pval_dir, 'group_Ftest_pval'), clim=pval_clim,
+                     cmap=pval_cmap, title_suffix='F-test -log10(p-value) (EEG contribution)')
+
+#%% per-subject F-test -log10(p-value) on the brain surface (blue=p0.2, white=p0.05, red=p0.01)
+for subject, neg_log10_pval in subj_neg_log10_pval.items():
+    subj_pval_dir = os.path.join(plot_dir, subject, eeg_reg_type)
+    os.makedirs(subj_pval_dir, exist_ok=True)
+    plot_scalar_on_surf(neg_log10_pval.values, neg_log10_pval.parcel.values, subject,
+                         os.path.join(subj_pval_dir, f'{subject}_Ftest_pval'), clim=pval_clim,
+                         cmap=pval_cmap, title_suffix='F-test -log10(p-value) (EEG contribution)')
+
+# %%
