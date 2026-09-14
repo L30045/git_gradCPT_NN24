@@ -77,7 +77,7 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_cz_add_VTC'
+eeg_reg_type = 'cont_EEG_cz_add_VTC_3-stage'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
@@ -88,7 +88,7 @@ select_chromo='HbO'
 select_parcel='DefaultA_PFCd_1_LH'
 USE_GSR=True
 is_GSR_then_Others = False # If True, use OLS to regress out GSR first, then use the residuals to fit other regressors.
-DO_3STAGE_REGRESSION = False # If True: (1) OLS-regress out per-run drift, (2) OLS-regress out GSR
+DO_3STAGE_REGRESSION = True # If True: (1) OLS-regress out per-run drift, (2) OLS-regress out GSR
                               # (computed from the drift-residualized signal), (3) AR-IRLS-fit only the
                               # EEG regressors on the twice-residualized signal. Overrides is_GSR_then_Others
                               # and skips adding drift/GSR back into dm_all later, since they're already removed.
