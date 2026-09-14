@@ -19,10 +19,32 @@ from params_setting import *
 from tqdm import tqdm
 import re
 import xarray as xr
+import cedalion.io
 import cedalion.models.glm as glm
 from cedalion.sigproc import frequency
 from statsmodels.gam.smooth_basis import BSplines
 from scipy.signal import butter, sosfiltfilt, filtfilt, windows
+
+#%% mask out low-sensitivity parcels using the forward-model sensitivity matrix
+Adot_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/fw/probe/'
+Adot = cedalion.io.load_Adot(Adot_path + 'Adot_v26.nc')
+
+Adot_brain = Adot.sel(vertex=Adot.is_brain.values)
+mask_medial = Adot_brain.parcel.isin([
+    'Background+FreeSurfer_Defined_Medial_Wall_LH',
+    'Background+FreeSurfer_Defined_Medial_Wall_RH'
+])
+Adot_brain = Adot_brain.sel(vertex=~mask_medial)
+
+intensity = np.log10(Adot_brain[:, :, 1].sum('channel'))
+sensitivity_mask = (intensity > -2).drop_vars('wavelength')
+
+Adot_brain_sens = Adot_brain.sel(vertex=sensitivity_mask.values)
+Adot_parcel = Adot_brain_sens.groupby('parcel').sum('vertex')
+Adot_parcel = Adot_parcel.assign_coords(
+    {'is_brain': ('parcel', np.ones(len(Adot_parcel.parcel), dtype=bool))}
+)
+sensitive_parcels = Adot_parcel.parcel.values  # parcels surviving the sensitivity mask (601 -> 417)
 
 #%% find subjects with fNIRS and enough EEG epochs
 _eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
@@ -216,6 +238,9 @@ for subj_id in subj_id_array:
         run = run.sel(parcel = run.parcel != 'scalp')
         all_runs_tmp.append(run)
     all_runs = all_runs_tmp.copy()
+
+    # mask out parcels with low forward-model sensitivity (601 -> 417 parcels)
+    all_runs = [run.sel(parcel=run.parcel.isin(sensitive_parcels)) for run in all_runs]
 
     # select only one parcel and one chromo
     if select_chromo is not None:
