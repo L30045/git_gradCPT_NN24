@@ -88,6 +88,10 @@ select_chromo='HbO'
 select_parcel='DefaultA_PFCd_1_LH'
 USE_GSR=True
 is_GSR_then_Others = False # If True, use OLS to regress out GSR first, then use the residuals to fit other regressors.
+DO_3STAGE_REGRESSION = False # If True: (1) OLS-regress out per-run drift, (2) OLS-regress out GSR
+                              # (computed from the drift-residualized signal), (3) AR-IRLS-fit only the
+                              # EEG regressors on the twice-residualized signal. Overrides is_GSR_then_Others
+                              # and skips adding drift/GSR back into dm_all later, since they're already removed.
 cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
@@ -326,8 +330,38 @@ for subj_id in subj_id_array:
 
     all_runs = all_runs_truncated
 
+    #%% 3-stage regression: OLS-regress out drift, then OLS-regress out GSR
+    # (computed from the drift-residualized signal), leaving only the EEG delay
+    # regressors for the final AR-IRLS fit later in the script
+    if DO_3STAGE_REGRESSION:
+        if cfg_GLM['do_drift_legendre']:
+            drift_dms = model.get_drift_legendre_regressors(all_runs, cfg_GLM)
+        elif cfg_GLM['do_drift']:
+            drift_dms = model.get_drift_regressors(all_runs, cfg_GLM)
+        else:
+            drift_dms = None
+
+        if drift_dms is not None:
+            resid_runs = []
+            for run, drift_dm in zip(all_runs, drift_dms):
+                drift_results = glm.fit(run, drift_dm, noise_model='ols')
+                drift_fit = glm.predict(run, drift_results.sm.params, drift_dm)
+                drift_fit = drift_fit.pint.dequantify().pint.quantify('molar')
+                resid_runs.append((run - drift_fit).transpose(*run.dims))
+            all_runs = resid_runs
+
+        if USE_GSR:
+            gsr_dms = model.get_global_mean_regressor(all_runs)
+            resid_runs = []
+            for run, gsr_dm in zip(all_runs, gsr_dms):
+                gsr_results = glm.fit(run, gsr_dm, noise_model='ols')
+                gsr_fit = glm.predict(run, gsr_results.sm.params, gsr_dm)
+                gsr_fit = gsr_fit.pint.dequantify().pint.quantify('molar')
+                resid_runs.append((run - gsr_fit).transpose(*run.dims))
+            all_runs = resid_runs
+
     #%% Regress GSR out before fitting EEG
-    if USE_GSR and is_GSR_then_Others:
+    elif USE_GSR and is_GSR_then_Others:
         gs_regressors = model.get_global_mean_regressor(all_runs)
         pred_runs = []
         resid_runs = []
@@ -479,18 +513,20 @@ for subj_id in subj_id_array:
     #%% concatenate all runs and dms
     Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
 
-    #%% Combine drift and GSR regressors (if any)
-    if cfg_GLM['do_drift']:
-        drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
-        dm_all &= model.reduce(model.operator.and_, drift_regressors)
+    #%% Combine drift and GSR regressors (if any) -- skipped under DO_3STAGE_REGRESSION,
+    # since drift and GSR were already OLS-regressed out of all_runs above
+    if not DO_3STAGE_REGRESSION:
+        if cfg_GLM['do_drift']:
+            drift_regressors = model.get_drift_regressors(runs_updated, cfg_GLM)
+            dm_all &= model.reduce(model.operator.and_, drift_regressors)
 
-    if cfg_GLM['do_drift_legendre']:
-        drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
-        dm_all &= model.reduce(model.operator.and_, drift_regressors)
+        if cfg_GLM['do_drift_legendre']:
+            drift_regressors = model.get_drift_legendre_regressors(runs_updated, cfg_GLM)
+            dm_all &= model.reduce(model.operator.and_, drift_regressors)
 
-    if cfg_GLM['do_GSR'] and not is_GSR_then_Others:
-        gsr = model.get_global_mean_regressor(runs_updated)
-        dm_all &= model.reduce(model.operator.and_, gsr)
+        if cfg_GLM['do_GSR'] and not is_GSR_then_Others:
+            gsr = model.get_global_mean_regressor(runs_updated)
+            dm_all &= model.reduce(model.operator.and_, gsr)
 
     dm_all.common = dm_all.common.fillna(0)
 
