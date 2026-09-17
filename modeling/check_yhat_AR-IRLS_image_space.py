@@ -70,9 +70,9 @@ most_sensitive_dorsattn_parcel = str(dorsattn_sens.parcel.values[np.argmax(dorsa
 
 #%% subject / parcel selection (shared between both fits)
 subject = 'sub-723'
-# select_parcel = "SalVentAttnA_FrMed_5_LH"
+select_parcel = "SalVentAttnA_FrMed_5_LH"
 # select_parcel = most_sensitive_parcel
-select_parcel = most_sensitive_dorsattn_parcel
+# select_parcel = most_sensitive_dorsattn_parcel
 select_chromo = 'HbO'
 eeg_reg_type = 'cont_EEG_cz_add_15s'
 is_hp_fNIRS = False
