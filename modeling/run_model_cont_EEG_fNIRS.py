@@ -102,7 +102,7 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 eeg_reg_type = 'cont_EEG_cz_3-stage'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
-is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
+is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 is_norm = False # If True, z-score regressors.
 is_plot = False # If True, generate visualization plots
 select_chromo='HbO'
@@ -294,7 +294,8 @@ for subj_id in subj_id_array:
     # fNIRS sampling rate (all_runs' time coordinate is in seconds)
     fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
     # get highpass filter frequency
-    l_cutoff = np.round(1/len_delay,decimals=2)
+    # l_cutoff = np.round(1/len_delay,decimals=2)
+    l_cutoff = 0.02
 
     eeg_list = []
     eeg_raw_list = []

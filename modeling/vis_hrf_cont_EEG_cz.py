@@ -19,7 +19,7 @@ n_vertex = head.brain.nvertices
 #%% select model type
 # eeg_reg_type = 'cont_EEG_cz_add_15s'
 eeg_reg_type = 'cont_EEG_cz_add_VTC_3-stage'
-is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
+is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/HRF_surf'
 
