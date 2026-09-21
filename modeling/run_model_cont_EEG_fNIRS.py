@@ -99,7 +99,7 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
 #%% select model type
 # eeg_reg_type = 'cont_EEG_allBandPower-bandpass'
-eeg_reg_type = 'cont_EEG_cz_3-stage'
+eeg_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
@@ -290,7 +290,7 @@ for subj_id in subj_id_array:
     # check if run_key repeat
     # print(run_key_to_run_idx.items())
 
-    #%% bandpass and resample EEG
+    #%% Synchronize EEG and fNIRS
     # fNIRS sampling rate (all_runs' time coordinate is in seconds)
     fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
     # get highpass filter frequency
@@ -339,39 +339,12 @@ for subj_id in subj_id_array:
         EEG = single_subj_EEG_dict[run_key].copy()
         EEG_raw = single_subj_EEG_dict[run_key].copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
 
-        #NOTE: No need to lowpass filter EEG before resampling since raw.resample function does it by itself.
-        # lowpass EEG to fNIRS sampling rate/2, with -3dB cutoff at h_freq (tight transition band)
-        # h_cutoff = fnirs_sfreq / 2
-        # h_cutoff = 1
-        # filter_picks = 'eeg' if 'pc1' in eeg_reg_type or 'power' in eeg_reg_type else 'cz'
-        # EEG_filter = EEG.filter(l_freq=l_cutoff, h_freq=h_cutoff, h_trans_bandwidth=0.25, picks=filter_picks).copy()
-
-        # # truncate EEG to the shared event window (clamped to the recording's own bounds)
-        # EEG_filter.crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG_filter.times[-1]))
-
         # truncate fNIRS to the same shared event window
         fnirs_run = fnirs_run.sel(time=slice(max(nirs_t_start, fnirs_run.time.values[0]),
                                             min(nirs_t_stop, fnirs_run.time.values[-1])))
         n_fnirs_samples = len(fnirs_run.time)
         fnirs_run_raw = fnirs_run_raw.sel(time=slice(max(nirs_t_start, fnirs_run_raw.time.values[0]),
                                             min(nirs_t_stop, fnirs_run_raw.time.values[-1])))
-
-        # downsample EEG to match the number of sample points in fNIRS
-        EEG_resample = EEG_raw.copy()
-        EEG_resample.resample(fnirs_sfreq, npad='auto')
-
-        # enforce exact sample-count match with the truncated fNIRS run
-        if EEG_resample.n_times-np.round(len_delay*fnirs_sfreq) > n_fnirs_samples:
-            EEG_resample.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq).astype(int) - 1])
-            EEG_raw.crop(tmax=EEG_resample.times[n_fnirs_samples+np.round(len_delay*fnirs_sfreq).astype(int) - 1])
-        elif EEG_resample.n_times-np.round(len_delay*fnirs_sfreq) < n_fnirs_samples:
-            fnirs_run = fnirs_run.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq).astype(int)))
-            n_fnirs_samples = EEG_resample.n_times
-            fnirs_run_raw = fnirs_run_raw.isel(time=slice(0, EEG_resample.n_times-np.round(len_delay*fnirs_sfreq).astype(int)))
-
-        # truncate fNIRS so the delay at the beginning of the recording is removed
-        # fnirs_run = fnirs_run.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
-        # fnirs_run_raw = fnirs_run_raw.isel(time=slice(np.round(len_delay*fnirs_sfreq).astype(int), n_fnirs_samples))
 
         # reset fnirs_run.time to 0
         fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
@@ -383,7 +356,7 @@ for subj_id in subj_id_array:
         # append data
         fnirs_raw_list.append(fnirs_run_raw)
         all_runs_truncated.append(fnirs_run)
-        eeg_list.append(EEG_resample)
+        eeg_list.append(EEG_raw)
         eeg_raw_list.append(EEG_raw)
 
     all_runs = all_runs_truncated
@@ -487,7 +460,7 @@ for subj_id in subj_id_array:
         # one set of delay-FIR regressors per band, combined with a band-name prefix
         # so regressor names stay unique when merged across bands
         per_run_band_regressors = [
-            model.get_cont_EEG_regressor(eeg_reg_value_dict[band], fnirs_sfreq, delay=len_delay,
+            model.get_cont_EEG_regressor(eeg_reg_value_dict[band], eeg_list[0].info['sfreq'], delay=len_delay,
                                           name_prefix=f'{band}_',z_score=is_norm)
             for band in power_bands
         ]
@@ -498,15 +471,12 @@ for subj_id in subj_id_array:
                 run_dm = model.combine_dm(run_dm, band_dm)
             eeg_regressors.append(run_dm)
     else:
-        eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, fnirs_sfreq, delay=len_delay, z_score=is_norm)
-    
-    # concatenate all runs and dms
-    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
+        eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, eeg_list[0].info['sfreq'], delay=len_delay, z_score=is_norm)
 
     #%% Low-rank representation of Delay using BSpline
     # spline basis evaluated at each delay tap (not at the regressor's data values),
     # so the FIR delay curve is constrained to a smooth, low-rank subspace
-    all_regressor_names = dm_all.common.regressor.values
+    all_regressor_names = eeg_regressors[0].common.regressor.values
     if 'power' in eeg_reg_type:
         # one bspline basis per band, applied only to that band's delay taps,
         # so each band's FIR delay curve is smoothed independently rather than
@@ -538,8 +508,40 @@ for subj_id in subj_id_array:
             coords={"regressor": all_regressor_names,
                     "component": [f"bspline{i}" for i in range(n_bspline_basis)]},
         )
-    # project the full-rank delay design matrix onto the low-rank spline basis
-    dm_all.common = xr.dot(dm_all.common, basis_da, dims="regressor").rename({"component": "regressor"})
+    # project the full-rank delay design matrix onto the low-rank spline basis for each eeg_regressors
+    for eeg_i, eeg_dm in enumerate(eeg_regressors):
+        eeg_regressors[eeg_i].common = xr.dot(eeg_dm.common, basis_da, dims="regressor").rename({"component": "regressor"})
+
+    #%% Downsample EEG DM to fNIRS sampling rate
+    # eeg_regressors[i].common is still at EEG's native sampling rate (time = sample index).
+    # Resample along time from eeg_sfreq to fnirs_sfreq, then enforce an exact sample-count
+    # match with the corresponding (already-truncated) fNIRS run and adopt its time coordinate.
+    eeg_sfreq = eeg_list[0].info['sfreq']
+    for eeg_i, (eeg_dm, fnirs_run) in enumerate(zip(eeg_regressors, all_runs)):
+        n_fnirs_samples = len(fnirs_run.time)
+        # mne.filter.resample only preserves the order of non-resampled axes when
+        # resampling along the last axis, so move 'time' there before resampling.
+        dm_common = eeg_dm.common.transpose('regressor', 'chromo', 'time')
+        dm_resampled = mne.filter.resample(dm_common.values, up=fnirs_sfreq, down=eeg_sfreq,
+                                            npad='auto', axis=-1)
+
+        # enforce exact sample-count match with the truncated fNIRS run
+        n_dm_samples = dm_resampled.shape[-1]
+        if n_dm_samples > n_fnirs_samples:
+            dm_resampled = dm_resampled[..., :n_fnirs_samples]
+            n_dm_samples = n_fnirs_samples
+        elif n_dm_samples < n_fnirs_samples:
+            all_runs[eeg_i] = fnirs_run.isel(time=slice(0, n_dm_samples))
+
+        eeg_regressors[eeg_i].common = xr.DataArray(
+            dm_resampled,
+            dims=dm_common.dims,
+            coords={**{k: v for k, v in dm_common.coords.items() if k != 'time'},
+                    'time': all_runs[eeg_i].time.values},
+        ).transpose('time', 'regressor', 'chromo')
+
+    #%% concatenate all runs and dms
+    Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)
 
     #%% Combine drift and GSR regressors (if any) -- skipped under DO_3STAGE_REGRESSION,
     # since drift and GSR were already OLS-regressed out of all_runs above
@@ -618,7 +620,7 @@ for subj_id in subj_id_array:
         axs[0].set_title(f'Parcel activities estimation ({select_parcel})')
         axs[0].legend()
         axs[0].grid()
-        t_betas = np.arange(0,len_delay,1/fnirs_sfreq)
+        t_betas = np.linspace(0,len_delay,len(betas_eeg.regressor.values))
         axs[1].plot(t_betas, betas_eeg.sel(parcel=select_parcel).values.flatten(), label=f'HRF ({select_parcel})')
         axs[1].plot(t_betas, betas_eeg.sel(parcel=net_parcels).mean('parcel').values.flatten(), label=f'HRF ({select_network})')
         axs[1].set_title(f'HRF estimation using Alpha power')

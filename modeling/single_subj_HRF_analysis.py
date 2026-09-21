@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 from sklearn.decomposition import FastICA
+from scipy.spatial.distance import pdist, squareform
 
 import cedalion.io
 import cedalion.dot
@@ -40,14 +41,19 @@ Adot_brain_sens = Adot_brain.sel(vertex=sensitivity_mask.values)
 Adot_parcel = Adot_brain_sens.groupby('parcel').sum('vertex')
 sensitive_parcels = Adot_parcel.parcel.values  # parcels surviving the sensitivity mask (601 -> 417)
 
+#%% Parcel distance matrix
+coords = head.brain.vertices
+dist_mat = squareform(pdist(coords))  # NxN  - all pairwise distances
+# Adj = (dist_mat <= radius) & (dist_mat > 0)  # Neightbors within the set radius
+
 #%% key: which decomposition method to use for the plots below ('svd' or 'ica')
-decomp_method = 'ica'
+decomp_method = 'svd'
 assert decomp_method in ('svd', 'ica')
 
 #%% subject list: every subject with saved continuous-EEG GLM outputs (Y_all, dm_all,
 # betas) for eeg_reg_type, excluding subjects already flagged for low fNIRS quality
-eeg_reg_type = 'cont_EEG_cz_3-stage'
-is_hp_fNIRS = False
+eeg_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
+is_hp_fNIRS = True
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 select_chromo = 'HbO'
 n_components = 15
@@ -94,7 +100,11 @@ for subject in subjects:
 
     fnirs_sfreq = 1 / np.diff(Y_all.time.values).mean()
     n_delay_taps = len(betas_eeg.regressor)
-    t_delay = np.arange(n_delay_taps) / fnirs_sfreq
+    # hard coded visualization time scale. The frequency should be EEG sampling/resampling frequency instead of fNIRS sampling frequency.
+    if n_delay_taps>900:
+        t_delay = np.arange(n_delay_taps) / 500
+    else:
+        t_delay = np.arange(n_delay_taps) / fnirs_sfreq
 
     hrf_parcel = betas_eeg.sel(chromo=select_chromo).values  # (parcel, delay)
     parcel_names = betas_eeg.parcel.values
