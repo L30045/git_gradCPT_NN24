@@ -20,10 +20,16 @@ from tqdm import tqdm
 import re
 import xarray as xr
 import cedalion.io
+import cedalion.dot
+from cedalion.vis.anatomy.image_recon import image_recon_multi_view
 import cedalion.models.glm as glm
 from cedalion.sigproc import frequency
 from statsmodels.gam.smooth_basis import BSplines
 from scipy.signal import butter, sosfiltfilt, filtfilt, windows
+from scipy.linalg import svdvals
+from numpy.linalg import matrix_rank
+sys.path.append('/projectnb/stephenlab/cchang1/iRRR_python')
+from iRRR.iRRR_normal import irrr_normal
 
 #%% mask out low-sensitivity parcels using the forward-model sensitivity matrix
 Adot_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/fw/probe/'
@@ -48,7 +54,7 @@ sensitive_parcels = Adot_parcel.parcel.values  # parcels surviving the sensitivi
 
 #%% select model type
 # eeg_reg_type = 'cont_EEG_allBandPower-bandpass'
-eeg_reg_type = 'cont_EEG_cz_3-stage_iRRR'
+eeg_reg_type = 'cont_EEG_cz_3-stage'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
@@ -65,6 +71,7 @@ cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
+irrr_lam1 = 1.0 # iRRR nuclear-norm penalty (Y is scaled to unit std before fitting, so this is scale-free)
 
 #%% main 
 subj_id = 723
@@ -74,10 +81,10 @@ data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
 
 # check if betas.pkl exist already. If yes, skip this subject.
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
-betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
-stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl')
-Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
-dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
+betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')
+stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_stats.pkl')
+Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_Y_all.pkl.gz')
+dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_dm_all.pkl.gz')
 if not is_overwrite and os.path.exists(betas_save_path):
     print(f"{subject}: betas already exist, skipping.")
     continue
@@ -388,14 +395,108 @@ dm_all.common = dm_all.common.sel(chromo=[select_chromo])
 
 #%% get GLM fitting results for each subject from shank Jun 02 2025
 print(f"Start cont_EEG GLM fitting ({subject})")
-results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
+# iRRR: fit all parcels jointly, Y (time x parcel) ~ X (time x bspline), with a
+# nuclear-norm penalty on the (bspline x parcel) coefficient matrix so the HRFs
+# across parcels share a low-rank structure
+Y_np = Y_all.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel').values
+X_da = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')
+X_np = X_da.values
+Y_scale = np.nanstd(Y_np)
+n_time, n_parcel = Y_np.shape
+X_c = X_np - X_np.mean(0, keepdims=True)
+irrr_weight = [np.max(svdvals(X_c)) * (np.sqrt(n_parcel) + np.sqrt(matrix_rank(X_c))) / n_time]
+C, mu, _, _, _, irrr_details = irrr_normal(Y_np / Y_scale, [X_np], irrr_lam1,
+                                           {'varyrho': True, 'Tol': 0.01, 'fig': False,
+                                            'weight': irrr_weight},
+                                           return_details=True)
+C = C * Y_scale  # back to original Y units
+mu = mu * Y_scale
+betas_all = xr.DataArray(
+    C.T[:, None, :],
+    dims=('parcel', 'chromo', 'regressor'),
+    coords={'parcel': Y_all.parcel.values, 'chromo': [select_chromo],
+            'regressor': X_da.regressor.values},
+)
+stats_dict = {'irrr_lam1': irrr_lam1, 'irrr_weight': irrr_weight, 'Y_scale': Y_scale,
+              'intercept': mu, 'rank': matrix_rank(C), 'singular_values': svdvals(C),
+              'details': irrr_details}
+print(f"iRRR fit: rank(B) = {stats_dict['rank']} (of {min(C.shape)})")
 # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
 # bspline coefficients back to full per-delay resolution via the same basis
-betas_all = results.sm.params.copy()
 eeg_reg = [p for p in betas_all.regressor.values if 'bspline' in p]
 betas_bspline = betas_all.sel(regressor=eeg_reg).rename({"regressor": "component"})
 betas_eeg = xr.dot(betas_bspline, basis_da, dims="component")
 betas_eeg = betas_eeg.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
+
+#%% visualization
+# Y_all was built from all_runs after the drift and GSR OLS stages, so it is
+# already Y_partial = Y_raw - Y_hat_drift - Y_hat_gsr
+Y_partial = Y_np
+Y_hat_eeg = X_np @ C + mu.T  # (time x parcel)
+ss_res = np.nansum((Y_partial - Y_hat_eeg)**2, axis=0)
+ss_tot = np.nansum((Y_partial - np.nanmean(Y_partial, axis=0))**2, axis=0)
+r2_eeg = 1 - ss_res / ss_tot
+parcel_names = Y_all.parcel.values
+p_i = np.where(parcel_names == select_parcel)[0][0]
+print(f"R2 (EEG): {select_parcel} = {r2_eeg[p_i]:.4f}, median over parcels = {np.nanmedian(r2_eeg):.4f}")
+
+t_all = Y_all.time.values
+fig, ax = plt.subplots(1, 1, figsize=(14, 4))
+ax.plot(t_all, Y_partial[:, p_i], 'k', lw=0.8, label='Y_partial')
+ax.plot(t_all, Y_hat_eeg[:, p_i], 'r', lw=0.8, label='Y_hat_eeg')
+ax.set_xlabel('Time (s)')
+ax.set_ylabel(f'{select_chromo} (M)')
+ax.set_title(f'{subject} {select_parcel}: R2 = {r2_eeg[p_i]:.4f}')
+ax.legend(loc='upper right')
+fig.tight_layout()
+
+# top 4 shared HRF components: SVD of the (delay x parcel) HRF matrix
+hrf_mat = betas_eeg.sel(chromo=select_chromo).transpose('regressor', 'parcel').values
+U, S, Vt = np.linalg.svd(hrf_mat, full_matrices=False)
+delay_t = np.arange(n_regressor) / eeg_sfreq
+n_comp = 4
+
+# render each component's per-parcel weight (row of Vt) on the brain surface
+head = cedalion.dot.get_standard_headmodel('icbm152')
+vertex_parcel = head.brain.vertices.parcel.values
+n_vertex = head.brain.nvertices
+surf_plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, 'iRRR_components')
+os.makedirs(surf_plot_dir, exist_ok=True)
+surf_paths = []
+for c_i in range(n_comp):
+    weight_by_parcel = dict(zip(parcel_names, Vt[c_i]))
+    vertex_vals = np.array([weight_by_parcel.get(p, np.nan) for p in vertex_parcel])
+    clim_max = np.nanmax(np.abs(vertex_vals))
+    X_surf = xr.DataArray(
+        np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
+        dims=['vertex', 'chromo'],
+        coords={'chromo': ['HbO', 'HbR'],
+                'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
+    )
+    surf_path = os.path.join(surf_plot_dir, f'component{c_i+1}_weight')
+    image_recon_multi_view(
+        X_ts=X_surf, head=head, cmap='seismic', clim=(-clim_max, clim_max),
+        view_type='hbo_brain', title_str=f'Component {c_i+1} weight',
+        SAVE=True, filename=surf_path, wdw_size=(1600, 800),
+    )
+    surf_paths.append(surf_path + '.png')
+
+fig, axes = plt.subplots(n_comp, 2, figsize=(14, 12),
+                         gridspec_kw={'width_ratios': [1, 1.6]})
+for c_i in range(n_comp):
+    ax = axes[c_i, 0]
+    ax.plot(delay_t, U[:, c_i] * S[c_i], 'b')
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.set_ylabel(f'comp {c_i+1}')
+    ax.set_title(f'SV = {S[c_i]:.3g} ({S[c_i]**2 / np.sum(S**2) * 100:.1f}% var)')
+    axes[c_i, 1].imshow(plt.imread(surf_paths[c_i]))
+    axes[c_i, 1].axis('off')
+    axes[c_i, 1].set_title(f'Component {c_i+1} per-parcel weight')
+axes[-1, 0].set_xlabel('Delay (s)')
+fig.suptitle(f'{subject} iRRR shared HRFs (rank = {stats_dict["rank"]})')
+fig.tight_layout()
+plt.show()
+
 
 
 #%% save betas for later visualization
