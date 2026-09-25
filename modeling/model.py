@@ -161,7 +161,7 @@ def _global_mean_regressor(ts, weights=None) -> DesignMatrix:
     return DesignMatrix(common=regressor, channel_wise=[])
 
 #TODO: complete function get_cont_EEG_regressor
-def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=True) -> DesignMatrix:
+def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=False) -> DesignMatrix:
     """
     Input:
         runs: EEG per run
