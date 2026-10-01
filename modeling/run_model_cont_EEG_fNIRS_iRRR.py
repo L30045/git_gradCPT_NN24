@@ -141,11 +141,11 @@ for subj_id in subj_id_array:
 
     #%% load Y_all, dm_all and the B-spline basis saved by the AR-IRLS run
     ar_irls_prefix = os.path.join(data_save_path, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    Y_all_load_path = f'{ar_irls_prefix}_Y_all.pkl.gz'
+    Y_all_load_path = os.path.join(data_save_path, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
     dm_all_load_path = f'{ar_irls_prefix}_dm_all.pkl.gz'
     ar_irls_betas_path = f'{ar_irls_prefix}_betas.pkl'
     if not all(os.path.exists(f) for f in [Y_all_load_path, dm_all_load_path, ar_irls_betas_path]):
-        print(f"{subject}: AR-IRLS Y_all/dm_all/betas not found ({ar_irls_prefix}_*), skipping.")
+        print(f"{subject}: Y_all or AR-IRLS dm_all/betas not found ({ar_irls_prefix}_*), skipping.")
         continue
 
     with gzip.open(Y_all_load_path, 'rb') as f:

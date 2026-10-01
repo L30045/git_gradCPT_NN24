@@ -52,22 +52,22 @@ stats_save_path = os.path.join(group_save_path, f'group_{eeg_reg_type}_iRRR_{hp_
 #%% find subjects with AR-IRLS Y_all / dm_all available
 _Y_all_files = sorted(glob.glob(os.path.join(
     project_path, 'derivatives', 'eeg', 'sub-*',
-    f'sub-*_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')))
+    f'sub-*_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')))
 subj_list = []
 for _f in _Y_all_files:
     subject = re.search(r'(sub-\d+)', os.path.basename(_f)).group(1)
     if subject in excluded_subj:
         continue
-    _prefix = _f.replace('_Y_all.pkl.gz', '')
+    _prefix = os.path.join(os.path.dirname(_f), f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
     if all(os.path.exists(f'{_prefix}_{s}') for s in ['dm_all.pkl.gz', 'betas.pkl']):
-        subj_list.append((subject, _prefix))
-print(f"Found {len(subj_list)} subjects: {[s for s, _ in subj_list]}")
+        subj_list.append((subject, _prefix, _f))
+print(f"Found {len(subj_list)} subjects: {[s for s, _, _ in subj_list]}")
 
 #%% load and concatenate Y_all and dm_all across subjects (runs are already concatenated within subject)
 Y_list, X_list, subj_labels, t_list = [], [], [], []
 parcels, regressors, basis_da = None, None, None
-for subject, ar_irls_prefix in subj_list:
-    with gzip.open(f'{ar_irls_prefix}_Y_all.pkl.gz', 'rb') as f:
+for subject, ar_irls_prefix, Y_all_path in subj_list:
+    with gzip.open(Y_all_path, 'rb') as f:
         Y_all = pickle.load(f)
     with gzip.open(f'{ar_irls_prefix}_dm_all.pkl.gz', 'rb') as f:
         dm_all = pickle.load(f)
@@ -116,9 +116,9 @@ betas_all = xr.DataArray(
 stats_dict = {'irrr_lam1': irrr_lam1, 'irrr_weight': irrr_weight, 'Y_scale': Y_scale,
               'intercept': mu, 'rank': matrix_rank(C), 'singular_values': svdvals(C),
               'details': irrr_details,
-              'subjects': [s for s, _ in subj_list],
-              'n_time_per_subj': {s: int((subj_labels == s).sum()) for s, _ in subj_list},
-              'ar_irls_prefixes': [p for _, p in subj_list]}
+              'subjects': [s for s, _, _ in subj_list],
+              'n_time_per_subj': {s: int((subj_labels == s).sum()) for s, _, _ in subj_list},
+              'ar_irls_prefixes': [p for _, p, _ in subj_list]}
 print(f"iRRR fit: rank(B) = {stats_dict['rank']} (of {min(C.shape)})")
 # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
 # bspline coefficients back to full per-delay resolution via the same basis

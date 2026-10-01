@@ -82,7 +82,7 @@ for subject in subjects:
     #%% load this subject's Y_all, dm_all, and betas (continuous-EEG GLM, 3-stage)
     base = os.path.join(eeg_der_dir, subject, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}')
 
-    with gzip.open(base + '_Y_all.pkl.gz', 'rb') as f:
+    with gzip.open(os.path.join(eeg_der_dir, subject, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz'), 'rb') as f:
         Y_all = pickle.load(f)  # dims: chromo, parcel, time
 
     with gzip.open(base + '_dm_all.pkl.gz', 'rb') as f:

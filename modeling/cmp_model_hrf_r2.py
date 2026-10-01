@@ -52,14 +52,15 @@ for subject in group_stats['subjects']:
     data_dir = os.path.join(eeg_der_dir, subject)
     ar_irls_prefix = os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
     irrr_prefix = os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')
-    req_files = [f'{ar_irls_prefix}_Y_all.pkl.gz', f'{ar_irls_prefix}_dm_all.pkl.gz',
+    Y_all_path = os.path.join(data_dir, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
+    req_files = [Y_all_path, f'{ar_irls_prefix}_dm_all.pkl.gz',
                  f'{ar_irls_prefix}_betas.pkl', f'{irrr_prefix}_betas.pkl', f'{irrr_prefix}_stats.pkl']
     if not all(os.path.exists(f) for f in req_files):
         print(f"{subject}: missing AR-IRLS or iRRR results, skipping.")
         continue
     print(f"Processing {subject}")
 
-    with gzip.open(f'{ar_irls_prefix}_Y_all.pkl.gz', 'rb') as f:
+    with gzip.open(Y_all_path, 'rb') as f:
         Y_all = pickle.load(f)
     with gzip.open(f'{ar_irls_prefix}_dm_all.pkl.gz', 'rb') as f:
         dm_all = pickle.load(f)

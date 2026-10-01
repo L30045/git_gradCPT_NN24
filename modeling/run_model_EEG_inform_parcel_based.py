@@ -1,9 +1,9 @@
 #%% load library
 import numpy as np
 import pickle
+import copy
 import gzip
 import glob
-import time
 import sys
 import pandas as pd
 import matplotlib
@@ -17,27 +17,59 @@ import model
 from params_setting import *
 from tqdm import tqdm
 import re
-import cedalion
-import cedalion.sigproc.frequency
 import xarray as xr
+import cedalion.io
 import cedalion.models.glm as glm
+from scipy.signal import butter, sosfiltfilt
 
 #%% select model type
-model_type='onlyStim'
+model_type = 'onlyStim' # 'full', 'onlyStim', 'onlyEEG' -> key of dm_dict.pkl
 is_overwrite = False # If True, force re-training GLM.
-is_hpf = 'nohpf' not in model_type # high-pass filter conc_o before building DMs
-hpf_freq = 0.02 * units.Hz
+is_save = True # If True, save DM and GLM results
+is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 select_chromo = 'HbO'
-cfg_GLM['do_short_sep'] = False # short-sep regressors are channel-space only; not available for parcel data
+USE_GSR = True
+DO_3STAGE_REGRESSION = True # Same as run_model_cont_EEG_fNIRS.py: OLS-regress out per-run drift, then GSR,
+                            # before the AR-IRLS fit. Drift/short-sep regressors in dm_dict.pkl are then dropped,
+                            # since drift is already removed and short-sep regressors are channel-space only.
+cfg_GLM['do_GSR'] = USE_GSR
+len_delay = 15 # Delay time in HRF (sec); fNIRS window ends len_delay after the last event (same as cont EEG pipeline)
+l_cutoff = 0.02 # highpass cutoff (Hz)
+# Gaussian HRF kernels used when dm_dict.pkl was built (t_post was 10 s then; params_setting now uses 18 s).
+# Must match the DM's HRF regressors to expand betas back to HRF time courses.
+cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 10*units.s, 't_delta': 1*units.s, 't_std': 1*units.s}
+
+#%% mask out low-sensitivity parcels using the forward-model sensitivity matrix
+# only needed when Y_all has to be rebuilt, so compute lazily
+_sensitive_parcels = None
+def get_sensitive_parcels():
+    global _sensitive_parcels
+    if _sensitive_parcels is None:
+        Adot_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/fw/probe/'
+        Adot = cedalion.io.load_Adot(Adot_path + 'Adot_v26.nc')
+
+        Adot_brain = Adot.sel(vertex=Adot.is_brain.values)
+        mask_medial = Adot_brain.parcel.isin([
+            'Background+FreeSurfer_Defined_Medial_Wall_LH',
+            'Background+FreeSurfer_Defined_Medial_Wall_RH'
+        ])
+        Adot_brain = Adot_brain.sel(vertex=~mask_medial)
+
+        intensity = np.log10(Adot_brain[:, :, 1].sum('channel'))
+        sensitivity_mask = (intensity > -2).drop_vars('wavelength')
+
+        Adot_brain_sens = Adot_brain.sel(vertex=sensitivity_mask.values)
+        Adot_parcel = Adot_brain_sens.groupby('parcel').sum('vertex')
+        _sensitive_parcels = Adot_parcel.parcel.values  # parcels surviving the sensitivity mask (429 of 601)
+    return _sensitive_parcels
 
 #%% find subjects with fNIRS and enough EEG epochs
-_project_path = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24'
-_eeg_deriv = os.path.join(_project_path, 'derivatives', 'eeg')
+_eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
 _MIN_EPOCHS = 500
 
 _fnirs_subjects = {
     re.search(r'sub-(\d+)', f).group(1)
-    for f in glob.glob(os.path.join(_project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
+    for f in glob.glob(os.path.join(project_path, 'sub-*', 'nirs', '*task-gradCPT*nirs.snirf'))
     if re.search(r'sub-(\d+)', f)
 }
 
@@ -82,62 +114,28 @@ subj_id_array = [int(s) for s in sorted(_fnirs_subjects & _enough_sids)]
 # check if any of subject in subj_id_array is in the excluded_subj
 subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 
-#%% start training GLM for each subject each channel
-for subj_id in tqdm(subj_id_array):
-    print(f"Start processing sub-{subj_id}")
-    save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
-    pkl_path = os.path.join(save_file_path, f'sub-{subj_id}_glm_mnt_{model_type}.pkl')
-    if not is_overwrite and os.path.exists(pkl_path):
-        print(f"Skipping sub-{subj_id}: output already exists.")
-        continue
-    # load channel-space results (for stims / chs_pruned only; parcel data loaded below)
+#%% fNIRS preprocessing (same as run_model_cont_EEG_fNIRS.py, without the EEG part)
+def preprocess_fnirs(subject):
+    """Rebuild the concatenated, preprocessed parcel time series (Y_all) the same way as
+    run_model_cont_EEG_fNIRS.py: sensitive parcels, HbO, highpass, per-run event window
+    (first event -> last event + len_delay), then OLS-regress out drift and GSR.
+    The cont EEG pipeline additionally trims a few trailing samples per run to match the
+    resampled EEG DM; that EEG-dependent trim is not reproduced here.
+    """
     der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
-    hbo_file = os.path.join(der_dir, f"sub-{subj_id}", f"sub-{subj_id}_preprocessed_results_{NOISE_MODEL}.pkl")
-    if not os.path.exists(hbo_file):
-        print(f"Skipping sub-{subj_id}: preprocessed results file not found.")
-        continue
-    with gzip.open(hbo_file, 'rb') as f:
+
+    print('LOADING PREPROCESSED CHANNEL DATA')
+    with gzip.open(os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl'), 'rb') as f:
         results = pickle.load(f)
-
-    all_chs_pruned = results['chs_pruned']
     all_stims = results['stims']
-    geo3d = results['geo3d']
-    cfg_GLM['geo3d'] = geo3d
 
-    # load image-space (parcel) results
-    image_file = os.path.join(der_dir, f"sub-{subj_id}",
-                               f"sub-{subj_id}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}.pkl")
-    if not os.path.exists(image_file):
-        print(f"Skipping sub-{subj_id}: image-space results file not found.")
-        continue
-    with open(image_file, 'rb') as f:
+    print('LOADING IMAGE SPACE RESULTS')
+    filepath = os.path.join(der_dir, subject, f'{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}_v26.pkl')
+    with open(filepath, 'rb') as f:
         image_results = pickle.load(f)
-
-    if weight_flag == 'aca':
-        all_runs = image_results['parcel_ts_aca']
-        vv = image_results['vertex_aca']
-    elif weight_flag == 'post':
-        all_runs = image_results['parcel_ts_post']
-        vv = image_results['vertex_mse']
-    else:
-        all_runs = image_results['parcel_ts_none']
-        vv = image_results['vertex_mse']
-
-    n_runs = len(vv)
-    vv = xr.concat(vv, dim='run').sum('run') / n_runs**2
-    vp = vv.groupby('parcel').sum('vertex') / vv.groupby('parcel').count()**2
-
-    if cfg_GLM['do_GSR']:
-        aca_lst = image_results['vertex_aca']
-        aca_p_lst = []
-        for aca in aca_lst:
-            aca_p = aca.groupby('parcel').sum('vertex') / aca.groupby('parcel').count()**2
-            aca_p = aca_p.sel(parcel=aca_p.parcel != 'scalp')
-            aca_p_lst.append(aca_p)
-        cfg_GLM['GSR_weight'] = aca_p_lst
+    all_runs = image_results['parcel_ts']
 
     all_runs = [run.assign_coords({'samples': ('time', np.arange(len(run.time)))}) for run in all_runs]
-
     all_runs_tmp = []
     for run in all_runs:
         run.time.attrs['units'] = units.s
@@ -145,284 +143,275 @@ for subj_id in tqdm(subj_id_array):
         all_runs_tmp.append(run)
     all_runs = all_runs_tmp
 
+    # mask out parcels with low forward-model sensitivity (601 -> 429 parcels)
+    sensitive_parcels = get_sensitive_parcels()
+    all_runs = [run.sel(parcel=run.parcel.isin(sensitive_parcels)) for run in all_runs]
+
     if select_chromo is not None:
         all_runs = [x.sel(chromo=[select_chromo]) for x in all_runs]
 
-    #%% get epoched concentration
-    run_dict = dict()
-    # Find all event files in project_path
-    event_files = glob.glob(os.path.join(project_path, f"sub-{subj_id}", 'nirs', f"sub-{subj_id}_task-gradCPT_run-*_events.tsv"))
-    event_files = sorted(event_files)  # Sort to ensure consistent ordering
-
-    # Load each event file into run_dict
-    for event_file in event_files:
-        # Extract run number from filename (e.g., run-01 -> 1)
-        run_num = event_file.split('run-')[1].split('_')[0]
-        run_key = f'run{run_num}'
-
-        # Initialize run dict if not exists
-        if run_key not in run_dict:
-            run_dict[run_key] = dict()
-
-        # Load event dataframe
-        run_dict[run_key]['ev_df'] = pd.read_csv(event_file, sep='\t')
-
-    # find corresponding runs in all_runs (parcel space) and assign to run_dict,
-    # matching via the channel-space stim table (all_stims) since parcel runs have no .stim
-    for r_i, stim in enumerate(all_stims):
-        for run_key in run_dict.keys():
-            ev_df = run_dict[run_key]['ev_df']
-            if len(ev_df) > 0 and len(stim) > 0 and np.all(stim.iloc[0] == ev_df.iloc[0]):
-                run_dict[run_key]['run'] = all_runs[r_i]
-                run_dict[run_key]['chs_pruned'] = all_chs_pruned[r_i]
+    # match each fNIRS run (all_runs order) to gradcpt1/2/3 via the first stim onset in events.tsv
+    nirs_ev_dfs = dict()
+    for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
+        run_num = f"{run_key[-1]:0>2}"
+        nirs_ev_dfs[run_key] = pd.read_csv(os.path.join(project_path, subject, 'nirs',
+                                                        f"{subject}_task-gradCPT_run-{run_num}_events.tsv"), sep='\t')
+    run_key_to_run_idx = dict()
+    for run_key, nirs_df in nirs_ev_dfs.items():
+        for r_i, stim in enumerate(all_stims):
+            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_df['onset'].values[0], atol=0.01):
+                run_key_to_run_idx[run_key] = r_i
                 break
 
-    # epoch length
-    len_epoch = 12 # seconds
-    t_conc_ts = run_dict[run_key]['run'].time
-    sfreq_conc = 1/np.diff(t_conc_ts)[0]
-    len_epoch_sample = np.ceil(len_epoch*sfreq_conc).astype(int)
+    fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
 
-    #%% get epoched EEG
-    # load eeg to match the time
-    single_subj_EEG_dict, single_subj_rm_ch_dict = utils.eeg_preproc_subj_level(subj_id, preproc_params)
-    single_subj_epoch_dict, single_subj_vtc_dict, single_subj_react_dict, event_labels_lookup = utils.eeg_epoch_subj_level(f"sub-{subj_id}", single_subj_EEG_dict, preproc_params)
+    all_runs_truncated = []
+    for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
+        run_idx = run_key_to_run_idx[run_key]
+        fnirs_run = all_runs[run_idx].copy()
 
-    
-    # get mnt_correct trials
-    mnt_correct_idx_dict = model.get_valid_event_idx('mnt_correct',single_subj_epoch_dict)
-    mnt_correct_area_dict = model.get_alpha_power('mnt_correct', single_subj_epoch_dict)
+        # highpass fNIRS to remove drift
+        if is_hp_fNIRS:
+            fnirs_units = fnirs_run.pint.units
+            sos = butter(4, l_cutoff, btype='highpass', fs=fnirs_sfreq, output='sos')
+            fnirs_run = xr.apply_ufunc(
+                sosfiltfilt, sos, fnirs_run.pint.dequantify(),
+                input_core_dims=[[], ['time']],
+                output_core_dims=[['time']],
+                exclude_dims={'time'},
+            ).transpose(*fnirs_run.dims).pint.quantify(fnirs_units)
+            fnirs_run = fnirs_run.assign_coords({'time': all_runs[run_idx].time})
 
-    # get mnt_incorrect trials
-    mnt_incorrect_idx_dict = model.get_valid_event_idx('mnt_incorrect_response',single_subj_epoch_dict)
-    mnt_incorrect_area_dict = model.get_alpha_power('mnt_incorrect_response', single_subj_epoch_dict)
+        # window from the first event onset to len_delay after the last event onset
+        nirs_ev_df = nirs_ev_dfs[run_key]
+        nirs_t_start = nirs_ev_df['onset'].values[0]
+        nirs_t_stop = nirs_ev_df['onset'].values[-1] + len_delay
+        fnirs_run = fnirs_run.sel(time=slice(max(nirs_t_start, fnirs_run.time.values[0]),
+                                             min(nirs_t_stop, fnirs_run.time.values[-1])))
 
-    # combine mnt_correct_idx_dict, mnt_correct_area_dict, mnt_incorrect_idx_dict, mnt_incorrect_area_dict into a dict
-    ev_dict = dict()
-    for run_key in mnt_correct_idx_dict.keys():
-        ev_dict[run_key] = {
-            'mnt_correct': {
-                'idx': mnt_correct_idx_dict[run_key],
-                'area': mnt_correct_area_dict[run_key]
-            },
-            'mnt_incorrect': {
-                'idx': mnt_incorrect_idx_dict[run_key],
-                'area': mnt_incorrect_area_dict[run_key]
-            }
-        }
+        # reset fnirs_run.time to 0
+        fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
+        all_runs_truncated.append(fnirs_run)
+    all_runs = all_runs_truncated
 
-    #%% Get reduced model DM
-    run_list = []
-    pruned_chans_list = []
-    stim_list = []
-    for run_key in run_dict.keys():
-        local_run = run_dict[run_key]['run']
-        # high pass filter
-        if is_hpf:
-            local_run = cedalion.sigproc.frequency.freq_filter(
-                local_run, fmin=hpf_freq, fmax=0 * units.Hz, butter_order=4
-            )
-        run_list.append(local_run)
-        pruned_chans_list.append(run_dict[run_key]['chs_pruned'])
-        ev_df = run_dict[run_key]['ev_df'].copy()
-        # rename trial_type
-        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]==0),'trial_type'] = 'mnt-correct-stim'
-        ev_df.loc[(ev_df['trial_type']=='mnt')&(ev_df["response_code"]!=0),'trial_type'] = 'mnt-incorrect-stim'
-        stim_list.append(ev_df[(ev_df['trial_type']=='mnt-correct-stim')|(ev_df['trial_type']=='mnt-incorrect-stim')])
-    stim_dm = model.get_GLM_copy_from_pf_DM(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
-    Y_all, _, runs_updated = model.concatenate_runs(run_list, stim_list)
+    # 3-stage regression: OLS-regress out drift, then OLS-regress out GSR
+    if DO_3STAGE_REGRESSION:
+        if cfg_GLM['do_drift_legendre']:
+            drift_dms = model.get_drift_legendre_regressors(all_runs, cfg_GLM)
+        elif cfg_GLM['do_drift']:
+            drift_dms = model.get_drift_regressors(all_runs, cfg_GLM)
+        else:
+            drift_dms = None
 
-    # get drift and ss
-    basis_dm = model.create_no_info_dm(run_list, cfg_GLM, cfg_GLM['geo3d'], pruned_chans_list, stim_list)
+        if drift_dms is not None:
+            resid_runs = []
+            for run, drift_dm in zip(all_runs, drift_dms):
+                drift_results = glm.fit(run, drift_dm, noise_model='ols')
+                drift_fit = glm.predict(run, drift_results.sm.params, drift_dm)
+                drift_fit = drift_fit.pint.dequantify().pint.quantify('molar')
+                resid_runs.append((run - drift_fit).transpose(*run.dims))
+            all_runs = resid_runs
 
-    # Get EEG DM
-    eeg_dm_dict = model.create_eeg_dm(run_dict, ev_dict, cfg_GLM, select_event=['mnt_correct','mnt_incorrect'], select_chs=['cz'])
+        if USE_GSR:
+            gsr_dms = model.get_global_mean_regressor(all_runs)
+            resid_runs = []
+            for run, gsr_dm in zip(all_runs, gsr_dms):
+                gsr_results = glm.fit(run, gsr_dm, noise_model='ols')
+                gsr_fit = glm.predict(run, gsr_results.sm.params, gsr_dm)
+                gsr_fit = gsr_fit.pint.dequantify().pint.quantify('molar')
+                resid_runs.append((run - gsr_fit).transpose(*run.dims))
+            all_runs = resid_runs
 
-    # combine EEG DMs from all runs into one big DM
-    Y_all, eeg_dm, runs_updated = model.concatenate_runs_dms(run_dict, eeg_dm_dict)
+    # concatenate runs (gradcpt1, 2, 3 order)
+    Y_all, _, _ = model.concatenate_runs(all_runs, list(nirs_ev_dfs.values()))
+    return Y_all
 
-    # save DMs
-    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    save_dm_name = os.path.join(save_file_path, 'dm_dict.pkl')
-    if not os.path.exists(save_dm_name):
-        dm_dict = dict()
-        dm_dict['basis']=basis_dm
-        dm_dict['onlyEEG']=model.combine_dm(eeg_dm, basis_dm)
-        dm_dict['onlyStim']=stim_dm
-        dm_dict['full']=model.combine_dm(eeg_dm, stim_dm)
-        dm_dict['Y_all']=Y_all
-        with open(save_dm_name,'wb') as f:
-            pickle.dump(dm_dict,f)
+#%% align a dm_dict.pkl design matrix (built on full-length runs) to Y_all
+def align_dm_to_Y(dm, Y_all):
+    """dm_dict.pkl DMs span the full concatenated runs (run01, run02, run03), while Y_all
+    only keeps each run's event window. Y_all's 'samples' coord holds the original
+    per-run sample index (resets at each run boundary), and 'Drift 0 run k' marks
+    run k's rows in the DM, so pick the matching rows run by run."""
+    samples = Y_all.samples.values
+    run_starts = np.concatenate([[0], np.where(np.diff(samples) <= 0)[0] + 1, [len(samples)]])
+    n_runs = len(run_starts) - 1
 
-    #%% assign DM
-    if model_type.startswith('full'):
-        # Combine EEG DM with Reduced DM to get full model
-        dm_all = model.combine_dm(eeg_dm, stim_dm)
-    elif model_type.startswith('onlyStim'):
-        dm_all = stim_dm
-    elif model_type.startswith('onlyEEG'):
-        dm_all = model.combine_dm(eeg_dm, basis_dm)
+    dm_common = dm.common
+    dm_runs = []
+    for r_i in range(n_runs):
+        run_mask = (dm_common.sel(regressor=f'Drift 0 run {r_i}').isel(chromo=0) != 0).values
+        dm_run = dm_common.isel(time=np.where(run_mask)[0])
+        run_samples = samples[run_starts[r_i]:run_starts[r_i + 1]]
+        if run_samples.max() >= dm_run.sizes['time']:
+            raise ValueError(f"run {r_i}: Y_all sample index {run_samples.max()} exceeds DM run length {dm_run.sizes['time']}")
+        dm_runs.append(dm_run.isel(time=run_samples))
+
+    dm_aligned = copy.deepcopy(dm)
+    dm_aligned.common = xr.concat(dm_runs, dim='time').assign_coords(time=Y_all.time.values)
+    return dm_aligned
+
+#%% main
+for subj_id in tqdm(subj_id_array):
+    subject = f"sub-{subj_id}"
+    print(f"Start processing {subject}")
+    data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
+
+    # check if betas.pkl exist already. If yes, skip this subject.
+    hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+    save_prefix = os.path.join(data_save_path, f'{subject}_event-based_onParcel_{model_type}_{NOISE_MODEL}_{hp_flag}')
+    betas_save_path = f'{save_prefix}_betas.pkl'
+    stats_save_path = f'{save_prefix}_stats.pkl'
+    dm_all_save_path = f'{save_prefix}_dm_all.pkl.gz'
+    if not is_overwrite and os.path.exists(betas_save_path):
+        print(f"{subject}: betas already exist, skipping.")
+        continue
+
+    dm_dict_path = os.path.join(data_save_path, 'dm_dict.pkl')
+    if not os.path.exists(dm_dict_path):
+        print(f"{subject}: dm_dict.pkl not found, skipping.")
+        continue
+
+    #%% load Y_all from the cont EEG pipeline if available; otherwise rebuild it
+    cont_Y_all_path = os.path.join(data_save_path, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
+    if os.path.exists(cont_Y_all_path):
+        print(f"LOADING Y_all FROM {os.path.basename(cont_Y_all_path)}")
+        with gzip.open(cont_Y_all_path, 'rb') as f:
+            Y_all = pickle.load(f)
     else:
-        dm_all = basis_dm
+        print(f"{os.path.basename(cont_Y_all_path)} not found, RUNNING fNIRS PREPROCESSING")
+        Y_all = preprocess_fnirs(subject)
+    Y_all = Y_all.sel(chromo=[select_chromo])
 
-    #%% select chromo=HbO only to save time
-    Y_all = Y_all.sel(chromo=['HbO'])
-    dm_all.common = dm_all.common.sel(chromo=['HbO'])
+    #%% load DM and align it to Y_all
+    with open(dm_dict_path, 'rb') as f:
+        dm_dict = pickle.load(f)
+    if model_type.startswith('full'):
+        dm_all = dm_dict['full']
+    elif model_type.startswith('onlyStim'):
+        dm_all = dm_dict['onlyStim']
+    elif model_type.startswith('onlyEEG'):
+        dm_all = dm_dict['onlyEEG']
+    else:
+        dm_all = dm_dict['basis']
+    del dm_dict
 
-    #%% get GLM fitting results for each subject (parcel space: OLS via cedalion glm.fit)
-    print(f"Start EEG-informed GLM fitting (sub-{subj_id})")
+    dm_all = align_dm_to_Y(dm_all, Y_all)
+
+    # drift is already regressed out of Y_all and short-sep regressors are channel-space, so keep HRF regressors only
+    if DO_3STAGE_REGRESSION:
+        keep_reg = [r for r in dm_all.common.regressor.values if not (r.startswith('Drift') or r.startswith('short'))]
+        if len(keep_reg) == 0:
+            raise ValueError(f"model_type={model_type} has no regressors left after dropping drift/short-sep regressors.")
+        dm_all.common = dm_all.common.sel(regressor=keep_reg)
+
+    dm_all.common = dm_all.common.fillna(0)
+
+    #%% select HbO to fasten training process
+    dm_all.common = dm_all.common.sel(chromo=[select_chromo])
+
+    #%% get GLM fitting results
+    print(f"Start EEG-informed GLM fitting ({subject})")
     glm_results = glm.fit(Y_all, dm_all, noise_model=cfg_GLM['noise_model'])
-
-    # 3. get betas and covariance
-    result_dict = dict()
-    # result_dict['resid'] = glm_results.sm.resid
-    betas = glm_results.sm.params
+    betas_all = glm_results.sm.params.copy()
     cov_params = glm_results.sm.cov_params()
-    result_dict['betas']=betas
-    result_dict['cov_params']=cov_params
 
     #%% f test
+    stats_dict = dict()
     if model_type.startswith('full'):
         # full vs stim
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
-        # Create hypothesis strings
+        param_names = [name for name in betas_all.regressor.values if 'eeg' in name]
         hypotheses = [f'{name} = 0' for name in param_names]
-        # Run F-test
-        f_test_result = glm_results.sm.f_test(hypotheses)
-        result_dict['f_test_full_stim'] = f_test_result
+        stats_dict['f_test_full_stim'] = glm_results.sm.f_test(hypotheses)
         # full vs basis
-        param_names = [name for name in glm_results.sm.params.regressor.values if ('eeg' in name) or ('stim' in name)]
-        # Create hypothesis strings
+        param_names = [name for name in betas_all.regressor.values if ('eeg' in name) or ('stim' in name)]
         hypotheses = [f'{name} = 0' for name in param_names]
-        # Run F-test
-        f_test_result = glm_results.sm.f_test(hypotheses)
-        result_dict['f_test_full_basis'] = f_test_result
+        stats_dict['f_test_full_basis'] = glm_results.sm.f_test(hypotheses)
         # full vs eeg
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
-        # Create hypothesis strings
+        param_names = [name for name in betas_all.regressor.values if 'stim' in name]
         hypotheses = [f'{name} = 0' for name in param_names]
-        # Run F-test
-        f_test_result = glm_results.sm.f_test(hypotheses)
-        result_dict['f_test_full_eeg'] = f_test_result
+        stats_dict['f_test_full_eeg'] = glm_results.sm.f_test(hypotheses)
     elif model_type.startswith('onlyStim'):
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
-        # Create hypothesis strings
+        param_names = [name for name in betas_all.regressor.values if 'stim' in name]
         hypotheses = [f'{name} = 0' for name in param_names]
-        # Run F-test
-        f_test_result = glm_results.sm.f_test(hypotheses)
-        result_dict['f_test_stim_basis'] = f_test_result
+        stats_dict['f_test_stim_basis'] = glm_results.sm.f_test(hypotheses)
     elif model_type.startswith('onlyEEG'):
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
-        # Create hypothesis strings
+        param_names = [name for name in betas_all.regressor.values if 'eeg' in name]
         hypotheses = [f'{name} = 0' for name in param_names]
-        # Run F-test
-        f_test_result = glm_results.sm.f_test(hypotheses)
-        result_dict['f_test_eeg_basis'] = f_test_result
+        stats_dict['f_test_eeg_basis'] = glm_results.sm.f_test(hypotheses)
 
     #%% contrast t test
     if model_type.startswith('full'):
-        # full vs stim
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
-        # Create hypothesis strings
-        hypotheses = '+'.join(param_names)+' = 0'
-        # Run F-test
-        t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['t_test_0_eeg'] = t_test_result
-        # full vs basis
-        param_names = [name for name in glm_results.sm.params.regressor.values if ('eeg' in name) or ('stim' in name)]
-        # Create hypothesis strings
-        hypotheses = '+'.join(param_names)+' = 0'
-        # Run F-test
-        t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['t_test_0_eeg_stim'] = t_test_result
-        # full vs eeg
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
-        # Create hypothesis strings
-        hypotheses = '+'.join(param_names)+' = 0'
-        # Run F-test
-        t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['t_test_0_stim'] = t_test_result
+        param_names = [name for name in betas_all.regressor.values if 'eeg' in name]
+        stats_dict['t_test_0_eeg'] = glm_results.sm.t_test('+'.join(param_names)+' = 0')
+        param_names = [name for name in betas_all.regressor.values if ('eeg' in name) or ('stim' in name)]
+        stats_dict['t_test_0_eeg_stim'] = glm_results.sm.t_test('+'.join(param_names)+' = 0')
+        param_names = [name for name in betas_all.regressor.values if 'stim' in name]
+        stats_dict['t_test_0_stim'] = glm_results.sm.t_test('+'.join(param_names)+' = 0')
     elif model_type.startswith('onlyStim'):
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'stim' in name]
-        # Create hypothesis strings
-        hypotheses = '+'.join(param_names)+' = 0'
-        # Run F-test
-        t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['t_test_0_stim'] = t_test_result
+        param_names = [name for name in betas_all.regressor.values if 'stim' in name]
+        stats_dict['t_test_0_stim'] = glm_results.sm.t_test('+'.join(param_names)+' = 0')
     elif model_type.startswith('onlyEEG'):
-        param_names = [name for name in glm_results.sm.params.regressor.values if 'eeg' in name]
-        # Create hypothesis strings
-        hypotheses = '+'.join(param_names)+' = 0'
-        # Run F-test
-        t_test_result = glm_results.sm.t_test(hypotheses)
-        result_dict['t_test_0_eeg'] = t_test_result
+        param_names = [name for name in betas_all.regressor.values if 'eeg' in name]
+        stats_dict['t_test_0_eeg'] = glm_results.sm.t_test('+'.join(param_names)+' = 0')
 
-    #%% get HRF and MSE for each run
+    #%% expand HRF betas to HRF time courses via the Gaussian kernel basis
+    betas_dict = dict()
+    betas_dict['betas'] = betas_all
+    betas_dict['cov_params'] = cov_params
     if not model_type.startswith('basis'):
-        # 4. estimate HRF and MSE
-        trial_type_list = ['mnt-correct','mnt-incorrect']
-
-        betas = glm_results.sm.params
-        cov_params = glm_results.sm.cov_params()
+        trial_type_list = ['mnt-correct', 'mnt-incorrect']
         run_unit = Y_all.pint.units
-        # check if it is a full model
+        basis_hrf = glm.GaussianKernels(cfg_HRF_basis['t_pre'], cfg_HRF_basis['t_post'], cfg_HRF_basis['t_delta'], cfg_HRF_basis['t_std'])(Y_all)
+        n_hrf_reg = int(betas_all.regressor.str.startswith('HRF mnt-correct-').sum()) // (2 if model_type.startswith('full') else 1)
+        if basis_hrf.sizes['component'] != n_hrf_reg:
+            raise ValueError(f"cfg_HRF_basis gives {basis_hrf.sizes['component']} kernels but the DM has {n_hrf_reg} per trial type.")
         if model_type.startswith('full'):
-            # TODO: find an elegant way to check if _stim regressor is presented
-            """
-            NOTE: The number of regressors is fixed.
-            """
-            basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-            basis_hrf = model.xr.concat([basis_hrf,basis_hrf],dim='component')
-        else:
-            basis_hrf = model.glm.GaussianKernels(cfg_GLM['t_pre'], cfg_GLM['t_post'], cfg_GLM['t_delta'], cfg_GLM['t_std'])(run_dict[run_key]['run'])
-
+            # 'HRF mnt-correct' matches both the -eeg and -stim regressors (eeg first, then stim)
+            basis_hrf = xr.concat([basis_hrf, basis_hrf], dim='component')
 
         hrf_mse_list = []
         hrf_estimate_list = []
-
         for trial_type in trial_type_list:
-            betas_hrf = betas.sel(regressor=betas.regressor.str.startswith(f"HRF {trial_type}"))
+            betas_hrf = betas_all.sel(regressor=betas_all.regressor.str.startswith(f"HRF {trial_type}"))
             hrf_estimate = model.estimate_HRF_from_beta(betas_hrf, basis_hrf)
-            
+
             cov_hrf = cov_params.sel(regressor_r=cov_params.regressor_r.str.startswith(f"HRF {trial_type}"),
-                                regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}") 
-                                        )
+                                     regressor_c=cov_params.regressor_c.str.startswith(f"HRF {trial_type}"))
             hrf_mse = model.estimate_HRF_cov(cov_hrf, basis_hrf)
 
-            hrf_estimate = hrf_estimate.expand_dims({'trial_type': [ trial_type ] })
-            hrf_mse = hrf_mse.expand_dims({'trial_type': [ trial_type ] })
+            hrf_estimate_list.append(hrf_estimate.expand_dims({'trial_type': [trial_type]}))
+            hrf_mse_list.append(hrf_mse.expand_dims({'trial_type': [trial_type]}))
 
-            hrf_estimate_list.append(hrf_estimate)
-            hrf_mse_list.append(hrf_mse)
+        hrf_estimate = xr.concat(hrf_estimate_list, dim='trial_type').pint.quantify(run_unit)
+        hrf_mse = xr.concat(hrf_mse_list, dim='trial_type').pint.quantify(run_unit**2)
 
-        hrf_estimate = model.xr.concat(hrf_estimate_list, dim='trial_type')
-        hrf_estimate = hrf_estimate.pint.quantify(run_unit)
-
-        hrf_mse = model.xr.concat(hrf_mse_list, dim='trial_type')
-        hrf_mse = hrf_mse.pint.quantify(run_unit**2)
-
-        # set universal time so that all hrfs have the same time base 
-        fs = model.frequency.sampling_rate(run_dict[run_key]['run']).to('Hz')
-        before_samples = int(np.ceil((cfg_GLM['t_pre'] * fs).magnitude))
-        after_samples = int(np.ceil((cfg_GLM['t_post'] * fs).magnitude))
-
+        # set universal time so that all hrfs have the same time base
+        fs = model.frequency.sampling_rate(Y_all).to('Hz')
+        before_samples = int(np.ceil((cfg_HRF_basis['t_pre'] * fs).magnitude))
+        after_samples = int(np.ceil((cfg_HRF_basis['t_post'] * fs).magnitude))
         dT = np.round(1 / fs, 3)  # millisecond precision
-        n_timepoints = len(hrf_estimate.time)
-        reltime = np.linspace(-before_samples * dT, after_samples * dT, n_timepoints)
-
-        hrf_mse = hrf_mse.assign_coords({'time': reltime})
-        hrf_mse.time.attrs['units'] = 'second'
+        reltime = np.linspace(-before_samples * dT, after_samples * dT, len(hrf_estimate.time))
 
         hrf_estimate = hrf_estimate.assign_coords({'time': reltime})
         hrf_estimate.time.attrs['units'] = 'second'
+        hrf_mse = hrf_mse.assign_coords({'time': reltime})
+        hrf_mse.time.attrs['units'] = 'second'
 
-        result_dict['hrf_estimate'] = hrf_estimate
-        result_dict['hrf_mse'] = hrf_mse
+        betas_dict['hrf_estimate'] = hrf_estimate
+        betas_dict['hrf_mse'] = hrf_mse
+        betas_dict['basis_da'] = basis_hrf
 
-    #%%
-    save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_event_{model_type}.pkl'),'wb') as f:
-        pickle.dump(result_dict,f)
-    # with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
-    #     pickle.dump(result_dict,f)
+    #%% save betas for later visualization
+    if is_save:
+        with open(betas_save_path, 'wb') as f:
+            pickle.dump(betas_dict, f)
+
+        with open(stats_save_path, 'wb') as f:
+            pickle.dump(stats_dict, f)
+
+        # save the DM truncated to Y_all's time points (Y_all itself is the cont EEG pipeline's
+        # parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz, so it is not saved again here)
+        with gzip.open(dm_all_save_path, 'wb') as f:
+            pickle.dump(dm_all, f)
+
 print("All trainings completed.")

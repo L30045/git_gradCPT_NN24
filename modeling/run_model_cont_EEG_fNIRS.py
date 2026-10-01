@@ -141,7 +141,7 @@ for subj_id in subj_id_array:
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
     stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl')
-    Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
+    Y_all_save_path = os.path.join(data_save_path, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
     dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
