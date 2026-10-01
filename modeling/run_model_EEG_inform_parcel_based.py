@@ -23,7 +23,7 @@ import xarray as xr
 import cedalion.models.glm as glm
 
 #%% select model type
-model_type='eeg_alpha'
+model_type='onlyStim'
 is_overwrite = False # If True, force re-training GLM.
 is_hpf = 'nohpf' not in model_type # high-pass filter conc_o before building DMs
 hpf_freq = 0.02 * units.Hz
@@ -421,7 +421,7 @@ for subj_id in tqdm(subj_id_array):
 
     #%%
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    with open(os.path.join(save_file_path,f'sub-{subj_id}_glm_mnt_{model_type}.pkl'),'wb') as f:
+    with open(os.path.join(save_file_path,f'sub-{subj_id}_event_{model_type}.pkl'),'wb') as f:
         pickle.dump(result_dict,f)
     # with open(os.path.join(save_file_path,f'sub-{subj_id}_dev_reduced.pkl'),'wb') as f:
     #     pickle.dump(result_dict,f)
