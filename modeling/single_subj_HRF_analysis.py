@@ -61,7 +61,7 @@ n_surf_components = 6
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 betas_files = sorted(glob.glob(os.path.join(
-    eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
+    eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
 
 subjects = []
 for f in betas_files:
@@ -82,13 +82,13 @@ for subject in subjects:
     #%% load this subject's Y_all, dm_all, and betas (continuous-EEG GLM, 3-stage)
     base = os.path.join(eeg_der_dir, subject, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}')
 
-    with gzip.open(os.path.join(eeg_der_dir, subject, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz'), 'rb') as f:
+    with gzip.open(get_Y_all_path(base), 'rb') as f:
         Y_all = pickle.load(f)  # dims: chromo, parcel, time
 
-    with gzip.open(base + '_dm_all.pkl.gz', 'rb') as f:
+    with gzip.open(get_dm_all_path(base), 'rb') as f:
         dm_all = pickle.load(f)  # .common dims: time, chromo, regressor
 
-    with open(base + '_betas.pkl', 'rb') as f:
+    with open(get_betas_path(base), 'rb') as f:
         betas_dict = pickle.load(f)
     betas_eeg = betas_dict['betas_eeg']  # dims: parcel, chromo, regressor (delay tap); regressor = bspline basis @ betas_bspline
 

@@ -49,7 +49,7 @@ print("  " + ", ".join(f"sub-{s}" for s in pupil_subjects))
 
 # ── 2. Resting EEG ───────────────────────────────────────────────────────────
 rest_files = glob.glob(
-    os.path.join(eeg_deriv, 'sub-*', '*task-Rest*preproc_eeg.fif')
+    os.path.join(eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-Rest*preproc_eeg.fif')
 )
 rest_subjects = sorted({
     re.search(r'sub-(\d+)', f).group(1)
@@ -84,7 +84,7 @@ if no_rs_physio:
 # ── 3. GradCPT EEG with enough epochs ────────────────────────────────────────
 # Events are stored in companion *_events.tsv files (not in the fif)
 gradcpt_fif_files = sorted(glob.glob(
-    os.path.join(eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')
+    os.path.join(eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')
 ))
 subj_to_fifs = {}
 for f in gradcpt_fif_files:
@@ -199,7 +199,7 @@ print("  " + ", ".join(f"sub-{s}" for s in all_four))
 # Trigger channel is analog: baseline ~3.3 V, pulse goes low → falling edge = trigger onset
 
 all_eeg_fifs = sorted(glob.glob(
-    os.path.join(eeg_deriv, 'sub-*', '*preproc_eeg.fif')
+    os.path.join(eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*preproc_eeg.fif')
 ))
 
 print()

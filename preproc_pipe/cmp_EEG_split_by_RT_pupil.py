@@ -897,7 +897,7 @@ for key_name in [f"sub-{x}" for x in preserved_subj_array]:
                 band_power[b][wi] = np.mean(psd[(f >= flo) & (f <= fhi)])
 
         # VTC and interp RT at 1 Hz grid
-        event_file = os.path.join(data_save_path, key_name,
+        event_file = os.path.join(get_eeg_preproc_dir(key_name),
                                   f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")
         if not os.path.isfile(event_file):
             continue

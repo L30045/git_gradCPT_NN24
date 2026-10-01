@@ -115,7 +115,7 @@ if cz_removed:
 
 # match each fNIRS run in all_runs to its EEG run (gradcpt1/2/3) via first stim onset in events.tsv
 eeg_ev_files = {
-    run_key: os.path.join(eeg_der_dir, subject, f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv")
+    run_key: os.path.join(eeg_der_dir, subject, 'preprocessed_EEG_and_events', f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv")
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']
 }
 eeg_ev_dfs = {run_key: pd.read_csv(f, sep='\t') for run_key, f in eeg_ev_files.items()}

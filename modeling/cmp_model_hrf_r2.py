@@ -52,9 +52,9 @@ for subject in group_stats['subjects']:
     data_dir = os.path.join(eeg_der_dir, subject)
     ar_irls_prefix = os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
     irrr_prefix = os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')
-    Y_all_path = os.path.join(data_dir, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
-    req_files = [Y_all_path, f'{ar_irls_prefix}_dm_all.pkl.gz',
-                 f'{ar_irls_prefix}_betas.pkl', f'{irrr_prefix}_betas.pkl', f'{irrr_prefix}_stats.pkl']
+    Y_all_path = get_Y_all_path(ar_irls_prefix)
+    req_files = [Y_all_path, get_dm_all_path(ar_irls_prefix),
+                 get_betas_path(ar_irls_prefix), get_betas_path(irrr_prefix), get_stats_path(irrr_prefix)]
     if not all(os.path.exists(f) for f in req_files):
         print(f"{subject}: missing AR-IRLS or iRRR results, skipping.")
         continue
@@ -62,13 +62,13 @@ for subject in group_stats['subjects']:
 
     with gzip.open(Y_all_path, 'rb') as f:
         Y_all = pickle.load(f)
-    with gzip.open(f'{ar_irls_prefix}_dm_all.pkl.gz', 'rb') as f:
+    with gzip.open(get_dm_all_path(ar_irls_prefix), 'rb') as f:
         dm_all = pickle.load(f)
-    with open(f'{ar_irls_prefix}_betas.pkl', 'rb') as f:
+    with open(get_betas_path(ar_irls_prefix), 'rb') as f:
         ar_betas = pickle.load(f)['betas']
-    with open(f'{irrr_prefix}_betas.pkl', 'rb') as f:
+    with open(get_betas_path(irrr_prefix), 'rb') as f:
         irrr_betas = pickle.load(f)['betas']
-    with open(f'{irrr_prefix}_stats.pkl', 'rb') as f:
+    with open(get_stats_path(irrr_prefix), 'rb') as f:
         irrr_mu = pickle.load(f)['intercept']  # (parcel, 1)
 
     # Y_all was built after the drift and GSR OLS stages, so it is already

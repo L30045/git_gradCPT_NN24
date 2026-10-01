@@ -138,7 +138,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
         # generate events.tsv if missing
         run_digit_str = run_match.group(1) if run_match else "0"
         events_tsv_path = os.path.join(
-            data_save_path, f"sub-{vis_subj_id}",
+            get_eeg_preproc_dir(f"sub-{vis_subj_id}"),
             f"sub-{vis_subj_id}_task-gradCPT_run-0{int(run_digit_str)}_events.tsv"
         )
         if not os.path.exists(events_tsv_path):
@@ -268,7 +268,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
                  save_dir, f"{prefix}_step4_ICA_timeseries.png")
 
         # save preprocessed EEG as .fif
-        fif_dir = os.path.join(data_save_path, f"sub-{vis_subj_id}")
+        fif_dir = get_eeg_preproc_dir(f"sub-{vis_subj_id}")
         os.makedirs(fif_dir, exist_ok=True)
         fif_path = os.path.join(fif_dir, f"sub-{vis_subj_id}_task-gradCPT_{run_label}_preproc_eeg.fif")
         if is_overwrite or not os.path.exists(fif_path):
@@ -365,7 +365,7 @@ for _vhdr_file in _vhdr_files:
 
     # generate events.tsv if missing
     _events_tsv_path = os.path.join(
-        _save_dir,
+        get_eeg_preproc_dir(f"sub-{subj_id}"),
         f"sub-{subj_id}_task-gradCPT_{_run_label}_events.tsv"
     )
     if not os.path.exists(_events_tsv_path):
@@ -482,7 +482,8 @@ for _vhdr_file in _vhdr_files:
     print(f"  Figures saved to {_vis_dir}")
 
     # save preprocessed EEG as .fif
-    _fif_path = os.path.join(_save_dir, f"sub-{subj_id}_task-gradCPT_{_run_label}_preproc_eeg.fif")
+    os.makedirs(get_eeg_preproc_dir(f"sub-{subj_id}"), exist_ok=True)
+    _fif_path = os.path.join(get_eeg_preproc_dir(f"sub-{subj_id}"), f"sub-{subj_id}_task-gradCPT_{_run_label}_preproc_eeg.fif")
     if is_overwrite or not os.path.exists(_fif_path):
         EEG_step4.save(_fif_path, overwrite=True, verbose=False)
         print(f"  Saved preprocessed EEG → {_fif_path}")

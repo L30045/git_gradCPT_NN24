@@ -107,7 +107,7 @@ for subj_id in tqdm(subj_id_array):
 
         # build stim DataFrame — mnt-correct-stim only
         event_file = os.path.join(
-            data_save_path, key_name,
+            get_eeg_preproc_dir(key_name),
             f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv"
         )
         ev_df = pd.read_csv(event_file, sep='\t').copy()
@@ -307,7 +307,7 @@ for run_name in sorted(single_subj_EEG_test.keys()):
         continue
     EEG.pick(avail)
     ev_df = pd.read_csv(
-        os.path.join(data_save_path, key_name_test,
+        os.path.join(get_eeg_preproc_dir(key_name_test),
                      f"{key_name_test}_task-gradCPT_run-{run_id:02d}_events.tsv"),
         sep='\t').copy()
     ev_df.loc[(ev_df['trial_type'] == 'mnt') & (ev_df['response_code'] == 0),  'trial_type'] = 'mnt-correct-stim'
@@ -488,7 +488,7 @@ for subj_id in tqdm(subj_id_array):
         run_dur  = EEG.n_times / sfreq_bp
 
         ev_df = pd.read_csv(
-            os.path.join(data_save_path, key_name,
+            os.path.join(get_eeg_preproc_dir(key_name),
                          f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv"),
             sep='\t').copy()
         # city correct = correctly withheld (response_code > 0, per BIDS convention)

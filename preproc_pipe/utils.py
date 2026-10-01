@@ -26,6 +26,12 @@ project_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24")
 fig_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/plots/EEG")
 data_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg")
 vtc_save_path = os.path.abspath("/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/cedalion/processed_data/VTC_analysis")
+# preprocessed EEG (.fif) and EEG events (.tsv) live in <data_save_path>/sub-xxx/<eeg_preproc_subdir>
+eeg_preproc_subdir = "preprocessed_EEG_and_events"
+
+def get_eeg_preproc_dir(subject):
+    """subject: 'sub-xxx'"""
+    return os.path.join(data_save_path, subject, eeg_preproc_subdir)
 
 
 #%% utils function
@@ -167,7 +173,8 @@ def gen_EEG_event_tsv(subj_id, data_path=None, savepath=None, gradcpt_path=None)
     """
     # setup savepath
     if savepath is None:
-        savepath = os.path.join(data_save_path,f'sub-{subj_id}')
+        savepath = get_eeg_preproc_dir(f'sub-{subj_id}')
+    os.makedirs(savepath, exist_ok=True)
     if gradcpt_path is None:
         gradcpt_path = os.path.join(data_path, f'sub-{subj_id}/gradCPT')
     # get all files with .mat ext in gradcpt_path
@@ -762,7 +769,7 @@ def eeg_preproc_subj_level(subj_id, preproc_params):
     rm_ch_dict = dict()
     # get all the vdhr files in raw folder
     raw_EEG_path = os.path.join(data_path, f'sub-{subj_id}', 'eeg')
-    preproc_save_path = os.path.join(data_save_path,f"sub-{subj_id}")
+    preproc_save_path = get_eeg_preproc_dir(f"sub-{subj_id}")
     if not os.path.exists(preproc_save_path):
         os.makedirs(preproc_save_path, exist_ok=True)
     filename_list = [os.path.basename(x) for x in glob.glob(os.path.join(raw_EEG_path,"*.vhdr"))]
@@ -814,7 +821,7 @@ def eeg_epoch_subj_level(key_name, single_subj_EEG_dict, preproc_params, interp_
         subj_react_dict[f"run{run_id:02d}"] = dict()
         EEG = single_subj_EEG_dict[run_name]
         # load corresponding event file
-        event_file = os.path.join(data_save_path,f"{key_name}",
+        event_file = os.path.join(get_eeg_preproc_dir(key_name),
                                 f"{key_name}_task-gradCPT_run-{run_id:02d}_events.tsv")
         events, event_labels_lookup, vtc_list, reaction_time = tsv_to_events(event_file, EEG.info["sfreq"])
         # interpolate zero-RT (no-press) trials from non-zero neighbours

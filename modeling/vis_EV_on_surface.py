@@ -26,7 +26,7 @@ plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/EV_surf'
 
 #%% for each subject, load betas + (Y_all, dm_all) and compute per-parcel explained variance
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
 
 subj_ev = dict()
 for f in betas_files:
@@ -35,8 +35,9 @@ for f in betas_files:
     if subject in excluded_subj:
         continue
 
-    Y_all_path = f.replace('_betas.pkl', '_Y_all.pkl.gz')
-    dm_all_path = f.replace('_betas.pkl', '_dm_all.pkl.gz')
+    prefix = get_prefix_from_betas_path(f)
+    Y_all_path = get_Y_all_path(prefix)
+    dm_all_path = get_dm_all_path(prefix)
     if not (os.path.exists(Y_all_path) and os.path.exists(dm_all_path)):
         print(f'{subject}: missing Y_all/dm_all files, skipping (rerun run_model_cont_EEG_fNIRS_add_VTC.py with is_overwrite=True).')
         continue
@@ -186,7 +187,7 @@ for f in betas_files:
     if subject not in subj_ev:
         continue  # already excluded/skipped above
 
-    stats_path = f.replace('_betas.pkl', '_stats.pkl')
+    stats_path = get_stats_path(get_prefix_from_betas_path(f))
     if not os.path.exists(stats_path):
         print(f'{subject}: missing stats.pkl, skipping p-value map.')
         continue

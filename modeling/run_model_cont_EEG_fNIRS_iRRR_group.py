@@ -50,17 +50,18 @@ betas_save_path = os.path.join(group_save_path, f'group_{eeg_reg_type}_iRRR_{hp_
 stats_save_path = os.path.join(group_save_path, f'group_{eeg_reg_type}_iRRR_{hp_flag}_stats.pkl')
 
 #%% find subjects with AR-IRLS Y_all / dm_all available
-_Y_all_files = sorted(glob.glob(os.path.join(
-    project_path, 'derivatives', 'eeg', 'sub-*',
-    f'sub-*_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')))
+_dm_all_files = sorted(glob.glob(os.path.join(
+    project_path, 'derivatives', 'eeg', 'sub-*', 'dm',
+    f'sub-*_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')))
 subj_list = []
-for _f in _Y_all_files:
+for _f in _dm_all_files:
     subject = re.search(r'(sub-\d+)', os.path.basename(_f)).group(1)
     if subject in excluded_subj:
         continue
-    _prefix = os.path.join(os.path.dirname(_f), f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    if all(os.path.exists(f'{_prefix}_{s}') for s in ['dm_all.pkl.gz', 'betas.pkl']):
-        subj_list.append((subject, _prefix, _f))
+    _prefix = os.path.join(os.path.dirname(os.path.dirname(_f)), os.path.basename(_f)[:-len('_dm_all.pkl.gz')])
+    _Y_all_path = get_Y_all_path(_prefix)
+    if os.path.exists(_Y_all_path) and os.path.exists(get_betas_path(_prefix)):
+        subj_list.append((subject, _prefix, _Y_all_path))
 print(f"Found {len(subj_list)} subjects: {[s for s, _, _ in subj_list]}")
 
 #%% load and concatenate Y_all and dm_all across subjects (runs are already concatenated within subject)
@@ -69,10 +70,10 @@ parcels, regressors, basis_da = None, None, None
 for subject, ar_irls_prefix, Y_all_path in subj_list:
     with gzip.open(Y_all_path, 'rb') as f:
         Y_all = pickle.load(f)
-    with gzip.open(f'{ar_irls_prefix}_dm_all.pkl.gz', 'rb') as f:
+    with gzip.open(get_dm_all_path(ar_irls_prefix), 'rb') as f:
         dm_all = pickle.load(f)
     if basis_da is None:
-        with open(f'{ar_irls_prefix}_betas.pkl', 'rb') as f:
+        with open(get_betas_path(ar_irls_prefix), 'rb') as f:
             basis_da = pickle.load(f)['basis_da']
     Y_da = Y_all.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel')
     X_da = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')

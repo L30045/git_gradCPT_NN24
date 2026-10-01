@@ -29,7 +29,7 @@ vertex_parcel = head.brain.vertices.parcel.values
 n_vertex = head.brain.nvertices
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')))
 
 #%% plot each subject
 for betas_file in betas_files:
@@ -40,11 +40,15 @@ for betas_file in betas_files:
 
     with open(betas_file, 'rb') as f:
         betas_dict = pickle.load(f)
-    with open(betas_file.replace('_betas.pkl', '_stats.pkl'), 'rb') as f:
+    with open(get_stats_path(get_prefix_from_betas_path(betas_file)), 'rb') as f:
         stats_dict = pickle.load(f)
-    with gzip.open(stats_dict['Y_all_path'], 'rb') as f:
+    # stats_dict stores the Y_all/dm_all paths used for fitting; files may have moved since, so
+    # rebuild them from the AR-IRLS prefix (dm_all file name minus suffix, in this subject's dir)
+    ar_irls_prefix = os.path.join(os.path.dirname(os.path.dirname(betas_file)),
+                                  os.path.basename(stats_dict['dm_all_path'])[:-len('_dm_all.pkl.gz')])
+    with gzip.open(get_Y_all_path(ar_irls_prefix), 'rb') as f:
         Y_all = pickle.load(f)
-    with gzip.open(stats_dict['dm_all_path'], 'rb') as f:
+    with gzip.open(get_dm_all_path(ar_irls_prefix), 'rb') as f:
         dm_all = pickle.load(f)
 
     betas_all = betas_dict['betas']

@@ -29,7 +29,7 @@ _fnirs_subjects = {
     if re.search(r'sub-(\d+)', f)
 }
 
-_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')))
 _subj_to_fifs = {}
 for _f in _gradcpt_fifs:
     _m = re.search(r'sub-(\d+)', _f)
@@ -391,7 +391,7 @@ for s_i, subj_id in enumerate(subj_id_array):
     clean_chs_idx = np.delete(clean_chs_idx,bad_indices)
     clean_chs_list.append(clean_chs_idx)
     # load and DM
-    with open(os.path.join(filepath,'dm_dict.pkl'),'rb') as f:
+    with open(get_dm_dict_path(filepath),'rb') as f:
         dm_dict = pickle.load(f)
         eeg_dm = dm_dict['onlyEEG']
         stim_dm = dm_dict['onlyStim']

@@ -482,9 +482,9 @@ def highpass_one_stage_fit_event_based():
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 base = os.path.join(eeg_der_dir, subject, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}')
 
-Y_all_path = base + '_Y_all.pkl.gz'
-dm_all_path = base + '_dm_all.pkl.gz'
-betas_path = base + '_betas.pkl'
+Y_all_path = get_Y_all_path(base)
+dm_all_path = get_dm_all_path(base)
+betas_path = get_betas_path(base)
 
 for p in (Y_all_path, dm_all_path, betas_path):
     if not os.path.exists(p):

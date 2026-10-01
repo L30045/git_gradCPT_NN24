@@ -260,13 +260,13 @@ assert target_subject in subjects, f'{target_subject} not found among subjects w
 target_base = os.path.join(
     eeg_der_dir, target_subject, f'{target_subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}')
 
-with gzip.open(os.path.join(eeg_der_dir, target_subject, f'{target_subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz'), 'rb') as f:
+with gzip.open(get_Y_all_path(target_base), 'rb') as f:
     Y_all = pickle.load(f)  # dims: chromo, parcel, time
 
-with gzip.open(target_base + '_dm_all.pkl.gz', 'rb') as f:
+with gzip.open(get_dm_all_path(target_base), 'rb') as f:
     dm_all = pickle.load(f)  # .common dims: time, regressor (bspline), chromo
 
-with open(target_base + '_betas.pkl', 'rb') as f:
+with open(get_betas_path(target_base), 'rb') as f:
     betas_dict = pickle.load(f)
 betas_subj = betas_dict['betas']    # (parcel, chromo, regressor=bspline): subject's real trained betas
 basis_da = betas_dict['basis_da']   # (regressor=delay, component=bspline)

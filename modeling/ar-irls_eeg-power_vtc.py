@@ -44,7 +44,7 @@ records = []
 
 for subj_id in SUBJECTS:
     subj_key     = f'sub-{subj_id}'
-    subj_eeg_dir = os.path.join(EEG_DERIV_DIR, subj_key)
+    subj_eeg_dir = os.path.join(EEG_DERIV_DIR, subj_key, 'preprocessed_EEG_and_events')
     print(f'Loading {subj_key} ...')
 
     for run_id in range(1, 4):
@@ -223,7 +223,7 @@ vtc_psd_freqs = None
 
 for subj_id in SUBJECTS:
     subj_key     = f'sub-{subj_id}'
-    subj_eeg_dir = os.path.join(EEG_DERIV_DIR, subj_key)
+    subj_eeg_dir = os.path.join(EEG_DERIV_DIR, subj_key, 'preprocessed_EEG_and_events')
 
     for run_id in range(1, 4):
         ev_file = os.path.join(subj_eeg_dir,

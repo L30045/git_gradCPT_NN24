@@ -32,7 +32,7 @@ _eeg_deriv = os.path.join(project_path, 'derivatives', 'eeg')
 
 def _find_rest_eeg_fif(subj_id):
     """Locate the preprocessed resting-state EEG .fif, tolerating naming variants."""
-    subj_eeg_dir = os.path.join(_eeg_deriv, f'sub-{subj_id}')
+    subj_eeg_dir = os.path.join(_eeg_deriv, f'sub-{subj_id}', 'preprocessed_EEG_and_events')
     for fname in [
         f'sub-{subj_id}_task-Rest_run-01_preproc_eeg.fif',
         f'sub-{subj_id}_task_Rest_run-01_preproc_eeg.fif',  # sub-751
@@ -94,10 +94,10 @@ for subj_id in subj_id_array:
     os.makedirs(data_save_path, exist_ok=True)
 
     # check if betas.pkl exist already. If yes, skip this subject.
-    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest_betas.pkl')
-    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest_stats.pkl')
-    Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest_Y_all.pkl.gz')
-    dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest_dm_all.pkl.gz')
+    betas_save_path = get_betas_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest'))
+    stats_save_path = get_stats_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest'))
+    Y_all_save_path = get_own_Y_all_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest'))
+    dm_all_save_path = get_dm_all_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_rest'))
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -351,16 +351,22 @@ for subj_id in subj_id_array:
         betas_dict['betas_bspline'] = betas_bspline
         betas_dict['basis_da'] = basis_da
         betas_dict['chs_pruned'] = chs_pruned
+        os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        os.makedirs(os.path.dirname(stats_save_path), exist_ok=True)
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)
 
         # save Y_true and design matrix in separate files (used by vis_EV_on_surface.py
         # to compute Y_hat = dm_all.common @ betas and explained variance per parcel)
+        os.makedirs(os.path.dirname(Y_all_save_path), exist_ok=True)
         with gzip.open(Y_all_save_path, 'wb') as f:
             pickle.dump(Y_all, f)
+
+        os.makedirs(os.path.dirname(dm_all_save_path), exist_ok=True)
 
         with gzip.open(dm_all_save_path, 'wb') as f:
             pickle.dump(dm_all, f)

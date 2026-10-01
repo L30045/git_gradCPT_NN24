@@ -94,7 +94,7 @@ for p in select_parcels:
 # have image-space results (Fit 1), excluding subjects already flagged for low fNIRS quality
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 betas_files = sorted(glob.glob(os.path.join(
-    eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
+    eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
 
 der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
 
@@ -287,7 +287,7 @@ def load_continuous_eeg_hrf(subject, select_parcel):
     (betas_eeg, already expanded from bspline components to per-delay-tap resolution
     by run_model_cont_EEG_fNIRS.py) and the matching delay time axis."""
     base = os.path.join(eeg_der_dir, subject, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    betas_path = base + '_betas.pkl'
+    betas_path = get_betas_path(base)
     with open(betas_path, 'rb') as f:
         betas_dict = pickle.load(f)
     betas_eeg = betas_dict['betas_eeg']  # dims: parcel, chromo, component (delay tap)

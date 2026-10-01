@@ -34,7 +34,7 @@ _fnirs_subjects = {
     if re.search(r'sub-(\d+)', f)
 }
 
-_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')))
 _subj_to_fifs = {}
 for _f in _gradcpt_fifs:
     _m = re.search(r'sub-(\d+)', _f)
@@ -123,10 +123,10 @@ for subj_id in subj_id_array:
 
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
-    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
-    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_stats.pkl')
-    Y_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
-    dm_all_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
+    betas_save_path = get_betas_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
+    stats_save_path = get_stats_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
+    Y_all_save_path = get_own_Y_all_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
+    dm_all_save_path = get_dm_all_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
@@ -202,7 +202,7 @@ for subj_id in subj_id_array:
 
     # match each fNIRS run in all_runs to its EEG run (gradcpt1/2/3) via first stim onset in events.tsv
     eeg_ev_files = {
-        run_key: os.path.join(eeg_der_dir, subject, f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv")
+        run_key: os.path.join(eeg_der_dir, subject, 'preprocessed_EEG_and_events', f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv")
         for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']
     }
     eeg_ev_dfs = {run_key: pd.read_csv(f, sep='\t') for run_key, f in eeg_ev_files.items()}
@@ -560,16 +560,22 @@ for subj_id in subj_id_array:
         betas_dict['betas_eeg_per_type'] = betas_eeg_per_type
         betas_dict['basis_da'] = basis_da
         betas_dict['n_trials_per_type'] = {tt: len(eeg_epochs_by_type[tt]) for tt in trial_type_list}
+        os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        os.makedirs(os.path.dirname(stats_save_path), exist_ok=True)
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)
 
         # save Y_true and design matrix in separate files (used by vis_EV_on_surface.py
         # to compute Y_hat = dm_all.common @ betas and explained variance per parcel)
+        os.makedirs(os.path.dirname(Y_all_save_path), exist_ok=True)
         with gzip.open(Y_all_save_path, 'wb') as f:
             pickle.dump(Y_all, f)
+
+        os.makedirs(os.path.dirname(dm_all_save_path), exist_ok=True)
 
         with gzip.open(dm_all_save_path, 'wb') as f:
             pickle.dump(dm_all, f)

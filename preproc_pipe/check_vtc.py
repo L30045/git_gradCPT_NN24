@@ -51,7 +51,7 @@ plt.show()
 #%%
 for run_id in np.arange(1,4):
     # load corresponding event file
-    event_file = os.path.join(data_save_path,f"sub-{subj_id}",
+    event_file = os.path.join(get_eeg_preproc_dir(f"sub-{subj_id}"),
                             f"sub-{subj_id}_task-gradCPT_run-{run_id:02d}_events.tsv")
     events_df = pd.read_csv(event_file,sep='\t')
     event_ids = events_df["response_code"].astype(int)

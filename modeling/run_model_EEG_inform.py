@@ -37,7 +37,7 @@ _fnirs_subjects = {
     if re.search(r'sub-(\d+)', f)
 }
 
-_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')))
 _subj_to_fifs = {}
 for _f in _gradcpt_fifs:
     _m = re.search(r'sub-(\d+)', _f)
@@ -196,7 +196,8 @@ for subj_id in tqdm(subj_id_array):
 
     # save DMs
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    save_dm_name = os.path.join(save_file_path, 'dm_dict.pkl')
+    save_dm_name = get_dm_dict_path(save_file_path)
+    os.makedirs(os.path.dirname(save_dm_name), exist_ok=True)
     if not os.path.exists(save_dm_name):
         dm_dict = dict()
         dm_dict['basis']=basis_dm

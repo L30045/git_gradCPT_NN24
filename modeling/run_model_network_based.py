@@ -184,7 +184,8 @@ for subj_id in subj_id_array:
 
     # save DMs
     save_file_path = os.path.join(project_path, 'derivatives','eeg', f"sub-{subj_id}")
-    save_dm_name = os.path.join(save_file_path, 'dm_dict_network.pkl')
+    save_dm_name = get_dm_dict_path(save_file_path, 'dm_dict_network.pkl')
+    os.makedirs(os.path.dirname(save_dm_name), exist_ok=True)
     if not os.path.exists(save_dm_name):
         dm_dict = dict()
         dm_dict['basis']=basis_dm

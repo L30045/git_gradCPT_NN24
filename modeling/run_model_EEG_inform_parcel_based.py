@@ -73,7 +73,7 @@ _fnirs_subjects = {
     if re.search(r'sub-(\d+)', f)
 }
 
-_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')))
 _subj_to_fifs = {}
 for _f in _gradcpt_fifs:
     _m = re.search(r'sub-(\d+)', _f)
@@ -259,20 +259,20 @@ for subj_id in tqdm(subj_id_array):
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     save_prefix = os.path.join(data_save_path, f'{subject}_event-based_onParcel_{model_type}_{NOISE_MODEL}_{hp_flag}')
-    betas_save_path = f'{save_prefix}_betas.pkl'
-    stats_save_path = f'{save_prefix}_stats.pkl'
-    dm_all_save_path = f'{save_prefix}_dm_all.pkl.gz'
+    betas_save_path = get_betas_path(save_prefix)
+    stats_save_path = get_stats_path(save_prefix)
+    dm_all_save_path = get_dm_all_path(save_prefix)
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
 
-    dm_dict_path = os.path.join(data_save_path, 'dm_dict.pkl')
+    dm_dict_path = get_dm_dict_path(data_save_path)
     if not os.path.exists(dm_dict_path):
         print(f"{subject}: dm_dict.pkl not found, skipping.")
         continue
 
     #%% load Y_all from the cont EEG pipeline if available; otherwise rebuild it
-    cont_Y_all_path = os.path.join(data_save_path, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
+    cont_Y_all_path = get_shared_Y_all_path(data_save_path, subject, hp_flag)
     if os.path.exists(cont_Y_all_path):
         print(f"LOADING Y_all FROM {os.path.basename(cont_Y_all_path)}")
         with gzip.open(cont_Y_all_path, 'rb') as f:
@@ -403,14 +403,18 @@ for subj_id in tqdm(subj_id_array):
 
     #%% save betas for later visualization
     if is_save:
+        os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        os.makedirs(os.path.dirname(stats_save_path), exist_ok=True)
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)
 
         # save the DM truncated to Y_all's time points (Y_all itself is the cont EEG pipeline's
         # parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz, so it is not saved again here)
+        os.makedirs(os.path.dirname(dm_all_save_path), exist_ok=True)
         with gzip.open(dm_all_save_path, 'wb') as f:
             pickle.dump(dm_all, f)
 

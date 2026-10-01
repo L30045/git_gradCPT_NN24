@@ -16,16 +16,33 @@ n_vertex = head.brain.nvertices
 from matplotlib.colors import ListedColormap
 
 #%% select model type
-eeg_reg_type = 'cont_EEG_city_mnt_cz'
-is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
-hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+# 'cont_EEG_city_mnt': betas from run_model_cont_EEG_city_mnt.py
+# 'event_parcel': HRF estimates from run_model_EEG_inform_parcel_based.py
+model_source = 'event_parcel'
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/HRF_surf'
-len_delay = 15  # Delay time in HRF (sec); must match run_model_cont_EEG_city_mnt.py
-trial_type_prefixes = ['city', 'mnt']  # must match run_model_cont_EEG_city_mnt.py
+if model_source == 'cont_EEG_city_mnt':
+    eeg_reg_type = 'cont_EEG_city_mnt_cz'
+    is_hp_fNIRS = False # If True, highpass fNIRS by 1/len_delay (Hz)
+    len_delay = 15  # Delay time in HRF (sec); must match run_model_cont_EEG_city_mnt.py
+    trial_type_prefixes = ['city', 'mnt']  # must match run_model_cont_EEG_city_mnt.py
+elif model_source == 'event_parcel':
+    parcel_model_type = 'onlyStim'  # must match model_type in run_model_EEG_inform_parcel_based.py
+    eeg_reg_type = f'event-based_onParcel_{parcel_model_type}'
+    is_hp_fNIRS = True  # must match run_model_EEG_inform_parcel_based.py
+    trial_type_prefixes = ['mnt-correct', 'mnt-incorrect']
+hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+
+def get_delay_x(betas):
+    """Time (s) of each HRF sample: the saved time coord for event-based HRF estimates,
+    otherwise evenly spaced delays over len_delay for the cont EEG betas."""
+    if 'time' in betas.dims:
+        return betas.time.values
+    n_delay = betas.sizes['regressor']
+    return np.arange(n_delay) * (len_delay / n_delay)
 
 #load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
 
 # subj_betas_by_type[trial_type][subject] = betas_eeg (parcel x chromo x delay)
 subj_betas_by_type = {tt: dict() for tt in trial_type_prefixes}
@@ -37,7 +54,12 @@ for f in betas_files:
     with open(f, 'rb') as fh:
         betas_dict = pickle.load(fh)
         for tt in trial_type_prefixes:
-            subj_betas_by_type[tt][subject] = betas_dict['betas_eeg_per_type'][tt]
+            if model_source == 'event_parcel':
+                # trial_type x parcel x chromo x time -> parcel x chromo x time
+                subj_betas_by_type[tt][subject] = (betas_dict['hrf_estimate'].sel(trial_type=tt)
+                                                   .pint.dequantify().transpose('parcel', 'chromo', 'time'))
+            else:
+                subj_betas_by_type[tt][subject] = betas_dict['betas_eeg_per_type'][tt]
 
 # group parcels by network (first '_'-delimited token in the parcel name), excluding the medial-wall background label
 parcel_names = [p for p in next(iter(subj_betas_by_type[trial_type_prefixes[0]].values())).parcel.values if not p.startswith('Background+FreeSurfer')]
@@ -64,7 +86,7 @@ for tt in trial_type_prefixes:
         sem_HRF = stats.sem(subj_HRF_net, axis=0)
         ci95 = sem_HRF * stats.t.ppf(0.975, n_subj - 1)
 
-        x = np.arange(len(mean_HRF)) * (len_delay / len(mean_HRF))
+        x = get_delay_x(next(iter(subj_betas.values())))
         ax.plot(x, mean_HRF)
         ax.fill_between(x, mean_HRF - ci95, mean_HRF + ci95, alpha=0.3)
         ax.set_title(net)
@@ -95,7 +117,7 @@ for tt in trial_type_prefixes:
             sem_HRF = stats.sem(parcel_HRF_net, axis=0)
             ci95 = sem_HRF * stats.t.ppf(0.975, n_parcel - 1)
 
-            x = np.arange(len(mean_HRF)) * (len_delay / len(mean_HRF))
+            x = get_delay_x(betas)
             ax.plot(x, mean_HRF)
             ax.fill_between(x, mean_HRF - ci95, mean_HRF + ci95, alpha=0.3)
             ax.set_title(net)
@@ -164,7 +186,7 @@ for tt in trial_type_prefixes:
     subj_betas_parcel = np.stack([betas.sel(chromo='HbO').values for betas in subj_betas.values()])  # subj x parcel x delay
     mean_betas_parcel = subj_betas_parcel.mean(axis=0)  # parcel x delay
     parcel_values = next(iter(subj_betas.values())).parcel.values
-    delay_x = np.arange(mean_betas_parcel.shape[1]) * (len_delay / mean_betas_parcel.shape[1])
+    delay_x = get_delay_x(next(iter(subj_betas.values())))
     snap_times = np.arange(np.ceil(delay_x[0]), np.floor(delay_x[-1]) + 1)
 
     snapshot_HRF_surf(mean_betas_parcel, parcel_values, delay_x, snap_times, f'group_{tt}', surf_plot_dir)
@@ -177,7 +199,7 @@ for tt in trial_type_prefixes:
 
         parcel_values = betas.parcel.values
         subj_beta = betas.sel(chromo='HbO').values  # parcel x delay
-        delay_x = np.arange(subj_beta.shape[-1]) * (len_delay / subj_beta.shape[-1])
+        delay_x = get_delay_x(betas)
         snap_times = np.arange(np.ceil(delay_x[0]), np.floor(delay_x[-1]) + 1)
 
         snapshot_HRF_surf(subj_beta, parcel_values, delay_x, snap_times, f'{select_subj}_{tt}', surf_plot_dir)
@@ -204,7 +226,7 @@ for tt in trial_type_prefixes:
 
         subj_beta = betas.sel(chromo='HbO').values  # parcel x delay
         parcel_values = betas.parcel.values
-        delay_x = np.arange(subj_beta.shape[-1]) * (len_delay / subj_beta.shape[-1])
+        delay_x = get_delay_x(betas)
         beta_by_parcel = dict(zip(parcel_values, subj_beta))
 
         for parcel in near_cz_parcels:
@@ -245,7 +267,7 @@ for tt in trial_type_prefixes:
     group_betas_parcel = np.stack([betas.sel(chromo='HbO').values for betas in subj_betas.values()])  # subj x parcel x delay
     mean_betas_parcel = group_betas_parcel.mean(axis=0)  # parcel x delay
     parcel_values = next(iter(subj_betas.values())).parcel.values
-    delay_x = np.arange(mean_betas_parcel.shape[1]) * (len_delay / mean_betas_parcel.shape[1])
+    delay_x = get_delay_x(next(iter(subj_betas.values())))
     beta_by_parcel = dict(zip(parcel_values, mean_betas_parcel))
 
     for parcel in near_cz_parcels:

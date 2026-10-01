@@ -1,4 +1,5 @@
 #%% libraries
+import os
 import sys
 from cedalion import units
 
@@ -11,6 +12,47 @@ import processing_func as pf
 # import image_recon_func as irf
 # sys.path.append('/projectnb/nphfnirs/s/users/lcarlton/ANALYSIS_CODE/cedalion-pipeline/workflow/scripts/modules')
 # import module_preprocess as mpf
+
+# all cont_EEG_cz_3-stage* models are fit on the same parcel Y_all (sensitive parcels, HbO,
+# per-run window from first event to last event + 15 s, drift/GSR OLS-regressed out),
+# saved once per subject by run_model_cont_EEG_fNIRS.py
+Y_ALL_SHARED_REG_TYPE = 'cont_EEG_cz_3-stage'
+
+def get_shared_Y_all_path(data_dir, subject, hp_flag):
+    return os.path.join(data_dir, 'Y_all', f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
+
+def get_own_Y_all_path(prefix):
+    return os.path.join(os.path.dirname(prefix), 'Y_all', os.path.basename(prefix) + '_Y_all.pkl.gz')
+
+def get_Y_all_path(prefix):
+    """Y_all path for a model output prefix '<dir>/sub-xxx_<eeg_reg_type>_<noise_model>_<Hp|noHp>'.
+    cont_EEG_cz_3-stage* models load the shared parcel_Y_all_truncated_to_trials_<Hp|noHp> file,
+    unless the model still has its own Y_all/<name>_Y_all.pkl.gz (legacy runs fit on a slightly
+    different Y_all). Other models load their own Y_all/<name>_Y_all.pkl.gz."""
+    own_path = get_own_Y_all_path(prefix)
+    subject, reg_noise_hp = os.path.basename(prefix).split('_', 1)
+    if reg_noise_hp.startswith(Y_ALL_SHARED_REG_TYPE) and not os.path.exists(own_path):
+        hp_flag = reg_noise_hp.rsplit('_', 1)[1]
+        return get_shared_Y_all_path(os.path.dirname(prefix), subject, hp_flag)
+    return own_path
+
+# per-subject model outputs: <subject dir>/betas/<name>_betas.pkl, <subject dir>/stats/<name>_stats.pkl
+# and <subject dir>/dm/<name>_dm_all.pkl.gz, where prefix = '<subject dir>/<name>'
+def get_betas_path(prefix):
+    return os.path.join(os.path.dirname(prefix), 'betas', os.path.basename(prefix) + '_betas.pkl')
+
+def get_stats_path(prefix):
+    return os.path.join(os.path.dirname(prefix), 'stats', os.path.basename(prefix) + '_stats.pkl')
+
+def get_dm_all_path(prefix):
+    return os.path.join(os.path.dirname(prefix), 'dm', os.path.basename(prefix) + '_dm_all.pkl.gz')
+
+def get_dm_dict_path(subj_dir, fname='dm_dict.pkl'):
+    return os.path.join(subj_dir, 'dm', fname)
+
+def get_prefix_from_betas_path(betas_path):
+    subj_dir = os.path.dirname(os.path.dirname(betas_path))
+    return os.path.join(subj_dir, os.path.basename(betas_path)[:-len('_betas.pkl')])
 
 #%%
 ch_names = ['fz','cz','pz','oz']

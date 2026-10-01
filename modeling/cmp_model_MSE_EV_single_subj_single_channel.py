@@ -19,7 +19,7 @@ model_to_dmkey = {
 
 #%% load design matrices and dependent variable (Y_all, as in run_model_EEG_inform.py)
 save_file_path = os.path.join(project_path, 'derivatives', 'eeg', f"sub-{subj_id}")
-with open(os.path.join(save_file_path, 'dm_dict.pkl'), 'rb') as f:
+with open(get_dm_dict_path(save_file_path), 'rb') as f:
     dm_dict = pickle.load(f)
 
 Y_all = dm_dict['Y_all']  # dims: chromo, channel, time

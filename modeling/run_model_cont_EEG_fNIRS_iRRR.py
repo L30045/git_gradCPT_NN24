@@ -60,7 +60,7 @@ _fnirs_subjects = {
     if re.search(r'sub-(\d+)', f)
 }
 
-_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', '*task-gradCPT*preproc_eeg.fif')))
+_gradcpt_fifs = sorted(glob.glob(os.path.join(_eeg_deriv, 'sub-*', 'preprocessed_EEG_and_events', '*task-gradCPT*preproc_eeg.fif')))
 _subj_to_fifs = {}
 for _f in _gradcpt_fifs:
     _m = re.search(r'sub-(\d+)', _f)
@@ -133,17 +133,17 @@ for subj_id in subj_id_array:
 
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
-    betas_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')
-    stats_save_path = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}_stats.pkl')
+    betas_save_path = get_betas_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}'))
+    stats_save_path = get_stats_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}'))
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue
 
     #%% load Y_all, dm_all and the B-spline basis saved by the AR-IRLS run
     ar_irls_prefix = os.path.join(data_save_path, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    Y_all_load_path = os.path.join(data_save_path, f'{subject}_parcel_Y_all_truncated_to_trials_{hp_flag}.pkl.gz')
-    dm_all_load_path = f'{ar_irls_prefix}_dm_all.pkl.gz'
-    ar_irls_betas_path = f'{ar_irls_prefix}_betas.pkl'
+    Y_all_load_path = get_Y_all_path(ar_irls_prefix)
+    dm_all_load_path = get_dm_all_path(ar_irls_prefix)
+    ar_irls_betas_path = get_betas_path(ar_irls_prefix)
     if not all(os.path.exists(f) for f in [Y_all_load_path, dm_all_load_path, ar_irls_betas_path]):
         print(f"{subject}: Y_all or AR-IRLS dm_all/betas not found ({ar_irls_prefix}_*), skipping.")
         continue
@@ -201,8 +201,11 @@ for subj_id in subj_id_array:
         betas_dict['betas_eeg'] = betas_eeg
         betas_dict['betas_bspline'] = betas_bspline
         betas_dict['basis_da'] = basis_da
+        os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
+
+        os.makedirs(os.path.dirname(stats_save_path), exist_ok=True)
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)

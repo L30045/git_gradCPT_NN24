@@ -150,7 +150,7 @@ run_results = {}
 
 for subj_id in SUBJECTS:
     subj = f'sub-{subj_id}'
-    eeg_subj_dir = os.path.join(EEG_DERIV_DIR, subj)
+    eeg_subj_dir = os.path.join(EEG_DERIV_DIR, subj, 'preprocessed_EEG_and_events')
     subj_nirs = os.path.join(project_path, subj, 'nirs')
     subj_neon_dir = os.path.join(project_path, 'sourcedata', 'raw', subj, 'eye_tracking')
 
@@ -377,7 +377,7 @@ peak_spectra, trough_spectra, freqs_ref = [], [], None
 for (subj, run), res in run_results.items():
     subj_id = subj.replace('sub-', '')
     run_id  = int(run.replace('run-', '').lstrip('0') or '0')
-    fif_file = get_eeg_fif(os.path.join(EEG_DERIV_DIR, subj), subj_id, run_id)
+    fif_file = get_eeg_fif(os.path.join(EEG_DERIV_DIR, subj, 'preprocessed_EEG_and_events'), subj_id, run_id)
     if not fif_file:
         continue
 
@@ -780,7 +780,7 @@ Pipeline
 1. Discover subjects
    - Find all subjects that have both:
        (a) a preprocessed resting-state EEG file
-           sub-<id>_task-Rest_run-01_preproc_eeg.fif  (in derivatives/eeg/)
+           sub-<id>_task-Rest_run-01_preproc_eeg.fif  (in derivatives/eeg/sub-<id>/preprocessed_EEG_and_events/)
        (b) a resting-state eyetracking physio file
            sub-<id>_task-RS_run-01_recording-eyetracking_physio_20260423.tsv  (in <subj>/nirs/)
 
@@ -886,7 +886,7 @@ rs_subj_data = []   # list of dicts: {subj, p_means, a_means}
 
 for subj in all_subj_dirs:
     subj_id  = subj.replace('sub-', '')
-    eeg_dir  = os.path.join(EEG_DERIV_DIR, subj)
+    eeg_dir  = os.path.join(EEG_DERIV_DIR, subj, 'preprocessed_EEG_and_events')
     nirs_dir = os.path.join(project_path, subj, 'nirs')
 
     # Step 1: locate files

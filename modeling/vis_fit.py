@@ -23,9 +23,9 @@ is_plot = True  # If True, also show each figure in an interactive window before
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/fit_vis'
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg', subject)
-betas_path = os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')
-Y_all_path = os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_Y_all.pkl.gz')
-dm_all_path = os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_dm_all.pkl.gz')
+betas_path = get_betas_path(os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
+Y_all_path = get_Y_all_path(os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
+dm_all_path = get_dm_all_path(os.path.join(eeg_der_dir, f'{subject}_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}'))
 
 with open(betas_path, 'rb') as f:
     betas_all = pickle.load(f)['betas']  # dims: parcel, chromo, regressor
