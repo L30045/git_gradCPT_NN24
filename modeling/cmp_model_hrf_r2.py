@@ -4,7 +4,9 @@
 #   1. AR-IRLS (run_model_cont_EEG_fNIRS.py, 3-stage_bspline-test)
 #   2. per-subject iRRR (run_model_cont_EEG_fNIRS_iRRR.py)
 #   3. group iRRR (run_model_cont_EEG_fNIRS_iRRR_group.py)
-# All three share the same Y_all / dm_all, so only the betas differ. RMSE and R2 are computed
+#   4. event-based HRF on parcels (run_model_EEG_inform_parcel_based.py, onlyStim), using
+#      only the mnt-correct regressors to build Y_hat
+# All share the same Y_all; models 1-3 also share dm_all, so only the betas differ. RMSE and R2 are computed
 # per subject per parcel (in-sample) and summarized with bar plots.
 import numpy as np
 import pickle
@@ -17,6 +19,8 @@ from params_setting import *
 #%% select model type
 eeg_reg_type = 'cont_EEG_cz_3-stage'  # must match the iRRR scripts
 ar_irls_reg_type = 'cont_EEG_cz_3-stage_bspline-test'  # must match run_model_cont_EEG_fNIRS.py
+event_reg_type = 'event-based_onParcel_onlyStim'  # must match run_model_EEG_inform_parcel_based.py
+event_trial_type = 'mnt-correct'  # only this trial type's HRF regressors go into Y_hat
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 select_chromo = 'HbO'
@@ -25,8 +29,9 @@ is_save = True # If True, save metrics table and figures
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 plot_dir = os.path.join(eeg_der_dir, 'HRF_surf', 'group', f'{eeg_reg_type}_model_cmp')
 os.makedirs(plot_dir, exist_ok=True)
-models = ['AR-IRLS', 'iRRR', 'iRRR_group']
-model_colors = {'AR-IRLS': '#2a78d6', 'iRRR': '#eb6834', 'iRRR_group': '#1baf7a'}
+event_model = f'Event ({event_trial_type})'
+models = ['AR-IRLS', 'iRRR', 'iRRR_group', event_model]
+model_colors = {'AR-IRLS': '#2a78d6', 'iRRR': '#eb6834', 'iRRR_group': '#1baf7a', event_model: '#eda100'}
 
 #%% load group iRRR fit
 group_betas_file = os.path.join(eeg_der_dir, 'group', f'group_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')
@@ -52,11 +57,13 @@ for subject in group_stats['subjects']:
     data_dir = os.path.join(eeg_der_dir, subject)
     ar_irls_prefix = os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
     irrr_prefix = os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')
+    event_prefix = os.path.join(data_dir, f'{subject}_{event_reg_type}_{NOISE_MODEL}_{hp_flag}')
     Y_all_path = get_Y_all_path(ar_irls_prefix)
     req_files = [Y_all_path, get_dm_all_path(ar_irls_prefix),
-                 get_betas_path(ar_irls_prefix), get_betas_path(irrr_prefix), get_stats_path(irrr_prefix)]
+                 get_betas_path(ar_irls_prefix), get_betas_path(irrr_prefix), get_stats_path(irrr_prefix),
+                 get_betas_path(event_prefix), get_dm_all_path(event_prefix)]
     if not all(os.path.exists(f) for f in req_files):
-        print(f"{subject}: missing AR-IRLS or iRRR results, skipping.")
+        print(f"{subject}: missing AR-IRLS, iRRR or event-based results, skipping.")
         continue
     print(f"Processing {subject}")
 
@@ -70,6 +77,10 @@ for subject in group_stats['subjects']:
         irrr_betas = pickle.load(f)['betas']
     with open(get_stats_path(irrr_prefix), 'rb') as f:
         irrr_mu = pickle.load(f)['intercept']  # (parcel, 1)
+    with open(get_betas_path(event_prefix), 'rb') as f:
+        event_betas = pickle.load(f)['betas']
+    with gzip.open(get_dm_all_path(event_prefix), 'rb') as f:
+        event_dm = pickle.load(f)
 
     # Y_all was built after the drift and GSR OLS stages, so it is already
     # Y_partial = Y_raw - Y_hat_drift - Y_hat_gsr
@@ -81,9 +92,14 @@ for subject in group_stats['subjects']:
     parcels, regressors = Y_da.parcel.values, X_da.regressor.values
     Y_partial, X_np = Y_da.values, X_da.values
 
-    def get_B(betas):
+    def get_B(betas, regressors=regressors):
         return betas.sel(chromo=select_chromo, parcel=parcels, regressor=regressors) \
                     .transpose('regressor', 'parcel').values
+
+    # event-based: keep only the mnt-correct HRF regressors (no intercept, as in its fit)
+    X_event = event_dm.common.sel(chromo=select_chromo).transpose('time', 'regressor')
+    assert np.allclose(X_event.time.values, Y_da.time.values), f"{subject}: event DM / Y_all time mismatch"
+    X_event = X_event.sel(regressor=X_event.regressor.str.startswith(f'HRF {event_trial_type}-'))
 
     # AR-IRLS: no intercept in the design (Y_partial is already drift-residualized)
     # iRRR: intercept mu fit on the raw X
@@ -96,6 +112,7 @@ for subject in group_stats['subjects']:
         'iRRR': X_np @ get_B(irrr_betas) + irrr_mu_s,
         'iRRR_group': (X_np - X_np.mean(0, keepdims=True)) @ get_B(group_betas) + group_mu_s
                       + np.nanmean(Y_partial, axis=0, keepdims=True),
+        event_model: X_event.values @ get_B(event_betas, X_event.regressor.values),
     }
     for model_name, Y_hat in Y_hat_eeg.items():
         rmse, r2 = fit_metrics(Y_partial, Y_hat)
@@ -240,4 +257,69 @@ ax.set_title(f'RMSE AR-IRLS − iRRR ({y_unit}), mean over {len(subjects)} subje
 fig.tight_layout()
 if is_save:
     fig.savefig(os.path.join(plot_dir, 'model_cmp_rmse_diff_AR-IRLS_iRRR_surf.png'), dpi=150)
+plt.show()
+
+
+#%% HRF at the parcel nearest to Cz: EEG-informed models vs event-based mnt-correct
+len_delay = 15 # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS.py
+# nearest brain vertex (among the modeled parcels) to the Cz landmark of the standard head
+cz_pos = head.landmarks.sel(label='Cz').pint.dequantify().values
+vertex_pos = head.brain.vertices.pint.dequantify().values
+is_modeled = np.isin(vertex_parcel, parcels)
+cz_dist = np.linalg.norm(vertex_pos[is_modeled] - cz_pos, axis=1)
+cz_parcel = vertex_parcel[is_modeled][np.argmin(cz_dist)]
+print(f"Parcel nearest to Cz: {cz_parcel} ({cz_dist.min():.1f} mm)")
+
+def load_hrf(prefix, key='betas_eeg'):
+    with open(get_betas_path(prefix), 'rb') as f:
+        return pickle.load(f)[key].sel(chromo=select_chromo, parcel=cz_parcel)
+
+eeg_hrf = {m: [] for m in ['AR-IRLS', 'iRRR']}
+event_hrf = []
+for subject in subjects:
+    data_dir = os.path.join(eeg_der_dir, subject)
+    eeg_hrf['AR-IRLS'].append(load_hrf(os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')).values)
+    eeg_hrf['iRRR'].append(load_hrf(os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')).values)
+    hrf_ev = load_hrf(os.path.join(data_dir, f'{subject}_{event_reg_type}_{NOISE_MODEL}_{hp_flag}'),
+                      key='hrf_estimate').sel(trial_type=event_trial_type)
+    event_hrf.append(hrf_ev.pint.to('micromolar').pint.dequantify().values)
+eeg_hrf = {m: np.array(v) for m, v in eeg_hrf.items()}
+with open(group_betas_file, 'rb') as f:
+    group_hrf = pickle.load(f)['betas_eeg'].sel(chromo=select_chromo, parcel=cz_parcel).values
+event_hrf = np.array(event_hrf)
+n_delay = eeg_hrf['AR-IRLS'].shape[1]
+delay_t = np.arange(n_delay) * (len_delay / n_delay)
+event_t = hrf_ev.time.values
+
+# EEG-informed HRFs (per unit EEG regressor) and the event HRF (uM per trial) have different
+# units, so they get separate panels; mean +/- SEM across subjects
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+ax = axes[0]
+for model_name, hrf in eeg_hrf.items():
+    hrf_mean, hrf_sem = hrf.mean(0), hrf.std(0, ddof=1) / np.sqrt(len(hrf))
+    ax.plot(delay_t, hrf_mean, color=model_colors[model_name], lw=2, label=f'{model_name} (mean ± SEM)')
+    ax.fill_between(delay_t, hrf_mean - hrf_sem, hrf_mean + hrf_sem, color=model_colors[model_name], alpha=0.2, lw=0)
+ax.plot(delay_t, group_hrf, color=model_colors['iRRR_group'], lw=2, label='iRRR_group')
+ax.set_xlabel('Delay (s)')
+ax.set_ylabel(f'{select_chromo} per unit EEG (a.u.)')
+ax.set_title('EEG-informed HRF')
+
+ax = axes[1]
+hrf_mean, hrf_sem = event_hrf.mean(0), event_hrf.std(0, ddof=1) / np.sqrt(len(event_hrf))
+ax.plot(event_t, hrf_mean, color=model_colors[event_model], lw=2, label=f'{event_model} (mean ± SEM)')
+ax.fill_between(event_t, hrf_mean - hrf_sem, hrf_mean + hrf_sem, color=model_colors[event_model], alpha=0.2, lw=0)
+ax.set_xlabel('Time from trial onset (s)')
+ax.set_ylabel(f'{select_chromo} (µM)')
+ax.set_title('Event-based HRF')
+for ax in axes:
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right', fontsize='small', frameon=False)
+    for side in ['top', 'right']:
+        ax.spines[side].set_visible(False)
+        
+fig.suptitle(f'HRF at the parcel nearest to Cz: {cz_parcel} (n={len(subjects)} subjects)')
+fig.tight_layout()
+if is_save:
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_hrf_Cz_{cz_parcel}.png'), dpi=150)
 plt.show()

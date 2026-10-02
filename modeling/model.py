@@ -23,7 +23,7 @@ import cedalion.models.glm as glm
 from cedalion.sigproc import quality
 from cedalion import units
 from cedalion.vis.anatomy import scalp_plot
-from scipy.signal import filtfilt, windows, lfilter
+from scipy.signal import filtfilt, windows, lfilter, fftconvolve
 from statsmodels.tsa.stattools import acf, pacf
 import xarray as xr
 import cedalion.xrutils as xrutils
@@ -202,6 +202,19 @@ def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=False) ->
         eeg_regressors.append(eeg_reg)
 
     return eeg_regressors
+
+def get_cont_EEG_bspline_regressor(sig, basis):
+    """Same as get_cont_EEG_regressor (no z-score) followed by projecting the delay axis onto
+    the B-spline basis, but computed as one convolution per basis column instead of building the
+    (time x n_delay) delay matrix, which does not fit in memory at the EEG sampling rate.
+    Input:
+        sig: EEG signal of one run (n_samples,)
+        basis: B-spline basis (n_delay x n_bspline_basis)
+    Output:
+        (n_samples - n_delay) x n_bspline_basis, the leading n_delay samples removed
+    """
+    n_delay = basis.shape[0]
+    return fftconvolve(sig[:, None], basis, axes=0)[n_delay:len(sig)]
 
 
 def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
@@ -959,7 +972,12 @@ def combine_dm(eeg_dm, reduced_dm):
     return eeg_dm
 
 # visualize DM
-def vis_dm(plt_dm, vmin=-2, vmax=2):
+def vis_dm(plt_dm, vmin=None, vmax=None):
+    # vmin=-2, vmax=2 for EEG-informed event regressors
+    if vmin is None:
+        vmin = np.min(plt_dm.common.sel(chromo='HbO'))
+    if vmax is None:
+        vmax = np.max(plt_dm.common.sel(chromo='HbO'))
     # using xr.DataArray.plot
     f, ax = plt.subplots(1,1,figsize=(12,10))
     # plt_dm.common.sel(chromo="HbO", time=plt_dm.common.time<600).T.plot(vmin=-2,vmax=2)
