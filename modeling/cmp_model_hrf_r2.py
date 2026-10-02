@@ -23,6 +23,14 @@ is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 select_chromo = 'HbO'
 is_save = True # If True, save metrics table and figures
+# If True, score each AR-IRLS model on Y_partial and Y_hat prewhitened with its own AR filter (the
+# space AR-IRLS fits in); iRRR models stay unwhitened (the space they fit in).
+# Outputs get a '_whitened' suffix so the all-unwhitened results are kept
+is_whiten = True
+ar_pmax = 30 # max AR order; glm.fit's default ar_order, used by all AR-IRLS fits here
+out_tag = '_whitened' if is_whiten else ''
+fit_space = 'AR-IRLS models whitened' if is_whiten else 'unwhitened'
+ar_irls_models = ['AR-IRLS', 'Event-based', 'mnt AR-IRLS']  # models fit with AR-IRLS
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 plot_dir = os.path.join(eeg_der_dir, 'HRF_surf', 'group', f'{eeg_reg_type}_model_cmp')
@@ -46,6 +54,37 @@ def fit_metrics(Y, Y_hat):
     ss_res = np.nansum(res**2, axis=0)
     ss_tot = np.nansum((Y - np.nanmean(Y, axis=0))**2, axis=0)
     return rmse, 1 - ss_res / ss_tot
+
+import scipy.signal
+import cedalion.math.ar_model
+
+def get_ar_filters(resid, pmax=ar_pmax):
+    """Per-parcel AR whitening filter [1, -a_1, ..., -a_p] for time x parcel residuals.
+    AR-IRLS (cedalion.math.ar_irls) does not save its filter, so re-estimate it the same way:
+    a BIC-selected AR model (order <= pmax) fit to the residuals of the final betas."""
+    filters = []
+    for r in resid.T:
+        ar_model = cedalion.math.ar_model.bic_arfit(pd.Series(r[np.isfinite(r)]), pmax=pmax)
+        filters.append(np.hstack([1, -ar_model.params[1:]]))
+    return filters
+
+def apply_ar_filters(arr, filters):
+    """Filter each column of a time x parcel array with its AR filter over the finite samples.
+    The first p samples (filter not yet initialized) are set to NaN, as AR-IRLS drops them."""
+    out = np.full(arr.shape, np.nan)
+    for j, wf in enumerate(filters):
+        finite = np.where(np.isfinite(arr[:, j]))[0]
+        out[finite, j] = scipy.signal.lfilter(wf, 1, arr[finite, j])
+        out[finite[:len(wf) - 1], j] = np.nan
+    return out
+
+def to_fit_space(Y, Y_hat, model_name):
+    """(Y, Y_hat) in the space the model was fit in: for AR-IRLS models (if is_whiten), both are
+    filtered with the per-parcel AR filter re-estimated from that model's own residuals."""
+    if not (is_whiten and model_name in ar_irls_models):
+        return Y, Y_hat
+    ar_filters = get_ar_filters(Y - Y_hat)
+    return apply_ar_filters(Y, ar_filters), apply_ar_filters(Y_hat, ar_filters)
 
 rows = []
 subjects = []
@@ -100,7 +139,7 @@ for subject in group_stats['subjects']:
                       + np.nanmean(Y_partial, axis=0, keepdims=True),
     }
     for model_name, Y_hat in Y_hat_eeg.items():
-        rmse, r2 = fit_metrics(Y_partial, Y_hat)
+        rmse, r2 = fit_metrics(*to_fit_space(Y_partial, Y_hat, model_name))
         rows.append(pd.DataFrame({'subject': subject, 'model': model_name, 'parcel': parcels,
                                   'rmse': rmse, 'r2': r2}))
     subjects.append(subject)
@@ -116,7 +155,7 @@ summary_df = subj_df.groupby('model')[['rmse', 'r2']].agg(['mean', 'sem']).reind
 print(subj_df.pivot(index='subject', columns='model', values='r2')[models].to_string(float_format='%.4f'))
 print(summary_df.to_string(float_format='%.4g'))
 if is_save:
-    metrics_df.to_csv(os.path.join(plot_dir, 'model_cmp_rmse_r2_per_parcel.csv'), index=False)
+    metrics_df.to_csv(os.path.join(plot_dir, f'model_cmp_rmse_r2_per_parcel{out_tag}.csv'), index=False)
 
 #%% bar plots: per-subject mean over parcels, plus the cross-subject mean +/- SEM
 metric_info = {'r2': 'R$^2$', 'rmse': f'RMSE ({y_unit})' if y_unit else 'RMSE'}
@@ -139,13 +178,13 @@ for ax, (metric, ylabel) in zip(axes, metric_info.items()):
     ax.set_axisbelow(True)
     for side in ['top', 'right']:
         ax.spines[side].set_visible(False)
-axes[0].set_title('Mean over parcels of Y_hat_eeg vs Y_partial (in-sample)')
+axes[0].set_title(f'Mean over parcels of Y_hat_eeg vs Y_partial (in-sample, {fit_space})')
 axes[0].legend(loc='lower center', bbox_to_anchor=(0.5, 1.12), ncols=len(models), frameon=False)
 axes[-1].set_xticks(x, x_labels, rotation=45, ha='right')
 fig.suptitle(f'EEG HRF model comparison ({select_chromo}, {eeg_reg_type})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, 'model_cmp_rmse_r2_bar.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_bar{out_tag}.png'), dpi=150)
 plt.show()
 
 #%% brain surface maps: per-parcel R2 / RMSE averaged across subjects, one view per model
@@ -191,7 +230,7 @@ for metric, cfg in surf_cfg.items():
             coords={'chromo': ['HbO', 'HbR'],
                     'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
         )
-        surf_path = os.path.join(plot_dir, f'surf_{metric}_{model_name}')
+        surf_path = os.path.join(plot_dir, f'surf_{metric}_{model_name}{out_tag}')
         image_recon_multi_view(
             X_ts=X_surf, head=head, cmap=cfg['cmap'], clim=cfg['clim'],
             view_type='hbo_brain', title_str=f'{model_name} {cfg["bar_title"]}',
@@ -207,10 +246,10 @@ for c_i, metric in enumerate(surf_cfg):
         ax.imshow(plt.imread(surf_paths[(metric, model_name)]))
         ax.axis('off')
         ax.set_title(f'{model_name}: {surf_cfg[metric]["label"]}')
-fig.suptitle(f'Per-parcel fit of Y_hat_eeg vs Y_partial, mean over {len(subjects)} subjects ({select_chromo})')
+fig.suptitle(f'Per-parcel fit of Y_hat_eeg vs Y_partial, mean over {len(subjects)} subjects ({select_chromo}, {fit_space})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, 'model_cmp_rmse_r2_surf.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_surf{out_tag}.png'), dpi=150)
 plt.show()
 
 #%% brain surface map: RMSE difference AR-IRLS - iRRR per parcel, mean over subjects
@@ -227,7 +266,7 @@ X_surf = xr.DataArray(
     coords={'chromo': ['HbO', 'HbR'],
             'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
 )
-surf_path = os.path.join(plot_dir, 'surf_rmse_diff_AR-IRLS_minus_iRRR')
+surf_path = os.path.join(plot_dir, f'surf_rmse_diff_AR-IRLS_minus_iRRR{out_tag}')
 image_recon_multi_view(
     X_ts=X_surf, head=head, cmap='seismic', clim=(-diff_lim, diff_lim),
     view_type='hbo_brain', title_str=f'RMSE AR-IRLS - iRRR ({y_unit})',
@@ -238,10 +277,10 @@ fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 ax.imshow(plt.imread(surf_path + '.png'))
 ax.axis('off')
 ax.set_title(f'RMSE AR-IRLS − iRRR ({y_unit}), mean over {len(subjects)} subjects '
-             f'(red: iRRR lower; {select_chromo})')
+             f'(red: iRRR lower; {select_chromo}, {fit_space})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, 'model_cmp_rmse_diff_AR-IRLS_iRRR_surf.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_diff_AR-IRLS_iRRR_surf{out_tag}.png'), dpi=150)
 plt.show()
 
 
@@ -387,10 +426,12 @@ for mnt_betas_file in sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas
         'mnt AR-IRLS': X_mnt @ B_mnt,
         'mnt iRRR': X_mnt @ B_mnt_irrr + mnt_irrr_mu_s,
     }
+    # whiten the whole series (AR-IRLS models only) before masking to the trial windows
+    Y_fit_space = {m: to_fit_space(Y_partial, Y_hat, m) for m, Y_hat in Y_hat_ev.items()}
     for tt, mask in trial_masks.items():
         print(f"  {tt}: {mask.sum()} time points")
-        for model_name, Y_hat in Y_hat_ev.items():
-            rmse, r2 = fit_metrics(Y_partial[mask], Y_hat[mask])
+        for model_name, (Y_m, Y_hat_m) in Y_fit_space.items():
+            rmse, r2 = fit_metrics(Y_m[mask], Y_hat_m[mask])
             ev_rows.append(pd.DataFrame({'subject': subject, 'trial_type': tt, 'model': model_name,
                                          'parcel': parcels, 'n_time': mask.sum(),
                                          'rmse': rmse * rmse_scale, 'r2': r2}))
@@ -398,7 +439,7 @@ for mnt_betas_file in sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas
 
 ev_metrics_df = pd.concat(ev_rows, ignore_index=True)
 if is_save:
-    ev_metrics_df.to_csv(os.path.join(ev_plot_dir, 'model_cmp_rmse_r2_per_parcel_mnt_trials.csv'), index=False)
+    ev_metrics_df.to_csv(os.path.join(ev_plot_dir, f'model_cmp_rmse_r2_per_parcel_mnt_trials{out_tag}.csv'), index=False)
 
 #%% summarize: mean over parcels per subject, then mean +/- SEM across subjects, per trial type
 ev_subj_df = ev_metrics_df.groupby(['trial_type', 'subject', 'model'])[['rmse', 'r2']].mean().reset_index()
@@ -439,10 +480,10 @@ for c_i, tt in enumerate(trial_type_selectors):
     axes[-1, c_i].set_xticks(x, x_labels, rotation=45, ha='right')
 fig.legend(*axes[0, 0].get_legend_handles_labels(), loc='upper center', bbox_to_anchor=(0.5, 0.95),
            ncols=len(ev_models), frameon=False)
-fig.suptitle(f'Event-based model comparison inside mnt trials only, mean over parcels ({select_chromo}, in-sample)')
+fig.suptitle(f'Event-based model comparison inside mnt trials only, mean over parcels ({select_chromo}, in-sample, {fit_space})')
 fig.tight_layout(rect=(0, 0, 1, 0.92))
 if is_save:
-    fig.savefig(os.path.join(ev_plot_dir, 'model_cmp_rmse_r2_bar_mnt_trials.png'), dpi=150)
+    fig.savefig(os.path.join(ev_plot_dir, f'model_cmp_rmse_r2_bar_mnt_trials{out_tag}.png'), dpi=150)
 plt.show()
 
 # %%
