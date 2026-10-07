@@ -26,7 +26,7 @@ is_save = True # If True, save metrics table and figures
 # If True, score each AR-IRLS model on Y_partial and Y_hat prewhitened with its own AR filter (the
 # space AR-IRLS fits in); iRRR models stay unwhitened (the space they fit in).
 # Outputs get a '_whitened' suffix so the all-unwhitened results are kept
-is_whiten = True
+is_whiten = False
 ar_pmax = 30 # max AR order; glm.fit's default ar_order, used by all AR-IRLS fits here
 out_tag = '_whitened' if is_whiten else ''
 fit_space = 'AR-IRLS models whitened' if is_whiten else 'unwhitened'
@@ -329,6 +329,64 @@ if is_save:
     fig.savefig(os.path.join(plot_dir, f'model_cmp_hrf_Cz_{cz_parcel}.png'), dpi=150)
 plt.show()
 
+#%% Single subject parcel HRF: the n_cz_parcels parcels nearest to Cz
+select_subject = 'sub-723'
+n_cz_parcels = 4
+# parcel distance to Cz = its nearest brain vertex (same measure as cz_parcel above)
+cz_parcel_dist = pd.Series(cz_dist).groupby(vertex_parcel[is_modeled]).min().nsmallest(n_cz_parcels)
+print(f"{n_cz_parcels} parcels nearest to Cz:\n{cz_parcel_dist.round(1).to_string()}")
+
+data_dir = os.path.join(eeg_der_dir, select_subject)
+subj_hrf = dict()
+for model_name, prefix in [('AR-IRLS', f'{select_subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}'),
+                           ('iRRR', f'{select_subject}_{eeg_reg_type}_iRRR_{hp_flag}')]:
+    with open(get_betas_path(os.path.join(data_dir, prefix)), 'rb') as f:
+        subj_hrf[model_name] = pickle.load(f)['betas_eeg'].sel(chromo=select_chromo)
+
+# superior view of each parcel (red) on the brain, with the Cz landmark marked
+from cedalion.vis.anatomy.image_recon import image_recon
+from cedalion.vis.blocks import plot_labeled_points
+cz_parcel_pngs = dict()
+for parcel in cz_parcel_dist.index:
+    vertex_vals = np.where(vertex_parcel == parcel, 1.0, np.nan)  # NaN -> gray
+    X_surf = xr.DataArray(
+        np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
+        dims=['vertex', 'chromo'],
+        coords={'chromo': ['HbO', 'HbR'],
+                'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
+    )
+    p0, _, _ = image_recon(X_surf, head, cmap='Reds', clim=(0, 1), view_type='hbo_brain',
+                           view_position='superior', off_screen=True, wdw_size=(800, 800))
+    plot_labeled_points(p0, head.landmarks.sel(label=['Cz']))
+    cz_parcel_pngs[parcel] = os.path.join(plot_dir, f'surf_parcel_{parcel}.png')
+    p0.screenshot(cz_parcel_pngs[parcel])
+    p0.close()
+
+fig, axes = plt.subplots(2, n_cz_parcels, figsize=(4 * n_cz_parcels, 7.6), squeeze=False,
+                         gridspec_kw={'height_ratios': [1, 1.1]})
+for ax in axes[0, 1:]:
+    ax.sharey(axes[0, 0])
+for ax, surf_ax, (parcel, dist) in zip(axes[0], axes[1], cz_parcel_dist.items()):
+    surf_ax.imshow(plt.imread(cz_parcel_pngs[parcel]))
+    surf_ax.axis('off')
+    for model_name, hrf in subj_hrf.items():
+        ax.plot(delay_t, hrf.sel(parcel=parcel).values, color=model_colors[model_name], lw=2, label=model_name)
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.grid(True, alpha=0.3)
+    for side in ['top', 'right']:
+        ax.spines[side].set_visible(False)
+    ax.set_title(f'{parcel}\n({dist:.1f} mm from Cz)', fontsize='medium')
+    ax.set_xlabel('Delay (s)')
+axes[0, 0].set_ylabel(f'{select_chromo} per unit EEG (a.u.)')
+axes[0, 0].legend(loc='upper right', fontsize='small', frameon=False)
+axes[1, 0].text(0, 0.5, 'Parcel location\n(superior view,\nred; Cz marked)', transform=axes[1, 0].transAxes,
+                ha='right', va='center', fontsize='small')
+fig.suptitle(f'{select_subject}: EEG-informed HRF at the {n_cz_parcels} parcels nearest to Cz')
+fig.tight_layout()
+if is_save:
+    fig.savefig(os.path.join(plot_dir, f'{select_subject}_hrf_{n_cz_parcels}_parcels_nearest_Cz.png'), dpi=150)
+plt.show()
+
 #%% ===== event-based model comparison, scored inside the mnt trials only =====
 # Models, all fit on the same shared Y_all (drift and GSR already OLS-regressed out):
 #   1. Event-based: stimulus-locked Gaussian-basis HRFs for mnt-correct / mnt-incorrect
@@ -486,7 +544,74 @@ if is_save:
     fig.savefig(os.path.join(ev_plot_dir, f'model_cmp_rmse_r2_bar_mnt_trials{out_tag}.png'), dpi=150)
 plt.show()
 
-# %%
+#%% HRF at the parcel nearest to Cz (cz_parcel): event-based models, per trial type
+def plot_ev_hrf(subject_list, parcel, title, save_name):
+    """Event-based model HRFs at one parcel, columns = trial type. The event-based HRF (uM per trial,
+    vs time from onset) and the mnt cont EEG HRFs (per unit EEG, vs delay) have different units, so
+    they get separate rows. Mean +/- SEM across subject_list (a single line for one subject)."""
+    ev_hrf = {tt: {m: [] for m in ev_models} for tt in trial_type_selectors}
+    for subject in subject_list:
+        data_dir = os.path.join(eeg_der_dir, subject)
+        with open(get_betas_path(os.path.join(data_dir, f'{subject}_{event_reg_type}_{NOISE_MODEL}_{hp_flag}')), 'rb') as f:
+            event_hrf_da = pickle.load(f)['hrf_estimate'].sel(chromo=select_chromo, parcel=parcel)
+        mnt_hrf = dict()
+        for model_name, prefix in [('mnt AR-IRLS', f'{subject}_{mnt_reg_type}_{NOISE_MODEL}_{hp_flag}'),
+                                   ('mnt iRRR', f'{subject}_{mnt_reg_type}_iRRR_{hp_flag}')]:
+            with open(get_betas_path(os.path.join(data_dir, prefix)), 'rb') as f:
+                mnt_hrf[model_name] = pickle.load(f)['betas_eeg_per_type']
+        for tt in trial_type_selectors:
+            # event-based trial types are named 'mnt-correct' / 'mnt-incorrect'
+            ev_hrf[tt]['Event-based'].append(event_hrf_da.sel(trial_type=tt.replace('_', '-'))
+                                             .pint.to('micromolar').pint.dequantify().values)
+            for model_name, hrf_per_type in mnt_hrf.items():
+                ev_hrf[tt][model_name].append(hrf_per_type[tt].sel(chromo=select_chromo, parcel=parcel).values)
+    event_t = event_hrf_da.time.values
+    n_delay = len(ev_hrf['mnt_correct']['mnt AR-IRLS'][0])
+    ev_delay_t = np.arange(n_delay) * (len_delay / n_delay)
+
+    is_group = len(subject_list) > 1
+    fig, axes = plt.subplots(2, len(trial_type_selectors), figsize=(6.5 * len(trial_type_selectors), 8), squeeze=False)
+    for c_i, tt in enumerate(trial_type_selectors):
+        for r_i, (row_models, t_axis) in enumerate([(['Event-based'], event_t),
+                                                     (['mnt AR-IRLS', 'mnt iRRR'], ev_delay_t)]):
+            ax = axes[r_i, c_i]
+            for model_name in row_models:
+                hrf = np.array(ev_hrf[tt][model_name])
+                hrf_mean = hrf.mean(0)
+                ax.plot(t_axis, hrf_mean, color=ev_model_colors[model_name], lw=2,
+                        label=f'{model_name} (mean ± SEM)' if is_group else model_name)
+                if is_group:
+                    hrf_sem = hrf.std(0, ddof=1) / np.sqrt(len(hrf))
+                    ax.fill_between(t_axis, hrf_mean - hrf_sem, hrf_mean + hrf_sem,
+                                    color=ev_model_colors[model_name], alpha=0.2, lw=0)
+            ax.axhline(0, color='gray', lw=0.5)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='upper right', fontsize='small', frameon=False)
+            for side in ['top', 'right']:
+                ax.spines[side].set_visible(False)
+        axes[0, c_i].set_title(f'{tt}: event-based HRF')
+        axes[0, c_i].set_xlabel('Time from trial onset (s)')
+        axes[1, c_i].set_title(f'{tt}: trial-masked cont EEG HRF')
+        axes[1, c_i].set_xlabel('Delay (s)')
+    axes[0, 0].set_ylabel(f'{select_chromo} (µM)')
+    axes[1, 0].set_ylabel(f'{select_chromo} per unit EEG (a.u.)')
+    fig.suptitle(title)
+    fig.tight_layout()
+    if is_save:
+        fig.savefig(os.path.join(ev_plot_dir, save_name), dpi=150)
+    plt.show()
+
+plot_ev_hrf(ev_subjects, cz_parcel,
+            f'Event-based model HRFs at the parcel nearest to Cz: {cz_parcel} (n={len(ev_subjects)} subjects)',
+            f'model_cmp_hrf_Cz_{cz_parcel}.png')
+
+#%% single subject: event-based model HRFs at one parcel
+select_subject = 'sub-723'
+select_ev_parcel = 'SalVentAttnA_FrMed_5_LH'
+plot_ev_hrf([select_subject], select_ev_parcel,
+            f'{select_subject}: event-based model HRFs at {select_ev_parcel}',
+            f'{select_subject}_hrf_{select_ev_parcel}.png')
+
 
 #%% ===== AR-IRLS vs AR-iRRR, both scored on the AR-whitened Y_partial =====
 # AR-iRRR (run_model_cont_EEG_fNIRS_iRRR_AR.py) fits iRRR on Y_partial prewhitened per parcel with the

@@ -274,3 +274,70 @@ xsubj_plot_dir = os.path.join(plot_dir, 'group', f'{eeg_reg_type}_iRRR')
 os.makedirs(xsubj_plot_dir, exist_ok=True)
 fig.savefig(os.path.join(xsubj_plot_dir, 'group_iRRR_network_HRF.png'))
 plt.show()
+
+#%% group iRRR betas: every parcel HRF (parcel x delay heatmap, grouped by network) and the
+# shared HRF components (SVD of the delay x parcel HRF matrix) with per-parcel weights on the surface
+group_betas_eeg = group_betas_dict['betas_eeg'].sel(chromo=select_chromo)
+group_rank = int(group_stats_dict['rank'])
+n_regressor = len(group_betas_eeg.regressor)
+delay_t = np.arange(n_regressor) * (len_delay / n_regressor)
+
+# heatmap: parcels ordered by network (sorted names keep each network's parcels contiguous)
+parcel_names = sorted(p for p in group_betas_eeg.parcel.values if not p.startswith('Background+FreeSurfer'))
+networks = np.array([p.split('_')[0] for p in parcel_names])
+hrf_mat = group_betas_eeg.sel(parcel=parcel_names).transpose('parcel', 'regressor').values
+clim_max = np.nanmax(np.abs(hrf_mat))
+fig, ax = plt.subplots(1, 1, figsize=(8, 12))
+im = ax.imshow(hrf_mat, aspect='auto', cmap='seismic', vmin=-clim_max, vmax=clim_max,
+               extent=[delay_t[0], delay_t[-1], len(parcel_names) - 0.5, -0.5], interpolation='nearest')
+net_start = np.r_[0, np.where(networks[1:] != networks[:-1])[0] + 1]
+net_end = np.r_[net_start[1:], len(networks)]
+for b in net_start[1:]:
+    ax.axhline(b - 0.5, color='k', lw=0.5)
+ax.set_yticks((net_start + net_end - 1) / 2, networks[net_start])
+ax.set_xlabel('Delay (s)')
+fig.colorbar(im, ax=ax, label=f'{select_chromo} (M)', shrink=0.5)
+ax.set_title(f'Group iRRR HRF per parcel (rank = {group_rank})')
+fig.tight_layout()
+fig.savefig(os.path.join(xsubj_plot_dir, 'group_iRRR_parcel_HRF_heatmap.png'))
+plt.show()
+
+# shared components: only the first `rank` singular vectors are non-zero
+hrf_mat = group_betas_eeg.transpose('regressor', 'parcel').values
+U, S, Vt = np.linalg.svd(hrf_mat, full_matrices=False)
+n_plot = max(1, min(n_comp, group_rank))
+surf_paths = []
+for c_i in range(n_plot):
+    weight_by_parcel = dict(zip(group_betas_eeg.parcel.values, Vt[c_i]))
+    vertex_vals = np.array([weight_by_parcel.get(p, np.nan) for p in vertex_parcel])
+    clim_max = np.nanmax(np.abs(vertex_vals))
+    X_surf = xr.DataArray(
+        np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
+        dims=['vertex', 'chromo'],
+        coords={'chromo': ['HbO', 'HbR'],
+                'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
+    )
+    surf_path = os.path.join(xsubj_plot_dir, f'group_component{c_i+1}_weight')
+    image_recon_multi_view(
+        X_ts=X_surf, head=head, cmap='seismic', clim=(-clim_max, clim_max),
+        view_type='hbo_brain', title_str=f'Component {c_i+1} weight',
+        SAVE=True, filename=surf_path, wdw_size=(1600, 800),
+    )
+    surf_paths.append(surf_path + '.png')
+
+fig, axes = plt.subplots(n_plot, 2, figsize=(14, 3 * n_plot), squeeze=False,
+                         gridspec_kw={'width_ratios': [1, 1.6]})
+for c_i in range(n_plot):
+    ax = axes[c_i, 0]
+    ax.plot(delay_t, U[:, c_i] * S[c_i], 'b')
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.set_ylabel(f'comp {c_i+1}')
+    ax.set_title(f'SV = {S[c_i]:.3g} ({S[c_i]**2 / np.sum(S**2) * 100:.1f}% var)')
+    axes[c_i, 1].imshow(plt.imread(surf_paths[c_i]))
+    axes[c_i, 1].axis('off')
+    axes[c_i, 1].set_title(f'Component {c_i+1} per-parcel weight')
+axes[-1, 0].set_xlabel('Delay (s)')
+fig.suptitle(f'Group iRRR shared HRFs ({len(group_stats_dict["subjects"])} subjects, rank = {group_rank})')
+fig.tight_layout()
+fig.savefig(os.path.join(xsubj_plot_dir, 'group_iRRR_shared_HRF_components.png'))
+plt.show()
