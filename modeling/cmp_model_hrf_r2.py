@@ -613,12 +613,12 @@ plot_ev_hrf([select_subject], select_ev_parcel,
             f'{select_subject}_hrf_{select_ev_parcel}.png')
 
 
-#%% ===== AR-IRLS vs AR-iRRR, both scored on the AR-whitened Y_partial =====
-# AR-iRRR (run_model_cont_EEG_fNIRS_iRRR_AR.py) fits iRRR on Y_partial prewhitened per parcel with the
-# AR filter re-estimated from the AR-IRLS residuals (saved as betas_dict['ar_filters']); X is not
-# whitened, so its prediction X @ C + mu is already in the whitened space. Both models are scored
-# against the same target f * Y_partial, using those saved filters:
-#   AR-IRLS: f * (X @ B_ar)        AR-iRRR: X @ C + mu
+#%% ===== AR-IRLS vs AR-iRRR, both scored on the spectrally whitened Y_partial =====
+# AR-iRRR (run_model_cont_EEG_fNIRS_iRRR_AR.py) fits iRRR on Y_partial and X both spectrally whitened
+# (one kernel shared by all parcels, estimated from OLS residuals of Y ~ 1 + X, saved in stats_dict;
+# runs are filtered separately). Both models are scored against the same target W * Y_partial:
+#   AR-IRLS: W * (X @ B_ar)        AR-iRRR: (W * X) @ C + mu
+import model
 arw_reg_type = f'{eeg_reg_type}_iRRR_AR'  # must match run_model_cont_EEG_fNIRS_iRRR_AR.py
 arw_models = ['AR-IRLS', 'AR-iRRR']
 arw_model_colors = {'AR-IRLS': '#2a78d6', 'AR-iRRR': '#e87ba4'}
@@ -648,7 +648,8 @@ for arw_betas_file in sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas
     with open(arw_betas_file, 'rb') as f:
         arw_betas_dict = pickle.load(f)
     with open(get_stats_path(arw_prefix), 'rb') as f:
-        arw_mu = pickle.load(f)['intercept']  # (parcel, 1)
+        arw_stats = pickle.load(f)
+    arw_mu = arw_stats['intercept']  # (parcel, 1)
 
     Y_da = Y_all.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel')
     X_da = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')
@@ -659,12 +660,16 @@ for arw_betas_file in sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas
         return betas.sel(chromo=select_chromo, parcel=parcels, regressor=regressors) \
                     .transpose('regressor', 'parcel').values
 
-    ar_filters = [arw_betas_dict['ar_filters'][p] for p in parcels]
+    noise_model = model.NoiseModel()
+    noise_model.W_fft = arw_stats['whiten_kernel_fft']
+    noise_model.w_pad = noise_model.W_fft.shape[0]
+    samples = Y_da.samples.values
+    whiten = lambda a: np.vstack(noise_model.whiten(model.split_runs(a, samples)))
     arw_mu_s = pd.Series(arw_mu.ravel(), index=arw_betas_dict['betas'].parcel.values)[parcels].values
-    Y_white = apply_ar_filters(Y_partial, ar_filters)  # first p samples of each parcel are NaN
+    Y_white = whiten(Y_partial)
     Y_hat_arw = {
-        'AR-IRLS': apply_ar_filters(X_np @ get_B(ar_betas), ar_filters),
-        'AR-iRRR': X_np @ get_B(arw_betas_dict['betas']) + arw_mu_s,
+        'AR-IRLS': whiten(X_np @ get_B(ar_betas)),
+        'AR-iRRR': whiten(X_np) @ get_B(arw_betas_dict['betas']) + arw_mu_s,
     }
     for model_name, Y_hat in Y_hat_arw.items():
         rmse, r2 = fit_metrics(Y_white, Y_hat)

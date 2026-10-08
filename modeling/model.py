@@ -24,6 +24,7 @@ from cedalion.sigproc import quality
 from cedalion import units
 from cedalion.vis.anatomy import scalp_plot
 from scipy.signal import filtfilt, windows, lfilter, fftconvolve
+from scipy.fft import fft, ifft
 from statsmodels.tsa.stattools import acf, pacf
 import xarray as xr
 import cedalion.xrutils as xrutils
@@ -1601,3 +1602,102 @@ def logit_transform(r_squared):
     
         
     return logit_r2
+
+#%% spectral whitening (NoiseModel from Arielle, extended to concatenated runs)
+def split_runs(arr, samples):
+    """Split a time-first array of concatenated runs into a list of per-run arrays.
+    samples is Y_all's 'samples' coord, which keeps each run's own sample index, so it
+    drops back wherever a new run starts."""
+    bounds = np.where(np.diff(samples) <= 0)[0] + 1
+    return np.split(arr, bounds, axis=0)
+
+
+class NoiseModel:
+    """
+    RESPONSIBILITY: Noise estimation, whitening, and coloring.
+    One kernel (mean spectrum across columns) is shared by all parcels, so Y and X can be
+    whitened with the same filter. Data may be a single time x feature array or a list of
+    per-run arrays; runs are padded/filtered separately so nothing leaks across run boundaries.
+    """
+    def __init__(self, method="spectral"):
+        self.method = method
+        self.w_pad = None
+        self.W_fft = None
+        self.C_fft = None
+        self.acf_kernel = None
+    
+    def print(self):
+        # arrays are summarized by shape/dtype/range instead of printing every value
+        for name, val in vars(self).items():
+            if isinstance(val, np.ndarray):
+                print(f"{name}: ndarray shape={val.shape}, dtype={val.dtype}, "
+                      f"min={val.min():.4g}, max={val.max():.4g}")
+            else:
+                print(f"{name}: {val}")
+
+    def fit(self, residuals):
+        runs = residuals if isinstance(residuals, list) else [residuals]
+        self.acf_kernel, self.w_pad = self._estimate_autocorrelation_kernel(runs)
+        self.W_fft = self._compute_filter_kernel(self.acf_kernel, self.w_pad, process=1)
+        self.C_fft = self._compute_filter_kernel(self.acf_kernel, self.w_pad, process=0)
+        return self
+
+    def whiten(self, data):
+        # the kernel's DC bin is 0, so the whitened series have zero mean
+        if self.W_fft is None:
+            raise ValueError("Fit before whitening.")
+        if isinstance(data, list):
+            return [self._apply_kernel(d, self.W_fft, self.w_pad) for d in data]
+        return self._apply_kernel(data, self.W_fft, self.w_pad)
+
+    def color(self, data):
+        if self.C_fft is None:
+            raise ValueError("Fit before coloring.")
+        if isinstance(data, list):
+            return [self._apply_kernel(d, self.C_fft, self.w_pad) for d in data]
+        return self._apply_kernel(data, self.C_fft, self.w_pad)
+
+    @staticmethod
+    def _estimate_autocorrelation_kernel(runs):
+        nvox = runs[0].shape[1]
+        ntp_total = sum(r.shape[0] for r in runs)
+        #1  Estimating the autocorrelation function from the residuals (time domain).
+        # Each run is zero-padded to 2*ntp-1 (linear, not circular, autocovariance) and the
+        # raw autocovariances are summed over runs, so no lag pair crosses a run boundary
+        tukey_m = int(np.round(np.sqrt(ntp_total)))
+        acov = np.zeros((tukey_m, nvox))
+        for r in runs:
+            r_fft = fft(r, n=r.shape[0] * 2 - 1, axis=0)
+            acov += ifft(r_fft * r_fft.conjugate(), axis=0).real[:tukey_m]
+        acf_est = acov / acov[0]
+        assert acf_est.shape == (tukey_m, nvox)
+        # Regularize the autocorrelation estimates with a tukey taper
+        lag = np.arange(tukey_m)
+        window = .5 * (1 + np.cos(np.pi * lag / tukey_m))
+        acf_tukey = acf_est * window[:, np.newaxis]
+        assert acf_tukey.shape == (tukey_m, nvox)
+        # Compute the autocorrelation kernel; padded to the longest run + tukey_m
+        w_pad = max(r.shape[0] for r in runs) + tukey_m
+        acf_kernel = np.zeros((w_pad, nvox))
+        acf_kernel[:tukey_m] = acf_tukey
+        acf_kernel[-tukey_m + 1:] = acf_tukey[:0:-1]
+        return acf_kernel, w_pad
+
+    @staticmethod
+    def _compute_filter_kernel(acf_kernel, w_pad, process=1):
+        acf_fft = fft(acf_kernel, axis=0).real
+        acf_fft_mean = np.mean(acf_fft, axis=1)
+        kernel_fft = np.zeros((w_pad, 1))
+        magnitude = np.abs(acf_fft_mean[1:]) + 1e-6
+        if process == 1:
+            kernel_fft[1:] = (1 / np.sqrt(magnitude)).reshape(-1, 1)
+        elif process == 0:
+            kernel_fft[1:] = np.sqrt(magnitude).reshape(-1, 1)
+        return kernel_fft
+
+    @staticmethod
+    def _apply_kernel(array, kernel_fft, w_pad):
+        ntp = array.shape[0]
+        array_fft = fft(array, axis=0, n=w_pad)
+        filtered_fft = kernel_fft * array_fft
+        return ifft(filtered_fft, axis=0).real[:ntp]

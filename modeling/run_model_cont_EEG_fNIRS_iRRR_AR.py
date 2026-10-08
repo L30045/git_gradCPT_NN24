@@ -126,30 +126,6 @@ irrr_lam1 = 1.0 # iRRR nuclear-norm penalty (Y is scaled to unit std before fitt
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose Y_all / dm_all / B-spline basis are reused here;
 # iRRR shares the same preprocessed Y and design matrix, so only the fit differs
 ar_irls_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
-ar_pmax = 30 # max AR order; glm.fit's default ar_order, used by the AR-IRLS fit
-
-#%% AR filter re-estimated from the AR-IRLS fit
-# same as get_ar_filters / apply_ar_filters in cmp_model_hrf_r2.py (copied, since importing that
-# script would run the whole model comparison)
-def get_ar_filters(resid, pmax=ar_pmax):
-    """Per-parcel AR whitening filter [1, -a_1, ..., -a_p] for time x parcel residuals.
-    AR-IRLS (cedalion.math.ar_irls) does not save its filter, so re-estimate it the same way:
-    a BIC-selected AR model (order <= pmax) fit to the residuals of the final betas."""
-    filters = []
-    for r in resid.T:
-        ar_model = cedalion.math.ar_model.bic_arfit(pd.Series(r[np.isfinite(r)]), pmax=pmax)
-        filters.append(np.hstack([1, -ar_model.params[1:]]))
-    return filters
-
-def apply_ar_filters(arr, filters):
-    """Filter each column of a time x parcel array with its AR filter over the finite samples.
-    The first p samples (filter not yet initialized) are set to NaN, as AR-IRLS drops them."""
-    out = np.full(arr.shape, np.nan)
-    for j, wf in enumerate(filters):
-        finite = np.where(np.isfinite(arr[:, j]))[0]
-        out[finite, j] = scipy.signal.lfilter(wf, 1, arr[finite, j])
-        out[finite[:len(wf) - 1], j] = np.nan
-    return out
 
 #%% main
 for subj_id in subj_id_array:
@@ -183,28 +159,30 @@ for subj_id in subj_id_array:
     basis_da = ar_irls_betas_dict['basis_da']
     n_regressor = len(basis_da.regressor)
 
-    #%% prewhiten Y_all per parcel with the AR filter of the AR-IRLS fit
-    # the filter is re-estimated from the AR-IRLS residuals Y_partial - X @ B_ar (AR-IRLS has no
-    # intercept; Y_all is already drift- and GSR-residualized). X is left unwhitened.
+    #%% spectral whitening of Y and X
+    # the residual spectrum is estimated from the OLS residuals of Y_partial ~ 1 + X (Y_all is already
+    # drift- and GSR-residualized), averaged across parcels, and its 1/sqrt(power) filter is applied
+    # to both Y and X. Runs are padded and filtered separately.
     Y_da = Y_all.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel')
     X_da = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')
-    parcels = Y_da.parcel.values
-    B_ar = ar_irls_betas_dict['betas'].sel(chromo=select_chromo, parcel=parcels,
-                                           regressor=X_da.regressor.values) \
-                                      .transpose('regressor', 'parcel').values
-    ar_filters = get_ar_filters(Y_da.values - X_da.values @ B_ar)
-    Y_white = apply_ar_filters(Y_da.values, ar_filters)  # first p samples of each parcel are NaN
-    ar_order = np.array([len(wf) - 1 for wf in ar_filters])
-    print(f"AR filter order: median {np.median(ar_order):.0f}, range {ar_order.min()}-{ar_order.max()}")
+    X_ols = np.column_stack([np.ones(len(X_da.time)), X_da.values])
+    B_ols = np.linalg.lstsq(X_ols, Y_da.values, rcond=None)[0]
+    samples = Y_da.samples.values  # per-run sample index; resets mark run starts in Y_all
+    run_bounds = np.where(np.diff(samples) <= 0)[0] + 1
+    noise_model = model.NoiseModel(method='spectral')
+    noise_model.fit(model.split_runs(Y_da.values - X_ols @ B_ols, samples))
+    Y_white = np.vstack(noise_model.whiten(model.split_runs(Y_da.values, samples)))
+    X_white = np.vstack(noise_model.whiten(model.split_runs(X_da.values, samples)))
+    
+    print(f"spectral whitening: {len(run_bounds) + 1} runs, w_pad = {noise_model.w_pad}")
 
     #%% get GLM fitting results for each subject from shank Jun 02 2025
     print(f"Start cont_EEG GLM fitting ({subject})")
     # iRRR: fit all parcels jointly, Y (time x parcel) ~ X (time x bspline), with a
     # nuclear-norm penalty on the (bspline x parcel) coefficient matrix so the HRFs
     # across parcels share a low-rank structure
-    # iRRR fills the NaN samples left by the AR filter with the current prediction
     Y_np = Y_white
-    X_np = X_da.values
+    X_np = X_white
     Y_scale = np.nanstd(Y_np)
     n_time, n_parcel = Y_np.shape
     X_c = X_np - X_np.mean(0, keepdims=True)
@@ -223,7 +201,8 @@ for subj_id in subj_id_array:
     )
     stats_dict = {'irrr_lam1': irrr_lam1, 'irrr_weight': irrr_weight, 'Y_scale': Y_scale,
                   'intercept': mu, 'rank': matrix_rank(C), 'singular_values': svdvals(C),
-                  'details': irrr_details, 'ar_pmax': ar_pmax, 'ar_order': ar_order}
+                  'details': irrr_details, 'run_bounds': run_bounds,
+                  'whiten_kernel_fft': noise_model.W_fft, 'acf_kernel': noise_model.acf_kernel}
     print(f"iRRR fit: rank(B) = {stats_dict['rank']} (of {min(C.shape)})")
     # extract HRF (delay-regressor betas) per parcel, then expand the low-rank
     # bspline coefficients back to full per-delay resolution via the same basis
@@ -242,7 +221,6 @@ for subj_id in subj_id_array:
         betas_dict['betas_eeg'] = betas_eeg
         betas_dict['betas_bspline'] = betas_bspline
         betas_dict['basis_da'] = basis_da
-        betas_dict['ar_filters'] = dict(zip(parcels, ar_filters))  # parcel -> [1, -a_1, ..., -a_p]
         os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
