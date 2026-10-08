@@ -19,6 +19,7 @@ eeg_reg_type = 'cont_EEG_cz_3-stage'  # must match run_model_cont_EEG_fNIRS_iRRR
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 is_AR = True # If True, spectral whitening before iRRR
+is_scale_Y = True # must match run_model_cont_EEG_fNIRS_iRRR_AR.py (only used when is_AR)
 select_chromo = 'HbO'
 select_parcel = 'DefaultA_PFCd_1_LH'
 len_delay = 15 # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS_iRRR.py
@@ -30,7 +31,7 @@ vertex_parcel = head.brain.vertices.parcel.values
 n_vertex = head.brain.nvertices
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-model_name = f"{eeg_reg_type}_iRRR_AR_{hp_flag}" if is_AR else f"{eeg_reg_type}_iRRR_{hp_flag}"
+model_name = f"{eeg_reg_type}_iRRR_AR{get_scale_tag(is_scale_Y)}_{hp_flag}" if is_AR else f"{eeg_reg_type}_iRRR_{hp_flag}"
 betas_fname = f'sub-*_{model_name}_betas.pkl' if is_AR else f'sub-*_{model_name}_betas.pkl'
 betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', betas_fname)))
 

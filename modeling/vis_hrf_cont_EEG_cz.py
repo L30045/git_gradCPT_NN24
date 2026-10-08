@@ -21,11 +21,16 @@ n_vertex = head.brain.nvertices
 eeg_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+is_fixAR = True # If True, plot the fixAR-IRLS fit (run_model_cont_EEG_fNIRS_fixAR-IRLS.py) instead of AR-IRLS
+is_scale_Y = True # must match run_model_cont_EEG_fNIRS_fixAR-IRLS.py (only used when is_fixAR)
+# model_tag names the betas files (sub-*_<model_tag>_<hp_flag>_betas.pkl) and the plot subfolders
+model_tag = f'cont_EEG_cz_3-stage_fixAR-IRLS{get_scale_tag(is_scale_Y)}' if is_fixAR else f'{eeg_reg_type}_{NOISE_MODEL}'
+plot_tag = model_tag if is_fixAR else eeg_reg_type  # AR-IRLS plots keep their existing folders
 plot_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eeg/HRF_surf'
 
 #load betas for all subjects
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_{NOISE_MODEL}_{hp_flag}_betas.pkl')))
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{model_tag}_{hp_flag}_betas.pkl')))
 
 subj_betas = dict()
 for f in betas_files:
@@ -150,7 +155,7 @@ def snapshot_HRF_surf(betas_parcel, parcel_values, delay_x, snap_times, label, o
 #%% visualize group-average parcel HRF on the brain surface, snapshotted every second
 # broadcast each parcel's group-average beta at each delay second onto the
 # ICBM152 brain surface vertices and render with cedalion's image reconstruction plots
-surf_plot_dir = os.path.join(plot_dir, 'group', eeg_reg_type)
+surf_plot_dir = os.path.join(plot_dir, 'group', plot_tag)
 
 # group-average beta per parcel (subjects x parcel x delay -> mean over subjects)
 subj_betas_parcel = np.stack([betas.sel(chromo='HbO').values for betas in subj_betas.values()])  # subj x parcel x delay
@@ -163,7 +168,7 @@ snapshot_HRF_surf(mean_betas_parcel, parcel_values, delay_x, snap_times, 'group'
 
 #%% same snapshots, but for each subject individually
 for select_subj, betas in subj_betas.items():
-    surf_plot_dir = os.path.join(plot_dir, select_subj, eeg_reg_type)
+    surf_plot_dir = os.path.join(plot_dir, select_subj, plot_tag)
 
     parcel_values = betas.parcel.values
     subj_beta = betas.sel(chromo='HbO').values  # parcel x delay
@@ -231,7 +236,7 @@ print('Parcels nearest Cz:', near_cz_parcels)
 
 #%% for each subject, plot the location and HRF of each near-Cz parcel
 for select_subj, betas in subj_betas.items():
-    near_cz_dir = os.path.join(plot_dir, select_subj, eeg_reg_type, 'near_Cz')
+    near_cz_dir = os.path.join(plot_dir, select_subj, plot_tag, 'near_Cz')
     os.makedirs(near_cz_dir, exist_ok=True)
 
     subj_beta = betas.sel(chromo='HbO').values  # parcel x delay

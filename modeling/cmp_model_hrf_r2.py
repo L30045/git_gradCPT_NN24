@@ -1,11 +1,12 @@
 #%% load library
 # Compare how well the EEG-informed HRF models reconstruct Y_partial (fNIRS after the drift and
 # GSR OLS stages), using betas from:
-#   1. AR-IRLS (run_model_cont_EEG_fNIRS.py, 3-stage_bspline-test)
-#   2. per-subject iRRR (run_model_cont_EEG_fNIRS_iRRR.py)
+#   1. fixAR-IRLS (run_model_cont_EEG_fNIRS_fixAR-IRLS.py): IRLS on spectrally whitened Y and X
+#   2. per-subject iRRR_AR (run_model_cont_EEG_fNIRS_iRRR_AR.py): iRRR on spectrally whitened Y and X
 #   3. group iRRR (run_model_cont_EEG_fNIRS_iRRR_group.py)
 # All three share the same Y_all / dm_all, so only the betas differ. RMSE and R2 are computed
-# per subject per parcel (in-sample) and summarized with bar plots.
+# per subject per parcel (in-sample) on the spectrally whitened Y_partial (the space models 1 and 2
+# are fit in) and summarized with bar plots.
 # The last section compares the event-based models (stimulus-locked HRF vs trial-masked cont EEG)
 # on the time points inside the mnt trials only.
 import numpy as np
@@ -15,6 +16,7 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 from params_setting import *
+import model
 
 #%% select model type
 eeg_reg_type = 'cont_EEG_cz_3-stage'  # must match the iRRR scripts
@@ -23,20 +25,26 @@ is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 select_chromo = 'HbO'
 is_save = True # If True, save metrics table and figures
-# If True, score each AR-IRLS model on Y_partial and Y_hat prewhitened with its own AR filter (the
-# space AR-IRLS fits in); iRRR models stay unwhitened (the space they fit in).
-# Outputs get a '_whitened' suffix so the all-unwhitened results are kept
+# cont EEG comparison: fixAR-IRLS and iRRR_AR fits; must match is_scale_Y in both run scripts
+is_scale_Y = True
+fixar_reg_type = f'{eeg_reg_type}_fixAR-IRLS{get_scale_tag(is_scale_Y)}'
+irrr_ar_reg_type = f'{eeg_reg_type}_iRRR_AR{get_scale_tag(is_scale_Y)}'
+cmp_tag = f'_spectral{get_scale_tag(is_scale_Y)}'  # output suffix of the cont EEG comparison
+cmp_space = 'spectrally whitened'
+# Event-based section only: if True, score each AR-IRLS model on Y_partial and Y_hat prewhitened
+# with its own AR filter (the space AR-IRLS fits in); iRRR models stay unwhitened (the space they
+# fit in). Outputs get a '_whitened' suffix so the all-unwhitened results are kept
 is_whiten = False
 ar_pmax = 30 # max AR order; glm.fit's default ar_order, used by all AR-IRLS fits here
 out_tag = '_whitened' if is_whiten else ''
 fit_space = 'AR-IRLS models whitened' if is_whiten else 'unwhitened'
-ar_irls_models = ['AR-IRLS', 'Event-based', 'mnt AR-IRLS']  # models fit with AR-IRLS
+ar_irls_models = ['Event-based', 'mnt AR-IRLS']  # models fit with AR-IRLS
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
 plot_dir = os.path.join(eeg_der_dir, 'HRF_surf', 'group', f'{eeg_reg_type}_model_cmp')
 os.makedirs(plot_dir, exist_ok=True)
-models = ['AR-IRLS', 'iRRR', 'iRRR_group']
-model_colors = {'AR-IRLS': '#2a78d6', 'iRRR': '#eb6834', 'iRRR_group': '#1baf7a'}
+models = ['fixAR-IRLS', 'iRRR_AR', 'iRRR_group']
+model_colors = {'fixAR-IRLS': '#2a78d6', 'iRRR_AR': '#e87ba4', 'iRRR_group': '#1baf7a'}
 
 #%% load group iRRR fit
 group_betas_file = os.path.join(eeg_der_dir, 'group', f'group_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')
@@ -91,13 +99,15 @@ subjects = []
 y_unit = None
 for subject in group_stats['subjects']:
     data_dir = os.path.join(eeg_der_dir, subject)
+    # Y_all / dm_all are the ones both fits loaded (dm_all saved by the AR-IRLS run)
     ar_irls_prefix = os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    irrr_prefix = os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')
+    fixar_prefix = os.path.join(data_dir, f'{subject}_{fixar_reg_type}_{hp_flag}')
+    irrr_prefix = os.path.join(data_dir, f'{subject}_{irrr_ar_reg_type}_{hp_flag}')
     Y_all_path = get_Y_all_path(ar_irls_prefix)
-    req_files = [Y_all_path, get_dm_all_path(ar_irls_prefix),
-                 get_betas_path(ar_irls_prefix), get_betas_path(irrr_prefix), get_stats_path(irrr_prefix)]
+    req_files = [Y_all_path, get_dm_all_path(ar_irls_prefix), get_betas_path(fixar_prefix),
+                 get_stats_path(fixar_prefix), get_betas_path(irrr_prefix), get_stats_path(irrr_prefix)]
     if not all(os.path.exists(f) for f in req_files):
-        print(f"{subject}: missing AR-IRLS or iRRR results, skipping.")
+        print(f"{subject}: missing fixAR-IRLS or iRRR_AR results, skipping.")
         continue
     print(f"Processing {subject}")
 
@@ -105,12 +115,15 @@ for subject in group_stats['subjects']:
         Y_all = pickle.load(f)
     with gzip.open(get_dm_all_path(ar_irls_prefix), 'rb') as f:
         dm_all = pickle.load(f)
-    with open(get_betas_path(ar_irls_prefix), 'rb') as f:
-        ar_betas = pickle.load(f)['betas']
+    with open(get_betas_path(fixar_prefix), 'rb') as f:
+        fixar_betas = pickle.load(f)['betas']
+    with open(get_stats_path(fixar_prefix), 'rb') as f:
+        fixar_W_fft = pickle.load(f)['whiten_kernel_fft']
     with open(get_betas_path(irrr_prefix), 'rb') as f:
         irrr_betas = pickle.load(f)['betas']
     with open(get_stats_path(irrr_prefix), 'rb') as f:
-        irrr_mu = pickle.load(f)['intercept']  # (parcel, 1)
+        irrr_stats = pickle.load(f)
+    irrr_mu = irrr_stats['intercept']  # (parcel, 1)
 
     # Y_all was built after the drift and GSR OLS stages, so it is already
     # Y_partial = Y_raw - Y_hat_drift - Y_hat_gsr
@@ -126,20 +139,29 @@ for subject in group_stats['subjects']:
         return betas.sel(chromo=select_chromo, parcel=parcels, regressor=regressors) \
                     .transpose('regressor', 'parcel').values
 
-    # AR-IRLS: no intercept in the design (Y_partial is already drift-residualized)
-    # iRRR: intercept mu fit on the raw X
-    # group iRRR: fit on per-subject demeaned X and Y, so add back the subject mean of Y
-    # (the implicit subject-specific intercept of the group model)
+    # spectral whitening kernel W: fixAR-IRLS and iRRR_AR estimate it the same way from the same
+    # Y_all / dm_all, so their saved kernels match; all models are scored against W * Y_partial
+    assert np.allclose(fixar_W_fft, irrr_stats['whiten_kernel_fft']), f"{subject}: whitening kernels differ"
+    noise_model = model.NoiseModel()
+    noise_model.W_fft = irrr_stats['whiten_kernel_fft']
+    noise_model.w_pad = noise_model.W_fft.shape[0]
+    samples = Y_da.samples.values
+    whiten = lambda a: np.vstack(noise_model.whiten(model.split_runs(a, samples)))
+
+    # fixAR-IRLS: (W * X) @ B, no intercept (whitened series are zero-mean)
+    # iRRR_AR: (W * X) @ C + mu, intercept fit on the whitened X
+    # group iRRR: fit on unwhitened, per-subject demeaned X and Y, so its Y_hat is whitened as a
+    # whole (W removes the mean, so the subject-specific intercept drops out)
     irrr_mu_s = pd.Series(irrr_mu.ravel(), index=irrr_betas.parcel.values)[parcels].values
-    group_mu_s = pd.Series(group_mu.ravel(), index=group_betas.parcel.values)[parcels].values
+    X_white = whiten(X_np)
+    Y_white = whiten(Y_partial)
     Y_hat_eeg = {
-        'AR-IRLS': X_np @ get_B(ar_betas),
-        'iRRR': X_np @ get_B(irrr_betas) + irrr_mu_s,
-        'iRRR_group': (X_np - X_np.mean(0, keepdims=True)) @ get_B(group_betas) + group_mu_s
-                      + np.nanmean(Y_partial, axis=0, keepdims=True),
+        'fixAR-IRLS': X_white @ get_B(fixar_betas),
+        'iRRR_AR': X_white @ get_B(irrr_betas) + irrr_mu_s,
+        'iRRR_group': whiten(X_np @ get_B(group_betas)),
     }
     for model_name, Y_hat in Y_hat_eeg.items():
-        rmse, r2 = fit_metrics(*to_fit_space(Y_partial, Y_hat, model_name))
+        rmse, r2 = fit_metrics(Y_white, Y_hat)
         rows.append(pd.DataFrame({'subject': subject, 'model': model_name, 'parcel': parcels,
                                   'rmse': rmse, 'r2': r2}))
     subjects.append(subject)
@@ -155,7 +177,7 @@ summary_df = subj_df.groupby('model')[['rmse', 'r2']].agg(['mean', 'sem']).reind
 print(subj_df.pivot(index='subject', columns='model', values='r2')[models].to_string(float_format='%.4f'))
 print(summary_df.to_string(float_format='%.4g'))
 if is_save:
-    metrics_df.to_csv(os.path.join(plot_dir, f'model_cmp_rmse_r2_per_parcel{out_tag}.csv'), index=False)
+    metrics_df.to_csv(os.path.join(plot_dir, f'model_cmp_rmse_r2_per_parcel{cmp_tag}.csv'), index=False)
 
 #%% bar plots: per-subject mean over parcels, plus the cross-subject mean +/- SEM
 metric_info = {'r2': 'R$^2$', 'rmse': f'RMSE ({y_unit})' if y_unit else 'RMSE'}
@@ -178,13 +200,13 @@ for ax, (metric, ylabel) in zip(axes, metric_info.items()):
     ax.set_axisbelow(True)
     for side in ['top', 'right']:
         ax.spines[side].set_visible(False)
-axes[0].set_title(f'Mean over parcels of Y_hat_eeg vs Y_partial (in-sample, {fit_space})')
+axes[0].set_title(f'Mean over parcels of Y_hat_eeg vs Y_partial (in-sample, {cmp_space})')
 axes[0].legend(loc='lower center', bbox_to_anchor=(0.5, 1.12), ncols=len(models), frameon=False)
 axes[-1].set_xticks(x, x_labels, rotation=45, ha='right')
 fig.suptitle(f'EEG HRF model comparison ({select_chromo}, {eeg_reg_type})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_bar{out_tag}.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_bar{cmp_tag}.png'), dpi=150)
 plt.show()
 
 #%% brain surface maps: per-parcel R2 / RMSE averaged across subjects, one view per model
@@ -230,7 +252,7 @@ for metric, cfg in surf_cfg.items():
             coords={'chromo': ['HbO', 'HbR'],
                     'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
         )
-        surf_path = os.path.join(plot_dir, f'surf_{metric}_{model_name}{out_tag}')
+        surf_path = os.path.join(plot_dir, f'surf_{metric}_{model_name}{cmp_tag}')
         image_recon_multi_view(
             X_ts=X_surf, head=head, cmap=cfg['cmap'], clim=cfg['clim'],
             view_type='hbo_brain', title_str=f'{model_name} {cfg["bar_title"]}',
@@ -246,18 +268,18 @@ for c_i, metric in enumerate(surf_cfg):
         ax.imshow(plt.imread(surf_paths[(metric, model_name)]))
         ax.axis('off')
         ax.set_title(f'{model_name}: {surf_cfg[metric]["label"]}')
-fig.suptitle(f'Per-parcel fit of Y_hat_eeg vs Y_partial, mean over {len(subjects)} subjects ({select_chromo}, {fit_space})')
+fig.suptitle(f'Per-parcel fit of Y_hat_eeg vs Y_partial, mean over {len(subjects)} subjects ({select_chromo}, {cmp_space})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_surf{out_tag}.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_r2_surf{cmp_tag}.png'), dpi=150)
 plt.show()
 
-#%% brain surface map: RMSE difference AR-IRLS - iRRR per parcel, mean over subjects
-# positive (red) = iRRR fits Y_partial better than AR-IRLS in that parcel
-rmse_diff = parcel_df.loc['AR-IRLS', 'rmse'] - parcel_df.loc['iRRR', 'rmse']
+#%% brain surface map: RMSE difference fixAR-IRLS - iRRR_AR per parcel, mean over subjects
+# positive (red) = iRRR_AR fits the whitened Y_partial better than fixAR-IRLS in that parcel
+rmse_diff = parcel_df.loc['fixAR-IRLS', 'rmse'] - parcel_df.loc['iRRR_AR', 'rmse']
 diff_lim = np.nanpercentile(np.abs(rmse_diff), 98)
-print(f"RMSE AR-IRLS - iRRR: median = {np.nanmedian(rmse_diff):.3g} {y_unit}, "
-      f"iRRR lower in {np.mean(rmse_diff > 0) * 100:.1f}% of {len(rmse_diff)} parcels")
+print(f"RMSE fixAR-IRLS - iRRR_AR: median = {np.nanmedian(rmse_diff):.3g} {y_unit}, "
+      f"iRRR_AR lower in {np.mean(rmse_diff > 0) * 100:.1f}% of {len(rmse_diff)} parcels")
 val_by_parcel = rmse_diff.to_dict()
 vertex_vals = np.array([val_by_parcel.get(p, np.nan) for p in vertex_parcel])
 X_surf = xr.DataArray(
@@ -266,21 +288,21 @@ X_surf = xr.DataArray(
     coords={'chromo': ['HbO', 'HbR'],
             'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
 )
-surf_path = os.path.join(plot_dir, f'surf_rmse_diff_AR-IRLS_minus_iRRR{out_tag}')
+surf_path = os.path.join(plot_dir, f'surf_rmse_diff_fixAR-IRLS_minus_iRRR_AR{cmp_tag}')
 image_recon_multi_view(
     X_ts=X_surf, head=head, cmap='seismic', clim=(-diff_lim, diff_lim),
-    view_type='hbo_brain', title_str=f'RMSE AR-IRLS - iRRR ({y_unit})',
+    view_type='hbo_brain', title_str=f'RMSE fixAR-IRLS - iRRR_AR ({y_unit})',
     SAVE=True, filename=surf_path, wdw_size=(1600, 800),
 )
 
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
 ax.imshow(plt.imread(surf_path + '.png'))
 ax.axis('off')
-ax.set_title(f'RMSE AR-IRLS − iRRR ({y_unit}), mean over {len(subjects)} subjects '
-             f'(red: iRRR lower; {select_chromo}, {fit_space})')
+ax.set_title(f'RMSE fixAR-IRLS − iRRR_AR ({y_unit}), mean over {len(subjects)} subjects '
+             f'(red: iRRR_AR lower; {select_chromo}, {cmp_space})')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_diff_AR-IRLS_iRRR_surf{out_tag}.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_rmse_diff_fixAR-IRLS_iRRR_AR_surf{cmp_tag}.png'), dpi=150)
 plt.show()
 
 
@@ -298,15 +320,15 @@ def load_hrf(prefix, key='betas_eeg'):
     with open(get_betas_path(prefix), 'rb') as f:
         return pickle.load(f)[key].sel(chromo=select_chromo, parcel=cz_parcel)
 
-eeg_hrf = {m: [] for m in ['AR-IRLS', 'iRRR']}
+eeg_hrf = {m: [] for m in ['fixAR-IRLS', 'iRRR_AR']}
 for subject in subjects:
     data_dir = os.path.join(eeg_der_dir, subject)
-    eeg_hrf['AR-IRLS'].append(load_hrf(os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')).values)
-    eeg_hrf['iRRR'].append(load_hrf(os.path.join(data_dir, f'{subject}_{eeg_reg_type}_iRRR_{hp_flag}')).values)
+    eeg_hrf['fixAR-IRLS'].append(load_hrf(os.path.join(data_dir, f'{subject}_{fixar_reg_type}_{hp_flag}')).values)
+    eeg_hrf['iRRR_AR'].append(load_hrf(os.path.join(data_dir, f'{subject}_{irrr_ar_reg_type}_{hp_flag}')).values)
 eeg_hrf = {m: np.array(v) for m, v in eeg_hrf.items()}
 with open(group_betas_file, 'rb') as f:
     group_hrf = pickle.load(f)['betas_eeg'].sel(chromo=select_chromo, parcel=cz_parcel).values
-n_delay = eeg_hrf['AR-IRLS'].shape[1]
+n_delay = eeg_hrf['fixAR-IRLS'].shape[1]
 delay_t = np.arange(n_delay) * (len_delay / n_delay)
 
 # mean +/- SEM across subjects
@@ -326,7 +348,7 @@ for side in ['top', 'right']:
 ax.set_title(f'EEG-informed HRF at the parcel nearest to Cz: {cz_parcel} (n={len(subjects)} subjects)')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, f'model_cmp_hrf_Cz_{cz_parcel}.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'model_cmp_hrf_Cz_{cz_parcel}{cmp_tag}.png'), dpi=150)
 plt.show()
 
 #%% Single subject parcel HRF: the n_cz_parcels parcels nearest to Cz
@@ -338,8 +360,8 @@ print(f"{n_cz_parcels} parcels nearest to Cz:\n{cz_parcel_dist.round(1).to_strin
 
 data_dir = os.path.join(eeg_der_dir, select_subject)
 subj_hrf = dict()
-for model_name, prefix in [('AR-IRLS', f'{select_subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}'),
-                           ('iRRR', f'{select_subject}_{eeg_reg_type}_iRRR_{hp_flag}')]:
+for model_name, prefix in [('fixAR-IRLS', f'{select_subject}_{fixar_reg_type}_{hp_flag}'),
+                           ('iRRR_AR', f'{select_subject}_{irrr_ar_reg_type}_{hp_flag}')]:
     with open(get_betas_path(os.path.join(data_dir, prefix)), 'rb') as f:
         subj_hrf[model_name] = pickle.load(f)['betas_eeg'].sel(chromo=select_chromo)
 
@@ -384,7 +406,7 @@ axes[1, 0].text(0, 0.5, 'Parcel location\n(superior view,\nred; Cz marked)', tra
 fig.suptitle(f'{select_subject}: EEG-informed HRF at the {n_cz_parcels} parcels nearest to Cz')
 fig.tight_layout()
 if is_save:
-    fig.savefig(os.path.join(plot_dir, f'{select_subject}_hrf_{n_cz_parcels}_parcels_nearest_Cz.png'), dpi=150)
+    fig.savefig(os.path.join(plot_dir, f'{select_subject}_hrf_{n_cz_parcels}_parcels_nearest_Cz{cmp_tag}.png'), dpi=150)
 plt.show()
 
 #%% ===== event-based model comparison, scored inside the mnt trials only =====
@@ -611,154 +633,3 @@ select_ev_parcel = 'SalVentAttnA_FrMed_5_LH'
 plot_ev_hrf([select_subject], select_ev_parcel,
             f'{select_subject}: event-based model HRFs at {select_ev_parcel}',
             f'{select_subject}_hrf_{select_ev_parcel}.png')
-
-
-#%% ===== AR-IRLS vs AR-iRRR, both scored on the spectrally whitened Y_partial =====
-# AR-iRRR (run_model_cont_EEG_fNIRS_iRRR_AR.py) fits iRRR on Y_partial and X both spectrally whitened
-# (one kernel shared by all parcels, estimated from OLS residuals of Y ~ 1 + X, saved in stats_dict;
-# runs are filtered separately). Both models are scored against the same target W * Y_partial:
-#   AR-IRLS: W * (X @ B_ar)        AR-iRRR: (W * X) @ C + mu
-import model
-arw_reg_type = f'{eeg_reg_type}_iRRR_AR'  # must match run_model_cont_EEG_fNIRS_iRRR_AR.py
-arw_models = ['AR-IRLS', 'AR-iRRR']
-arw_model_colors = {'AR-IRLS': '#2a78d6', 'AR-iRRR': '#e87ba4'}
-
-arw_rows = []
-arw_subjects = []
-for arw_betas_file in sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{arw_reg_type}_{hp_flag}_betas.pkl'))):
-    arw_prefix = get_prefix_from_betas_path(arw_betas_file)
-    data_dir = os.path.dirname(arw_prefix)
-    subject = os.path.basename(data_dir)
-    if subject in excluded_subj:
-        continue
-    ar_irls_prefix = os.path.join(data_dir, f'{subject}_{ar_irls_reg_type}_{NOISE_MODEL}_{hp_flag}')
-    Y_all_path = get_Y_all_path(ar_irls_prefix)
-    req_files = [Y_all_path, get_dm_all_path(ar_irls_prefix), get_betas_path(ar_irls_prefix), get_stats_path(arw_prefix)]
-    if not all(os.path.exists(f) for f in req_files):
-        print(f"{subject}: missing AR-IRLS or AR-iRRR results, skipping.")
-        continue
-    print(f"Processing {subject} (AR-IRLS vs AR-iRRR)")
-
-    with gzip.open(Y_all_path, 'rb') as f:
-        Y_all = pickle.load(f)
-    with gzip.open(get_dm_all_path(ar_irls_prefix), 'rb') as f:
-        dm_all = pickle.load(f)
-    with open(get_betas_path(ar_irls_prefix), 'rb') as f:
-        ar_betas = pickle.load(f)['betas']
-    with open(arw_betas_file, 'rb') as f:
-        arw_betas_dict = pickle.load(f)
-    with open(get_stats_path(arw_prefix), 'rb') as f:
-        arw_stats = pickle.load(f)
-    arw_mu = arw_stats['intercept']  # (parcel, 1)
-
-    Y_da = Y_all.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel')
-    X_da = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')
-    parcels, regressors = Y_da.parcel.values, X_da.regressor.values
-    Y_partial, X_np = Y_da.values, X_da.values
-
-    def get_B(betas):
-        return betas.sel(chromo=select_chromo, parcel=parcels, regressor=regressors) \
-                    .transpose('regressor', 'parcel').values
-
-    noise_model = model.NoiseModel()
-    noise_model.W_fft = arw_stats['whiten_kernel_fft']
-    noise_model.w_pad = noise_model.W_fft.shape[0]
-    samples = Y_da.samples.values
-    whiten = lambda a: np.vstack(noise_model.whiten(model.split_runs(a, samples)))
-    arw_mu_s = pd.Series(arw_mu.ravel(), index=arw_betas_dict['betas'].parcel.values)[parcels].values
-    Y_white = whiten(Y_partial)
-    Y_hat_arw = {
-        'AR-IRLS': whiten(X_np @ get_B(ar_betas)),
-        'AR-iRRR': whiten(X_np) @ get_B(arw_betas_dict['betas']) + arw_mu_s,
-    }
-    for model_name, Y_hat in Y_hat_arw.items():
-        rmse, r2 = fit_metrics(Y_white, Y_hat)
-        arw_rows.append(pd.DataFrame({'subject': subject, 'model': model_name, 'parcel': parcels,
-                                      'rmse': rmse * rmse_scale, 'r2': r2}))
-    arw_subjects.append(subject)
-
-arw_metrics_df = pd.concat(arw_rows, ignore_index=True)
-if is_save:
-    arw_metrics_df.to_csv(os.path.join(plot_dir, 'model_cmp_AR-IRLS_vs_AR-iRRR_rmse_r2_per_parcel.csv'), index=False)
-
-#%% summarize: mean over parcels per subject, then mean +/- SEM across subjects
-arw_subj_df = arw_metrics_df.groupby(['subject', 'model'])[['rmse', 'r2']].mean().reset_index()
-arw_summary_df = arw_subj_df.groupby('model')[['rmse', 'r2']].agg(['mean', 'sem']).reindex(arw_models)
-print(arw_subj_df.pivot(index='subject', columns='model', values='r2')[arw_models].to_string(float_format='%.4f'))
-print(arw_summary_df.to_string(float_format='%.4g'))
-
-#%% bar plots: per-subject mean over parcels, plus the cross-subject mean +/- SEM
-x_labels = arw_subjects + [f'Mean\n(n={len(arw_subjects)})']
-x = np.arange(len(x_labels))
-bar_w = 0.8 / len(arw_models)
-fig, axes = plt.subplots(2, 1, figsize=(max(8, 1.1 * len(x_labels)), 7), sharex=True)
-for ax, (metric, ylabel) in zip(axes, metric_info.items()):
-    for m_i, model_name in enumerate(arw_models):
-        subj_vals = arw_subj_df[arw_subj_df.model == model_name].set_index('subject')[metric][arw_subjects].values
-        vals = np.append(subj_vals, arw_summary_df.loc[model_name, (metric, 'mean')])
-        err = np.append(np.full(len(arw_subjects), np.nan), arw_summary_df.loc[model_name, (metric, 'sem')])
-        ax.bar(x + (m_i - (len(arw_models) - 1) / 2) * bar_w, vals, bar_w, yerr=err,
-               color=arw_model_colors[model_name], edgecolor='white', linewidth=2,
-               error_kw={'elinewidth': 1, 'capsize': 3, 'ecolor': '#555555'}, label=model_name)
-    ax.axhline(0, color='gray', lw=0.5)
-    ax.axvline(len(arw_subjects) - 0.5, color='gray', lw=0.5, ls='--')
-    ax.set_ylabel(ylabel)
-    ax.grid(True, axis='y', alpha=0.3)
-    ax.set_axisbelow(True)
-    for side in ['top', 'right']:
-        ax.spines[side].set_visible(False)
-axes[0].set_title('Mean over parcels of whitened Y_hat_eeg vs whitened Y_partial (in-sample)')
-axes[0].legend(loc='lower center', bbox_to_anchor=(0.5, 1.12), ncols=len(arw_models), frameon=False)
-axes[-1].set_xticks(x, x_labels, rotation=45, ha='right')
-fig.suptitle(f'AR-IRLS vs AR-iRRR ({select_chromo}, {eeg_reg_type})')
-fig.tight_layout()
-if is_save:
-    fig.savefig(os.path.join(plot_dir, 'model_cmp_AR-IRLS_vs_AR-iRRR_rmse_r2_bar.png'), dpi=150)
-plt.show()
-
-#%% brain surface maps: R2 per model (same color scale) and RMSE AR-IRLS - AR-iRRR, mean over subjects
-def render_parcel_surface(val_by_parcel, cmap, clim, title_str, surf_path):
-    """Render per-parcel values on the icbm152 brain (parcels not in val_by_parcel are gray)."""
-    vertex_vals = np.array([val_by_parcel.get(p, np.nan) for p in vertex_parcel])
-    X_surf = xr.DataArray(
-        np.stack([vertex_vals, np.zeros(n_vertex)], axis=-1),
-        dims=['vertex', 'chromo'],
-        coords={'chromo': ['HbO', 'HbR'],
-                'is_brain': ('vertex', np.ones(n_vertex, dtype=bool))},
-    )
-    image_recon_multi_view(
-        X_ts=X_surf, head=head, cmap=cmap, clim=clim,
-        view_type='hbo_brain', title_str=title_str,
-        SAVE=True, filename=surf_path, wdw_size=(1600, 800),
-    )
-    return surf_path + '.png'
-
-arw_parcel_df = arw_metrics_df.groupby(['model', 'parcel'])[['rmse', 'r2']].mean()
-# R2: linear 0 -> max over both models, R2 <= 0 in black (same scheme as the cont EEG section)
-arw_r2_max = np.nanmax(arw_parcel_df['r2'])
-arw_r2_black = -arw_r2_max / 255
-arw_surf_paths = []
-for model_name in arw_models:
-    r2 = arw_parcel_df.loc[model_name, 'r2']
-    arw_surf_paths.append((f'{model_name}: R$^2$ (black: R$^2$ ≤ 0)', render_parcel_surface(
-        r2.where((r2 > 0) | r2.isna(), arw_r2_black).to_dict(), r2_cmap, (arw_r2_black, arw_r2_max),
-        f'{model_name} R2', os.path.join(plot_dir, f'surf_r2_{model_name}_whitened'))))
-# RMSE difference: positive (red) = AR-iRRR fits the whitened Y_partial better than AR-IRLS
-arw_rmse_diff = arw_parcel_df.loc['AR-IRLS', 'rmse'] - arw_parcel_df.loc['AR-iRRR', 'rmse']
-arw_diff_lim = np.nanpercentile(np.abs(arw_rmse_diff), 98)
-print(f"RMSE AR-IRLS - AR-iRRR: median = {np.nanmedian(arw_rmse_diff):.3g} {y_unit}, "
-      f"AR-iRRR lower in {np.mean(arw_rmse_diff > 0) * 100:.1f}% of {len(arw_rmse_diff)} parcels")
-arw_surf_paths.append((f'RMSE AR-IRLS − AR-iRRR ({y_unit}; red: AR-iRRR lower)', render_parcel_surface(
-    arw_rmse_diff.to_dict(), 'seismic', (-arw_diff_lim, arw_diff_lim),
-    f'RMSE AR-IRLS - AR-iRRR ({y_unit})', os.path.join(plot_dir, 'surf_rmse_diff_AR-IRLS_minus_AR-iRRR_whitened'))))
-
-fig, axes = plt.subplots(len(arw_surf_paths), 1, figsize=(10, 5 * len(arw_surf_paths)))
-for ax, (title, surf_png) in zip(axes, arw_surf_paths):
-    ax.imshow(plt.imread(surf_png))
-    ax.axis('off')
-    ax.set_title(title)
-fig.suptitle(f'AR-IRLS vs AR-iRRR on whitened Y_partial, mean over {len(arw_subjects)} subjects ({select_chromo})')
-fig.tight_layout()
-if is_save:
-    fig.savefig(os.path.join(plot_dir, 'model_cmp_AR-IRLS_vs_AR-iRRR_surf.png'), dpi=150)
-plt.show()

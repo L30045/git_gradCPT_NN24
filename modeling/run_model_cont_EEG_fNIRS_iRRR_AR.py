@@ -136,8 +136,8 @@ for subj_id in subj_id_array:
 
     # check if betas.pkl exist already. If yes, skip this subject.
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
-    betas_save_path = get_betas_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_AR_{hp_flag}'))
-    stats_save_path = get_stats_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_AR_{hp_flag}'))
+    betas_save_path = get_betas_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_AR{get_scale_tag(is_scale_Y)}_{hp_flag}'))
+    stats_save_path = get_stats_path(os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_iRRR_AR{get_scale_tag(is_scale_Y)}_{hp_flag}'))
     if not is_overwrite and os.path.exists(betas_save_path):
         print(f"{subject}: betas already exist, skipping.")
         continue

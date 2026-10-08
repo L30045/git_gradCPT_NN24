@@ -25,6 +25,8 @@ is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save betas and stats
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 select_chromo = 'HbO'
+is_scale_Y = True # If True, scale whitened Y to unit std before the IRLS fit (betas are scaled back);
+                  # needed for RLM's deviance convergence check, which is not scale-invariant
 max_jobs = -1 # parallel jobs across parcels
 irls_norm = sm.robust.norms.TukeyBiweight(c=4.685) # same robust norm as model.my_ar_irls_GLM
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose dm_all / B-spline basis are reused here;
@@ -45,7 +47,7 @@ for subj_id in subj_id_array:
     data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
 
     # check if betas.pkl exist already. If yes, skip this subject.
-    save_prefix = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_fixAR-IRLS_{hp_flag}')
+    save_prefix = os.path.join(data_save_path, f'{subject}_{eeg_reg_type}_fixAR-IRLS{get_scale_tag(is_scale_Y)}_{hp_flag}')
     betas_save_path = get_betas_path(save_prefix)
     stats_save_path = get_stats_path(save_prefix)
     if not is_overwrite and os.path.exists(betas_save_path):
@@ -90,15 +92,16 @@ for subj_id in subj_id_array:
     #%% IRLS fit per parcel on the whitened data (no further AR whitening)
     print(f"Start cont_EEG GLM fitting ({subject})")
     # the whitened series are zero-mean (DC bin of the kernel is 0), so no intercept is added
+    Y_scale = np.nanstd(Y_white) if is_scale_Y else 1.0
     parcels = Y_da.parcel.values
     x_df = pd.DataFrame(X_white, columns=X_da.regressor.values)
     rlm_results = Parallel(n_jobs=max_jobs, backend='threading')(
-        delayed(model.irls_fit)(pd.Series(Y_white[:, p_i]), x_df, M=irls_norm)
+        delayed(model.irls_fit)(pd.Series(Y_white[:, p_i] / Y_scale), x_df, M=irls_norm)
         for p_i in tqdm(range(len(parcels)))
     )
 
     betas_all = xr.DataArray(
-        np.stack([res.params.values for res in rlm_results])[:, None, :],
+        np.stack([res.params.values for res in rlm_results])[:, None, :] * Y_scale,
         dims=('parcel', 'chromo', 'regressor'),
         coords={'parcel': parcels, 'chromo': [select_chromo],
                 'regressor': X_da.regressor.values},
@@ -110,8 +113,8 @@ for subj_id in subj_id_array:
     betas_eeg = xr.dot(betas_bspline, basis_da, dims="component")
     betas_eeg = betas_eeg.assign_coords(regressor=[f"delay{d_i}" for d_i in range(n_regressor)])
 
-    #%% f test / contrast t test per parcel
-    stats_dict = {'run_bounds': run_bounds,
+    #%% f test / contrast t test per parcel (statistics are in units of Y / Y_scale)
+    stats_dict = {'Y_scale': Y_scale, 'run_bounds': run_bounds,
                   'whiten_kernel_fft': noise_model.W_fft, 'acf_kernel': noise_model.acf_kernel,
                   'Y_all_path': Y_all_load_path, 'dm_all_path': dm_all_load_path}
     # test if EEG can explain more variance

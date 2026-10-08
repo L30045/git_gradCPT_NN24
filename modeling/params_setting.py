@@ -50,6 +50,12 @@ def get_dm_all_path(prefix):
 def get_dm_dict_path(subj_dir, fname='dm_dict.pkl'):
     return os.path.join(subj_dir, 'dm', fname)
 
+def get_scale_tag(is_scale_Y):
+    """Model-name tag for the Y scaling option of the spectrally whitened fits (iRRR_AR, fixAR-IRLS).
+    Scaled fits (the default) keep the untagged name; unscaled fits get '_noScale'. The tag goes
+    before the _<Hp|noHp> flag, so get_Y_all_path still parses the prefix."""
+    return '' if is_scale_Y else '_noScale'
+
 def get_prefix_from_betas_path(betas_path):
     subj_dir = os.path.dirname(os.path.dirname(betas_path))
     return os.path.join(subj_dir, os.path.basename(betas_path)[:-len('_betas.pkl')])
