@@ -110,6 +110,7 @@ is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 is_plot = False # If True, generate visualization plots
+is_scale_Y = True # If True, scale whitened Y to unit std before the iRRR fit (betas are scaled back)
 select_chromo='HbO'
 # select_parcel='DorsAttnA_ParOcc_1_RH'
 select_parcel='DefaultA_PFCd_1_LH'
@@ -122,7 +123,7 @@ cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
-irrr_lam1 = 1.0 # iRRR nuclear-norm penalty (Y is scaled to unit std before fitting, so this is scale-free)
+irrr_lam1 = 1.0 # iRRR nuclear-norm penalty (scale-free only when is_scale_Y; otherwise in units of Y)
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose Y_all / dm_all / B-spline basis are reused here;
 # iRRR shares the same preprocessed Y and design matrix, so only the fit differs
 ar_irls_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
@@ -183,7 +184,7 @@ for subj_id in subj_id_array:
     # across parcels share a low-rank structure
     Y_np = Y_white
     X_np = X_white
-    Y_scale = np.nanstd(Y_np)
+    Y_scale = np.nanstd(Y_np) if is_scale_Y else 1.0
     n_time, n_parcel = Y_np.shape
     X_c = X_np - X_np.mean(0, keepdims=True)
     irrr_weight = [np.max(svdvals(X_c)) * (np.sqrt(n_parcel) + np.sqrt(matrix_rank(X_c))) / n_time]
