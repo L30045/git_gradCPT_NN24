@@ -18,6 +18,7 @@ from cedalion.vis.anatomy.image_recon import image_recon_multi_view
 eeg_reg_type = 'cont_EEG_cz_3-stage'  # must match run_model_cont_EEG_fNIRS_iRRR.py
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 (Hz)
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
+is_AR = True # If True, spectral whitening before iRRR
 select_chromo = 'HbO'
 select_parcel = 'DefaultA_PFCd_1_LH'
 len_delay = 15 # Delay time in HRF (sec); must match run_model_cont_EEG_fNIRS_iRRR.py
@@ -29,7 +30,9 @@ vertex_parcel = head.brain.vertices.parcel.values
 n_vertex = head.brain.nvertices
 
 eeg_der_dir = os.path.join(project_path, 'derivatives', 'eeg')
-betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', f'sub-*_{eeg_reg_type}_iRRR_{hp_flag}_betas.pkl')))
+model_name = f"{eeg_reg_type}_iRRR_AR_{hp_flag}" if is_AR else f"{eeg_reg_type}_iRRR_{hp_flag}"
+betas_fname = f'sub-*_{model_name}_betas.pkl' if is_AR else f'sub-*_{model_name}_betas.pkl'
+betas_files = sorted(glob.glob(os.path.join(eeg_der_dir, 'sub-*', 'betas', betas_fname)))
 
 #%% plot each subject
 for betas_file in betas_files:
@@ -57,7 +60,7 @@ for betas_file in betas_files:
     n_regressor = len(betas_eeg.regressor)
     delay_t = np.arange(n_regressor) * (len_delay / n_regressor)
 
-    subj_plot_dir = os.path.join(plot_dir, subject, f'{eeg_reg_type}_iRRR')
+    subj_plot_dir = os.path.join(plot_dir, subject, model_name)
     os.makedirs(subj_plot_dir, exist_ok=True)
 
     #%% Y_partial vs Y_hat_eeg
@@ -129,7 +132,6 @@ for betas_file in betas_files:
     # plt.close(fig)
     plt.show()
 
-# %%
 #%% plot HRF of a selected parcel (or all networks) from iRRR results
 def plot_iRRR_hrf(betas_dict, select_parcel=None, is_network=False, chromo='HbO',
                   len_delay=15, ax=None, label=None, **plot_kwargs):

@@ -1460,6 +1460,10 @@ def my_fit(
 
     return reg_results, autoReg_dict
 
+#%% Define IRLS fit with a fixed (identity) AR filter, for data that is already whitened
+def irls_fit(y, x, M=sm.robust.norms.TukeyBiweight(c=4.685)):
+    return sm.RLM(y, x, M=M).fit()
+
 #%% Define my OLS fit (same interface as my_ar_irls_GLM, no AR-whitening / robust weighting)
 def my_ols_GLM(y, x):
     mask = np.isfinite(y.values)
