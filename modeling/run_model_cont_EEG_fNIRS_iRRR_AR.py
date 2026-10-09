@@ -110,7 +110,7 @@ is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 is_plot = False # If True, generate visualization plots
-is_scale_Y = True # If True, scale whitened Y to unit std before the iRRR fit (betas are scaled back)
+is_scale_Y = False # If True, scale whitened Y to unit std before the iRRR fit (betas are scaled back)
 select_chromo='HbO'
 # select_parcel='DorsAttnA_ParOcc_1_RH'
 select_parcel='DefaultA_PFCd_1_LH'
@@ -123,7 +123,14 @@ cfg_GLM['do_GSR']=USE_GSR
 len_delay = 15 # Delay time in HRF (sec)
 bspline_degree = 3
 n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the delay axis (< n_regressor)
-irrr_lam1 = 1.0 # iRRR nuclear-norm penalty (scale-free only when is_scale_Y; otherwise in units of Y)
+# candidate iRRR nuclear-norm penalties (scale-free only when is_scale_Y; otherwise in units of Y);
+# the one minimizing cross-validated PMSE is used for the final fit
+if is_scale_Y:
+    cand_irrr_lam1 = 10 ** np.arange(-3, 2.01, 0.25)
+else:
+    cand_irrr_lam1 = 10 ** np.arange(-10, -5, 0.25)
+n_cv_fold_single_run = 5 # number of contiguous CV blocks if a subject has only one run (otherwise leave-one-run-out)
+plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf')
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose Y_all / dm_all / B-spline basis are reused here;
 # iRRR shares the same preprocessed Y and design matrix, so only the fit differs
 ar_irls_reg_type = 'cont_EEG_cz_3-stage_bspline-test'
@@ -186,9 +193,66 @@ for subj_id in subj_id_array:
     X_np = X_white
     Y_scale = np.nanstd(Y_np) if is_scale_Y else 1.0
     n_time, n_parcel = Y_np.shape
-    X_c = X_np - X_np.mean(0, keepdims=True)
-    irrr_weight = [np.max(svdvals(X_c)) * (np.sqrt(n_parcel) + np.sqrt(matrix_rank(X_c))) / n_time]
-    C, mu, _, _, _, irrr_details = irrr_normal(Y_np / Y_scale, [X_np], irrr_lam1,
+
+    def get_irrr_weight(X):
+        # theoretical iRRR weight: max(svd(X_c)) * (sqrt(q) + sqrt(rank(X_c))) / n, X_c column-centered
+        X_c = X - X.mean(0, keepdims=True)
+        return [np.max(svdvals(X_c)) * (np.sqrt(n_parcel) + np.sqrt(matrix_rank(X_c))) / X.shape[0]]
+
+    #%% select irrr_lam1 by cross-validated prediction MSE (PMSE)
+    # folds are whole runs (leave-one-run-out) so held-out data are not temporally adjacent to
+    # training data; a single-run subject is split into contiguous blocks instead.
+    # PMSE is the mean squared error of the held-out (whitened, scaled) Y.
+    fold_bounds = np.concatenate([[0], run_bounds, [n_time]])
+    if len(fold_bounds) - 1 < 2:
+        fold_bounds = np.linspace(0, n_time, n_cv_fold_single_run + 1).astype(int)
+    n_fold = len(fold_bounds) - 1
+    Y_s = Y_np / Y_scale
+    pmse_fold = np.full((len(cand_irrr_lam1), n_fold), np.nan)
+    for k in range(n_fold):
+        test_idx = np.zeros(n_time, dtype=bool)
+        test_idx[fold_bounds[k]:fold_bounds[k + 1]] = True
+        X_tr, Y_tr = X_np[~test_idx], Y_s[~test_idx]
+        X_te, Y_te = X_np[test_idx], Y_s[test_idx]
+        w_tr = get_irrr_weight(X_tr)
+        for j, lam1 in enumerate(tqdm(cand_irrr_lam1, desc=f'CV fold {k + 1}/{n_fold}')):
+            C_cv, mu_cv, _, _, _ = irrr_normal(Y_tr, [X_tr], lam1,
+                                               {'varyrho': True, 'Tol': 0.01, 'fig': False,
+                                                'weight': w_tr})
+            Y_hat = X_te @ C_cv + np.ravel(mu_cv)[None, :]
+            pmse_fold[j, k] = np.nanmean((Y_te - Y_hat) ** 2)
+    pmse = np.nanmean(pmse_fold, axis=1)
+    irrr_lam1 = cand_irrr_lam1[np.nanargmin(pmse)]
+    print(f"optimal irrr_lam1 = {irrr_lam1:.4g} (PMSE = {np.nanmin(pmse):.4g}, {n_fold}-fold CV)")
+    if irrr_lam1 in (cand_irrr_lam1[0], cand_irrr_lam1[-1]):
+        print("WARNING: optimal irrr_lam1 is at the edge of cand_irrr_lam1; consider widening the range.")
+
+    model_name = f'{eeg_reg_type}_iRRR_AR{get_scale_tag(is_scale_Y)}_{hp_flag}'
+    subj_plot_dir = os.path.join(plot_dir, subject, model_name)
+    os.makedirs(subj_plot_dir, exist_ok=True)
+    fig, axs = plt.subplots(2, 1, figsize=(6, 7), sharex=True)
+    pmse_se = np.nanstd(pmse_fold, axis=1, ddof=1) / np.sqrt(n_fold) if n_fold > 1 else np.zeros_like(pmse)
+    axs[0].errorbar(cand_irrr_lam1, pmse, yerr=pmse_se, marker='o', ms=4, capsize=2)
+    axs[0].set_ylabel(f'PMSE ({n_fold}-fold CV, mean ± SE)')
+    axs[0].set_title(f'{subject} iRRR lam1 selection')
+    # mean only, so the y-axis zooms in on how PMSE changes with lam1 (SE bars dominate the scale above)
+    axs[1].plot(cand_irrr_lam1, pmse, marker='o', ms=4)
+    axs[1].set_ylabel('PMSE (mean)')
+    axs[1].set_xlabel('irrr_lam1')
+    for ax in axs:
+        ax.axvline(irrr_lam1, color='r', ls='--', label=f'optimal lam1 = {irrr_lam1:.3g}')
+        ax.set_xscale('log')
+        ax.grid(alpha=0.3)
+    axs[0].legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(subj_plot_dir, f'{subject}_iRRR_lam1_vs_PMSE.png'), dpi=150)
+    if is_plot:
+        plt.show()
+    plt.close(fig)
+
+    #%% final fit on all data with the optimal irrr_lam1
+    irrr_weight = get_irrr_weight(X_np)
+    C, mu, _, _, _, irrr_details = irrr_normal(Y_s, [X_np], irrr_lam1,
                                                {'varyrho': True, 'Tol': 0.01, 'fig': False,
                                                 'weight': irrr_weight},
                                                return_details=True)
@@ -201,6 +265,8 @@ for subj_id in subj_id_array:
                 'regressor': X_da.regressor.values},
     )
     stats_dict = {'irrr_lam1': irrr_lam1, 'irrr_weight': irrr_weight, 'Y_scale': Y_scale,
+                  'cand_irrr_lam1': cand_irrr_lam1, 'PMSE': pmse, 'PMSE_fold': pmse_fold,
+                  'cv_fold_bounds': fold_bounds,
                   'intercept': mu, 'rank': matrix_rank(C), 'singular_values': svdvals(C),
                   'details': irrr_details, 'run_bounds': run_bounds,
                   'whiten_kernel_fft': noise_model.W_fft, 'acf_kernel': noise_model.acf_kernel}
@@ -222,6 +288,7 @@ for subj_id in subj_id_array:
         betas_dict['betas_eeg'] = betas_eeg
         betas_dict['betas_bspline'] = betas_bspline
         betas_dict['basis_da'] = basis_da
+        betas_dict['irrr_lam1'] = irrr_lam1  # optimal (min-PMSE) lam1 used for this fit
         os.makedirs(os.path.dirname(betas_save_path), exist_ok=True)
         with open(betas_save_path, 'wb') as f:
             pickle.dump(betas_dict, f)
@@ -230,3 +297,5 @@ for subj_id in subj_id_array:
 
         with open(stats_save_path, 'wb') as f:
             pickle.dump(stats_dict, f)
+
+
