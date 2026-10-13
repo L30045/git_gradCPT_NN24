@@ -110,7 +110,7 @@ is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 is_plot = False # If True, generate visualization plots
-is_scale_Y = False # If True, scale whitened Y to unit std before the iRRR fit (betas are scaled back)
+is_scale_Y = True # If True, scale whitened Y to unit std before the iRRR fit (betas are scaled back)
 select_chromo='HbO'
 # select_parcel='DorsAttnA_ParOcc_1_RH'
 select_parcel='DefaultA_PFCd_1_LH'
@@ -128,7 +128,7 @@ n_bspline_basis = len_delay # low-rank df for the B-spline basis spanning the de
 if is_scale_Y:
     cand_irrr_lam1 = 10 ** np.arange(-3, 2.01, 0.25)
 else:
-    cand_irrr_lam1 = 10 ** np.arange(-10, -5, 0.25)
+    cand_irrr_lam1 = 10 ** np.arange(-11, -8, 0.1)
 n_cv_fold_single_run = 5 # number of contiguous CV blocks if a subject has only one run (otherwise leave-one-run-out)
 plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf')
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose Y_all / dm_all / B-spline basis are reused here;
