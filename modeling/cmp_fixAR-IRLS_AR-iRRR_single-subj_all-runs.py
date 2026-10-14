@@ -38,7 +38,7 @@ sys.path.append('/projectnb/stephenlab/cchang1/iRRR_python')
 from iRRR.iRRR_normal import irrr_normal
 
 #%% parameters
-subj_id = 730
+subj_id = 670
 run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3'] # all runs are used for training
 select_chromo = 'HbO'
 l_cutoff = 0.02 # highpass cutoff for fNIRS (Hz)
