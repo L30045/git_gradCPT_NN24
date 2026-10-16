@@ -48,7 +48,7 @@ from iRRR.iRRR_normal import irrr_normal
 run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3'] # all runs are used for training
 select_chromo = 'HbO'
 select_network = 'ContA' # network whose most sensitive parcel and network HRF are plotted
-l_cutoff = 0.02 # highpass cutoff for fNIRS (Hz)
+l_cutoff = 0.01 # highpass cutoff for fNIRS (Hz)
 len_delay = 15 # trial window ends len_delay after the last event onset (sec)
 ar_order = 30 # max AR order of Cedalion AR-IRLS
 is_scale_Y = True # If True, scale whitened Y by its std before the IRLS / iRRR fit (betas are scaled back)
@@ -58,12 +58,12 @@ target_rank = 2 # iRRR rank used to pick irrr_lam1
 cand_irrr_lam1 = 10 ** np.arange(-3, 2.01, 0.125)
 n_bisect = 20 # bisection steps on log10(lam1) if no candidate gives exactly target_rank
 max_jobs = -1 # parallel jobs across parcels
-is_overwrite = False # If False, subjects with a saved result are loaded instead of refit
+is_overwrite = True # If False, subjects with a saved result are loaded instead of refit
 is_save = True
 is_plot = False # If True, show plots (they are always saved)
 cfg_GLM['do_GSR'] = True
-# event-based design: consecutive Gaussian kernels for mnt-correct trials (same as run_model_EEG_inform_parcel_based.py)
-cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 10*units.s, 't_delta': 1*units.s, 't_std': 1*units.s}
+# event-based design: 20 consecutive Gaussian kernels (-2 to 18 s) for mnt-correct trials
+cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 18*units.s, 't_delta': 1*units.s, 't_std': 1*units.s}
 model_names = ['AR-IRLS', 'fixAR-IRLS', 'AR-iRRR']
 model_colors = {'AR-IRLS': 'C0', 'fixAR-IRLS': 'C3', 'AR-iRRR': 'C2'}
 model_pairs = [('AR-IRLS', 'fixAR-IRLS'), ('AR-IRLS', 'AR-iRRR'), ('fixAR-IRLS', 'AR-iRRR')]
