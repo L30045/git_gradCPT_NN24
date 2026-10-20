@@ -218,6 +218,40 @@ def get_cont_EEG_bspline_regressor(sig, basis):
     return fftconvolve(sig[:, None], basis, axes=0)[n_delay:len(sig)]
 
 
+def sample_cont_EEG_bspline_regressor(sig, sig_t, basis, t_lead, t_query, f_cut):
+    """Delayed-EEG B-spline regressors of one run, read at arbitrary (fNIRS) sample times.
+    Row t is sum_k sig(t + t_lead - k / sfreq) * basis[k], i.e. delay index k of the basis is the
+    delay k / sfreq - t_lead (the EEG from t - (n_delay / sfreq - t_lead) to t + t_lead).
+    The regressors are computed at the EEG rate, lowpassed at f_cut (ideal lowpass, the same filter as
+    the FFT resampling of mne.filter.resample) and read at t_query on the EEG-rate grid. Resampling to
+    the fNIRS rate first and taking resampled sample n as fNIRS sample n leaves a fractional-sample
+    offset (the rate ratio is not an integer, and the EEG crop start is not on the fNIRS grid), and the
+    regressors have content up to the fNIRS Nyquist (the boundary B-splines are nonzero at the ends of
+    the delay window), so that offset changes them by several % to tens of %.
+    Input:
+        sig: EEG signal of one run (n_samples,), uniformly sampled
+        sig_t: time of each EEG sample (n_samples,), in the frame of t_query (e.g. fNIRS time)
+        basis: B-spline basis (n_delay x n_bspline_basis)
+        t_lead: EEG lead (sec): the part of the delay window after t (0 for a causal window)
+        t_query: times at which to read the regressors (n_query,)
+        f_cut: lowpass cutoff (Hz), normally the fNIRS Nyquist
+    Output:
+        n_query x n_bspline_basis
+    NOTE:
+        sig is zero-padded on both sides, so the regressors are exact only where the delay history of
+        t_query lies inside sig (or where sig is zero beyond it, e.g. EEG masked to trials).
+    """
+    sfreq = 1 / (sig_t[1] - sig_t[0])
+    n_delay = basis.shape[0]
+    padded = np.concatenate([np.zeros(n_delay), sig, np.zeros(n_delay)])
+    reg = get_cont_EEG_bspline_regressor(padded, basis)  # row i at sig_t[0] + i / sfreq - t_lead
+    reg_fft = np.fft.rfft(reg, axis=0)
+    reg_fft[np.fft.rfftfreq(len(reg), 1 / sfreq) > f_cut] = 0
+    reg = np.fft.irfft(reg_fft, n=len(reg), axis=0)
+    reg_t = sig_t[0] - t_lead + np.arange(len(reg)) / sfreq
+    return np.column_stack([np.interp(t_query, reg_t, r, left=0, right=0) for r in reg.T])
+
+
 def bandpower_sliding_window(eeg_raw, sample_times, win_len, bands, picks='eeg',
                               method='bandpass', bandwidth=None, sum_method=np.median):
     """

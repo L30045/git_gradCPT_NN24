@@ -240,6 +240,8 @@ fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
 l_cutoff = 0.02
 
 eeg_list = []
+eeg_sample_nirs_t = []  # per run, fNIRS time of each cropped EEG sample
+fnirs_sample_t = []  # per run, fNIRS time of each kept fNIRS sample
 eeg_raw_list = []
 all_runs_truncated = []
 fnirs_raw_list = []
@@ -266,27 +268,28 @@ for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
     nirs_ev_df = nirs_ev_dfs[matched_nirs_file[run_key]]
     t_offset = matched_t_offset[run_key]
 
-    # window from the first event onset to the last event's end (onset + duration), in fNIRS time
-    nirs_t_start = nirs_ev_df['onset'].values[0]
-    # nirs_t_stop = (nirs_ev_df['onset'] + nirs_ev_df['duration']).values[-1]
-    nirs_t_stop = (nirs_ev_df['onset']).values[-1]+len_delay # second
-    eeg_t_start = nirs_t_start - t_offset - len_delay # second. extract len_delay of data prior to nirs_t_start so we don't have to reject first len_delay of fNIRS.
-    eeg_t_stop = nirs_t_stop - t_offset
-
-    # if eeg_t_start<0:
-    #     raise ValueError(f"eeg_t_start <0 : {subject}")
-    # if eeg_t_stop>EEG.times[-1]:
-    #     raise ValueError(f"eeg_t_stop >EEG.times : {subject}")
-
+    # window from the first event onset to the last onset + len_delay, in fNIRS time, clamped to the
+    # fNIRS run and to the span whose full len_delay EEG history is recorded (if the EEG starts less
+    # than len_delay before the first onset, the window starts later instead of misaligning EEG and
+    # fNIRS; clamping only the EEG crop at 0 shifted the regressors by the clamped amount)
     EEG = single_subj_EEG_dict[run_key].copy()
-    EEG_raw = single_subj_EEG_dict[run_key].copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
+    nirs_t_start = max(nirs_ev_df['onset'].values[0], fnirs_run.time.values[0],
+                       EEG.times[0] + t_offset + len_delay)
+    nirs_t_stop = min(nirs_ev_df['onset'].values[-1] + len_delay, fnirs_run.time.values[-1],
+                      EEG.times[-1] + t_offset) # second
 
     # truncate fNIRS to the same shared event window
-    fnirs_run = fnirs_run.sel(time=slice(max(nirs_t_start, fnirs_run.time.values[0]),
-                                        min(nirs_t_stop, fnirs_run.time.values[-1])))
+    fnirs_run = fnirs_run.sel(time=slice(nirs_t_start, nirs_t_stop))
     n_fnirs_samples = len(fnirs_run.time)
-    fnirs_run_raw = fnirs_run_raw.sel(time=slice(max(nirs_t_start, fnirs_run_raw.time.values[0]),
-                                        min(nirs_t_stop, fnirs_run_raw.time.values[-1])))
+    fnirs_run_raw = fnirs_run_raw.sel(time=slice(nirs_t_start, nirs_t_stop))
+    fnirs_sample_t.append(fnirs_run.time.values)  # fNIRS time of each kept sample (before the reset to 0)
+
+    # EEG from len_delay before the first kept fNIRS sample to the last one, so every fNIRS sample has
+    # its full delay history
+    eeg_t_start = fnirs_run.time.values[0] - t_offset - len_delay # second
+    eeg_t_stop = fnirs_run.time.values[-1] - t_offset
+    EEG_raw = EEG.copy().crop(tmin=max(eeg_t_start, 0), tmax=min(eeg_t_stop, EEG.times[-1]))
+    eeg_sample_nirs_t.append(EEG_raw.times + (EEG_raw.first_time - EEG.first_time) + t_offset)
 
     # reset fnirs_run.time to 0
     fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
@@ -336,54 +339,42 @@ if USE_GSR:
 # extract EEG signal for creating DesignMatrix
 eeg_reg_value_list = [x.get_data(picks='cz').flatten() for x in eeg_list]
 
-# create EEG regressors
-eeg_regressors = model.get_cont_EEG_regressor(eeg_reg_value_list, eeg_list[0].info['sfreq'], delay=len_delay)
-
-#%% Low-rank representation of Delay using BSpline
-# spline basis evaluated at each delay tap (not at the regressor's data values),
-# so the FIR delay curve is constrained to a smooth, low-rank subspace
-all_regressor_names = eeg_regressors[0].common.regressor.values
-n_regressor = len(all_regressor_names)
+#%% create EEG regressors: project the delay axis onto a low-rank B-spline basis (at EEG rate), lowpass
+# at the fNIRS Nyquist and read the regressors at the kept fNIRS sample times
+# (model.sample_cont_EEG_bspline_regressor). Delay index k of the basis is delay k/eeg_sfreq (causal
+# window [0, len_delay)); the spline basis is evaluated at each delay tap, so the FIR delay curve is
+# constrained to a smooth, low-rank subspace.
+eeg_sfreq = eeg_list[0].info['sfreq']
+n_regressor = np.round(len_delay * eeg_sfreq).astype(int)
 delay_idx = np.arange(n_regressor)
 bspline_basis = BSplines(delay_idx, df=[n_bspline_basis], degree=[bspline_degree],
-                            include_intercept=True).basis  # (n_regressor, n_bspline_basis)
-basis_da = xr.DataArray(
+                          include_intercept=True).basis  # (n_regressor, n_bspline_basis)
+# name prefix -> per-run EEG signal at the EEG rate
+eeg_signals = {'': eeg_reg_value_list}
+basis_da = xr.concat([xr.DataArray(
     bspline_basis,
     dims=("regressor", "component"),
-    coords={"regressor": all_regressor_names,
-            "component": [f"bspline{i}" for i in range(n_bspline_basis)]},
-)
-# project the full-rank delay design matrix onto the low-rank spline basis for each eeg_regressors
-for eeg_i, eeg_dm in enumerate(eeg_regressors):
-    eeg_regressors[eeg_i].common = xr.dot(eeg_dm.common, basis_da, dims="regressor").rename({"component": "regressor"})
+    coords={"regressor": [f"{prefix}delay{d_i}" for d_i in range(n_regressor)],
+            "component": [f"{prefix}bspline{i}" for i in range(n_bspline_basis)]},
+) for prefix in eeg_signals], dim="component").fillna(0)
+regressor_names = basis_da.component.values
 
-#%% Downsample EEG DM to fNIRS sampling rate
-# eeg_regressors[i].common is still at EEG's native sampling rate (time = sample index).
-# Resample along time from eeg_sfreq to fnirs_sfreq, then enforce an exact sample-count
-# match with the corresponding (already-truncated) fNIRS run and adopt its time coordinate.
-eeg_sfreq = eeg_list[0].info['sfreq']
-for eeg_i, (eeg_dm, fnirs_run) in enumerate(zip(eeg_regressors, all_runs)):
-    n_fnirs_samples = len(fnirs_run.time)
-    # mne.filter.resample only preserves the order of non-resampled axes when
-    # resampling along the last axis, so move 'time' there before resampling.
-    dm_common = eeg_dm.common.transpose('regressor', 'chromo', 'time')
-    dm_resampled = mne.filter.resample(dm_common.values, up=fnirs_sfreq, down=eeg_sfreq,
-                                        npad='auto', axis=-1)
-
-    # enforce exact sample-count match with the truncated fNIRS run
-    n_dm_samples = dm_resampled.shape[-1]
-    if n_dm_samples > n_fnirs_samples:
-        dm_resampled = dm_resampled[..., :n_fnirs_samples]
-        n_dm_samples = n_fnirs_samples
-    elif n_dm_samples < n_fnirs_samples:
-        all_runs[eeg_i] = fnirs_run.isel(time=slice(0, n_dm_samples))
-
-    eeg_regressors[eeg_i].common = xr.DataArray(
-        dm_resampled,
-        dims=dm_common.dims,
-        coords={**{k: v for k, v in dm_common.coords.items() if k != 'time'},
-                'time': all_runs[eeg_i].time.values},
-    ).transpose('time', 'regressor', 'chromo')
+eeg_regressors = []
+for run_i, fnirs_run in enumerate(all_runs):
+    run_dm = []
+    for prefix, sig_runs in eeg_signals.items():
+        sig = np.asarray(sig_runs[run_i], dtype=float)
+        # the EEG crop covers every kept fNIRS sample's [0, len_delay) history
+        run_dm.append(model.sample_cont_EEG_bspline_regressor(sig, eeg_sample_nirs_t[run_i], bspline_basis, 0,
+                                                              fnirs_sample_t[run_i], fnirs_sfreq / 2))
+    run_dm = np.concatenate(run_dm, axis=1)  # (n_fnirs_samples x regressor)
+    eeg_regressors.append(glm.design_matrix.DesignMatrix(
+        common=xr.DataArray(
+            np.repeat(run_dm[:, :, None], 2, axis=2),
+            dims=("time", "regressor", "chromo"),
+            coords={"time": fnirs_run.time.values, "regressor": regressor_names, "chromo": ["HbO", "HbR"]},
+        ),
+        channel_wise=[]))
 
 #%% concatenate all runs and dms
 Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, eeg_regressors)

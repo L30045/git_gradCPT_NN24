@@ -191,13 +191,13 @@ def preprocess_run(run_key):
     fnirs_run = (fnirs_run - gsr_fit.pint.dequantify().pint.quantify('molar')).transpose(*fnirs_run.dims)
     Y = fnirs_run.sel(chromo=select_chromo).pint.dequantify().transpose('time', 'parcel').values
 
-    # EEG delay regressors projected on the B-spline basis; the leading n_delay samples (the
-    # lead-in) are dropped, so the first row lines up with the first fNIRS sample of the span
+    # EEG delay regressors projected on the B-spline basis, lowpassed at the fNIRS Nyquist and read at the
+    # fNIRS sample times of the span (the EEG crop covers every sample's len_delay history)
     eeg = EEG.copy().crop(tmin=t_span[0] - t_offset - len_delay, tmax=t_span[-1] - t_offset)
-    X = model.get_cont_EEG_bspline_regressor(eeg.get_data(picks='cz').flatten(), bspline_basis)
-    X = mne.filter.resample(X.T, up=fnirs_sfreq, down=eeg_sfreq, npad='auto', axis=-1).T
-    n = min(len(X), len(Y))
-    Y, X, X_stim, t_span = Y[:n], X[:n], X_stim[:n], t_span[:n]
+    eeg_nirs_t = eeg.times + (eeg.first_time - EEG.first_time) + t_offset
+    X = model.sample_cont_EEG_bspline_regressor(eeg.get_data(picks='cz').flatten(), eeg_nirs_t, bspline_basis, 0,
+                                                t_span, fnirs_sfreq / 2)
+    n = len(Y)
 
     # trial window in fNIRS time: first event onset to last event onset + len_delay
     keep = (t_span >= nirs_onsets[0]) & (t_span <= nirs_onsets[-1] + len_delay)

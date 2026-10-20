@@ -258,6 +258,8 @@ for subj_id in subj_id_array:
     eeg_list = []
     all_runs_truncated = []
     eeg_masks = {tt: [] for tt in trial_type_prefixes}  # per run, bool over the cropped EEG samples
+    eeg_sample_nirs_t = []  # per run, fNIRS time of each cropped EEG sample
+    fnirs_sample_t = []  # per run, fNIRS time of each kept fNIRS sample (before the reset to 0)
     n_trials_per_type = {tt: 0 for tt in trial_type_prefixes}
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
         run_idx = run_key_to_run_idx[run_key]
@@ -298,6 +300,8 @@ for subj_id in subj_id_array:
         # trial mask over the cropped EEG samples, in fNIRS time (same frame as the stim onsets)
         eeg_crop_start = EEG_raw.first_time - EEG.first_time
         sample_nirs_t = EEG_raw.times + eeg_crop_start + t_offset
+        eeg_sample_nirs_t.append(sample_nirs_t)
+        fnirs_sample_t.append(fnirs_run.time.values)
         stim = all_stims[run_idx]
         for tt, selector in trial_type_selectors.items():
             trials_df = stim[selector(stim)]
@@ -347,11 +351,11 @@ for subj_id in subj_id_array:
 
     #%% create EEG regressors: per trial type, zero the Cz EEG outside that trial type's trials, build the
     # delayed regressors from the masked EEG and project the delay axis onto the low-rank B-spline basis
-    # (at EEG rate), then downsample to the fNIRS rate. Every fNIRS sample is kept, so each trial's EEG
+    # (at EEG rate), lowpass at the fNIRS Nyquist and read them at the fNIRS sample times
+    # (model.sample_cont_EEG_bspline_regressor). Every fNIRS sample is kept, so each trial's EEG
     # contributes to the fNIRS from t_pre before to t_post after it (an event-locked HRF over
     # [-t_pre, t_post) weighted by the within-trial EEG).
-    # Row j of the EEG-rate delay matrix uses EEG samples j .. j + n_regressor - 1 (from t_post before
-    # to t_pre after the row's fNIRS time); delay index k of the basis is delay k/eeg_sfreq - t_pre.
+    # Delay index k of the basis is delay k/eeg_sfreq - t_pre.
     eeg_sfreq = eeg_list[0].info['sfreq']
     n_regressor = np.round(len_delay*eeg_sfreq).astype(int)
     delay_names = [f"delay{d_i}" for d_i in range(n_regressor)]
@@ -370,24 +374,17 @@ for subj_id in subj_id_array:
     regressor_names = [f'{tt}_bspline{i}' for tt in trial_type_prefixes for i in range(n_bspline_basis)]
     eeg_regressors = []
     for run_i, fnirs_run in enumerate(all_runs):
-        # (n_regressor_total x n_rows) at EEG rate, trial types stacked along the regressor axis
+        # (n_fnirs_samples x n_regressor_total), trial types stacked along the regressor axis; the masked EEG
+        # is zero outside the trials and the EEG crop covers every sample's delay history
         run_dm = np.concatenate([
-            model.get_cont_EEG_bspline_regressor(eeg_reg_value_list[run_i] * eeg_masks[tt][run_i], bspline_basis)
-            for tt in trial_type_prefixes], axis=1).T
-
-        #%% Downsample EEG DM to fNIRS sampling rate, then enforce an exact sample-count
-        # match with the corresponding (already-truncated) fNIRS run and adopt its time coordinate.
-        run_dm = mne.filter.resample(run_dm, up=fnirs_sfreq, down=eeg_sfreq, npad='auto', axis=-1)
-        n_fnirs_samples = len(fnirs_run.time)
-        n_dm_samples = run_dm.shape[-1]
-        if n_dm_samples > n_fnirs_samples:
-            run_dm = run_dm[:, :n_fnirs_samples]
-        elif n_dm_samples < n_fnirs_samples:
-            all_runs[run_i] = fnirs_run.isel(time=slice(0, n_dm_samples))
+            model.sample_cont_EEG_bspline_regressor(eeg_reg_value_list[run_i] * eeg_masks[tt][run_i],
+                                                    eeg_sample_nirs_t[run_i], bspline_basis, t_pre,
+                                                    fnirs_sample_t[run_i], fnirs_sfreq / 2)
+            for tt in trial_type_prefixes], axis=1)
 
         eeg_regressors.append(glm.design_matrix.DesignMatrix(
             common=xr.DataArray(
-                run_dm.T[:, :, None],
+                run_dm[:, :, None],
                 dims=("time", "regressor", "chromo"),
                 coords={"time": all_runs[run_i].time.values, "regressor": regressor_names, "chromo": [select_chromo]},
             ),
@@ -427,6 +424,7 @@ for subj_id in subj_id_array:
         stats_dict[f't_test_0_eeg_{tt}'] = results.sm.t_test(hypotheses)
     stats_dict['Y_all_path'] = Y_all_save_path
     stats_dict['dm_all_path'] = dm_all_save_path
+    stats_dict['n_trials_per_type'] = n_trials_per_type
 
     #%% spectral whitening of Y and X (shared by fixAR-IRLS and AR-iRRR)
     # the residual spectrum is estimated from the OLS residuals of Y_partial ~ 1 + X (Y_all is already
@@ -448,7 +446,8 @@ for subj_id in subj_id_array:
     parcels = Y_da.parcel.values
     whiten_stats = {'Y_scale': Y_scale, 'run_bounds': run_bounds,
                     'whiten_kernel_fft': noise_model.W_fft, 'acf_kernel': noise_model.acf_kernel,
-                    'Y_all_path': Y_all_save_path, 'dm_all_path': dm_all_save_path}
+                    'Y_all_path': Y_all_save_path, 'dm_all_path': dm_all_save_path,
+                    'n_trials_per_type': n_trials_per_type}
 
     #%% fixAR-IRLS: IRLS fit per parcel on the whitened data (no further AR whitening)
     print(f"Start cont_EEG fixAR-IRLS fitting ({subject})")

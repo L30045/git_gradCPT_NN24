@@ -48,6 +48,7 @@ if is_scale_Y:
 else:
     cand_irrr_lam1 = 10 ** np.arange(-11, -8, 0.1)
 n_bisect = 20 # bisection steps on log10(lam1) if no candidate gives exactly target_rank
+max_extend_decades = 6 # decades below cand_irrr_lam1[0] to scan if no candidate reaches target_rank
 plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf')
 # AR-IRLS run (run_model_cont_EEG_fNIRS.py) whose dm_all / B-spline basis are reused here;
 # Y_all is the shared parcel_Y_all_truncated_to_trials file, so only the fit differs
@@ -157,6 +158,15 @@ for subj_id in subj_id_array:
             return {'lam1': lam1, 'C': C, 'mu': np.ravel(mu), 'rank': matrix_rank(C)}
 
         irrr_scan = [fit_irrr(lam1) for lam1 in tqdm(cand_irrr_lam1, desc=f'{net} iRRR lam1 scan')]
+        # small networks may stay below net_rank even at the smallest candidate; extend the scan
+        # downward a decade at a time until the rank reaches net_rank
+        n_extend = 0
+        while max(f['rank'] for f in irrr_scan) < net_rank:
+            if n_extend == max_extend_decades:
+                raise RuntimeError(f"{subject} [{net}]: rank < {net_rank} down to irrr_lam1 = "
+                                   f"{min(f['lam1'] for f in irrr_scan):.4g}")
+            irrr_scan.append(fit_irrr(min(f['lam1'] for f in irrr_scan) / 10))
+            n_extend += 1
         rank_hits = [f for f in irrr_scan if f['rank'] == net_rank]
         if not rank_hits:
             # bisect on log10(lam1) between the largest lam1 above net_rank and the next lam1 below it
