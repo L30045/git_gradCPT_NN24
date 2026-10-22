@@ -1,7 +1,8 @@
 #%% load library
 # Compare the mnt-correct HRF of Cedalion AR-IRLS, fixAR-IRLS and AR-iRRR for every available subject
 # (subjects in pipeline_reorder/processed_data with the preprocessed and image-space files, minus
-# excluded_subj), trained on all runs. Same analysis as cmp_AR-IRLS_fixAR-IRLS_single-subj.py, plus AR-iRRR.
+# excluded_subj), trained on all runs (default) or on the runs given by --train-runs. Same analysis as
+# cmp_AR-IRLS_fixAR-IRLS_single-subj.py, plus AR-iRRR.
 # All models share the same Y and the same event-based design matrix (consecutive Gaussian kernels
 # locked to the mnt-correct onsets, same as run_model_EEG_inform_parcel_based.py).
 # Per run: highpass -> truncate to the trial window -> OLS drift -> OLS GSR. The runs are then
@@ -10,12 +11,18 @@
 #   (2) fixAR-IRLS: one spectral-whitening kernel estimated on the concatenated residuals and applied to
 #       the concatenated Y and X as a single series, then IRLS per parcel (no further AR whitening).
 #   (3) AR-iRRR: iRRR on the same whitened (and Y_scale-scaled) Y and X as fixAR-IRLS; irrr_lam1 is the
-#       smallest penalty whose coefficient matrix has rank target_rank.
+#       smallest penalty whose coefficient matrix has rank target_rank. One fit is also saved for each
+#       rank in --ranks (default 2 4 6 8), each at the smallest penalty giving that rank.
+# Every model and every iRRR fit of the lam1 scan is scored (PMSE, R2) on each training run and on the
+# held-out runs (the runs not in --train-runs). The held-out runs get the same preprocessing, then the
+# training whitening filter and Y_scale; all models, AR-IRLS included, are scored on this whitened Y.
+# Usage: python cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py [--train-runs gradcpt1] [--ranks 2 4 6 8] [--subjects sub-681 ...]
 # Per subject, the HRFs are plotted at the most sensitive parcel of select_network and over the whole
 # network, and the per-parcel HRF correlation between models is shown on the brain surface. A group
 # summary across subjects is plotted at the end.
 import numpy as np
 import pickle
+import argparse
 import gzip
 import glob
 import sys
@@ -45,7 +52,14 @@ sys.path.append('/projectnb/stephenlab/cchang1/iRRR_python')
 from iRRR.iRRR_normal import irrr_normal
 
 #%% parameters
-run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3'] # all runs are used for training
+all_run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3']
+parser = argparse.ArgumentParser()
+parser.add_argument('--train-runs', nargs='+', default=all_run_keys, choices=all_run_keys)
+parser.add_argument('--ranks', nargs='+', type=int, default=[2, 4, 6, 8])
+parser.add_argument('--subjects', nargs='+', default=None) # e.g. sub-681; default: every available subject
+args, _ = parser.parse_known_args()
+run_keys = [k for k in all_run_keys if k in args.train_runs] # runs used for training
+test_keys = [k for k in all_run_keys if k not in run_keys] # held-out runs: scored, not fit
 select_chromo = 'HbO'
 select_network = 'ContA' # network whose most sensitive parcel and network HRF are plotted
 l_cutoff = 0.01 # highpass cutoff for fNIRS (Hz)
@@ -53,7 +67,8 @@ len_delay = 15 # trial window ends len_delay after the last event onset (sec)
 ar_order = 30 # max AR order of Cedalion AR-IRLS
 is_scale_Y = True # If True, scale whitened Y by its std before the IRLS / iRRR fit (betas are scaled back)
 irls_norm = sm.robust.norms.TukeyBiweight(c=4.685) # same robust norm as model.my_ar_irls_GLM
-target_rank = 2 # iRRR rank used to pick irrr_lam1
+target_rank = 2 # iRRR rank used to pick irrr_lam1 (saved as 'ar_irrr' and used in the plots)
+target_ranks = sorted(set(args.ranks) | {target_rank}) # every iRRR rank saved in 'ar_irrr_ranks'
 # candidate iRRR nuclear-norm penalties (scale-free since Y is scaled)
 cand_irrr_lam1 = 10 ** np.arange(-3, 2.01, 0.125)
 n_bisect = 20 # bisection steps on log10(lam1) if no candidate gives exactly target_rank
@@ -69,7 +84,10 @@ model_colors = {'AR-IRLS': 'C0', 'fixAR-IRLS': 'C3', 'AR-iRRR': 'C2'}
 model_pairs = [('AR-IRLS', 'fixAR-IRLS'), ('AR-IRLS', 'AR-iRRR'), ('fixAR-IRLS', 'AR-iRRR')]
 to_uM = 1e6
 
+train_tag = 'all runs' if run_keys == all_run_keys else '+'.join(run_keys)
 model_name = 'mnt-correct_gauss_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR'
+if run_keys != all_run_keys:
+    model_name += f"_train-{'-'.join(run_keys)}"
 der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
 plot_root = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf')
 
@@ -81,7 +99,7 @@ def get_input_paths(subject):
 subjects = []
 for subj_dir in sorted(glob.glob(os.path.join(der_dir, 'sub-*'))):
     subject = os.path.basename(subj_dir)
-    if subject in excluded_subj:
+    if subject in excluded_subj or (args.subjects and subject not in args.subjects):
         continue
     if not all(os.path.exists(p) for p in get_input_paths(subject)):
         print(f"{subject}: missing input files, skipping.")
@@ -175,7 +193,7 @@ def run_subject(subject):
 
     # match each run key (gradcpt1/2/3) to its fNIRS run via the first event onset
     run_info = dict() # run_key -> (run_idx, event onsets in fNIRS time)
-    for run_key in run_keys:
+    for run_key in run_keys + test_keys:
         run_num = f"{run_key[-1]:0>2}"
         nirs_ev_df = pd.read_csv(os.path.join(project_path, subject, 'nirs',
                                               f"{subject}_task-gradCPT_run-{run_num}_events.tsv"), sep='\t')
@@ -184,9 +202,9 @@ def run_subject(subject):
                        if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onsets[0], atol=0.01))
         run_info[run_key] = (run_idx, nirs_onsets)
 
-    # keep parcels that are finite in every run used here
+    # keep parcels that are finite in every run used here (training and held-out)
     parcels = all_runs[0].parcel.values
-    for run_key in run_keys:
+    for run_key in run_keys + test_keys:
         run = all_runs[run_info[run_key][0]].sel(parcel=parcels).pint.dequantify()
         parcels = parcels[np.isfinite(run.values).all(axis=tuple(i for i, d in enumerate(run.dims) if d != 'parcel'))]
     print(f"{subject}: {len(parcels)} parcels")
@@ -251,7 +269,7 @@ def run_subject(subject):
               f"{len(stim)} mnt-correct trials")
         return dict(Y=fnirs_run, X=X_stim, stim=stim)
 
-    run_data = {run_key: preprocess_run(run_key) for run_key in run_keys}
+    run_data = {run_key: preprocess_run(run_key) for run_key in run_keys + test_keys}
 
     # concatenate runs (gradcpt1, 2, 3 order); the DM rows follow the concatenated time axis
     Y_all, _, runs_updated = model.concatenate_runs([run_data[k]['Y'] for k in run_keys],
@@ -305,6 +323,40 @@ def run_subject(subject):
     Y_white_s = Y_white / Y_scale # shared by fixAR-IRLS and AR-iRRR
     print(f"spectral whitening on {len(Y)} concatenated samples, w_pad = {noise_model.w_pad}, Y_scale = {Y_scale:.4g}")
 
+    # scoring data: each training run is its own rows of the whitened, scaled series; each held-out run
+    # is whitened alone with the training filter (rebuilt at the run's own pad length, since
+    # NoiseModel pads to the training length) and divided by the training Y_scale
+    tukey_m = int(np.round(np.sqrt(len(Y))))
+    acf_tukey = noise_model.acf_kernel[:tukey_m]
+
+    def whiten_run(arr):
+        w_pad = arr.shape[0] + tukey_m
+        acf_kernel = np.zeros((w_pad, acf_tukey.shape[1]))
+        acf_kernel[:tukey_m] = acf_tukey
+        acf_kernel[-tukey_m + 1:] = acf_tukey[:0:-1]
+        W_fft = model.NoiseModel._compute_filter_kernel(acf_kernel, w_pad, process=1)
+        return model.NoiseModel._apply_kernel(arr, W_fft, w_pad)
+
+    run_edges = np.cumsum([0] + run_len)
+    eval_data = {k: (Y_white_s[a:b], X_white[a:b]) for k, a, b in zip(run_keys, run_edges[:-1], run_edges[1:])}
+    for k in test_keys:
+        Y_k = run_data[k]['Y'].sel(chromo=select_chromo, parcel=parcels).pint.dequantify().transpose('time', 'parcel').values
+        X_k = run_data[k]['X'].sel(chromo=select_chromo, regressor=reg_names).transpose('time', 'regressor').values
+        eval_data[k] = (whiten_run(Y_k) / Y_scale, whiten_run(X_k))
+
+    def get_metrics(Y_e, Y_hat):
+        """PMSE over all time points and parcels; R2 pooled over parcels (each parcel centered on its own
+        mean) and per parcel. Same as cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py."""
+        res = Y_e - Y_hat
+        ss_tot = ((Y_e - Y_e.mean(0, keepdims=True)) ** 2).sum(0)
+        pmse = np.mean(res ** 2)
+        return {'PMSE': pmse, 'RMSE': np.sqrt(pmse), 'R2': 1 - (res ** 2).sum() / ss_tot.sum(),
+                'R2_parcel': 1 - (res ** 2).sum(0) / ss_tot}
+
+    def evaluate(C_s, mu_s):
+        """Metrics per run of the prediction X_white C_s + mu_s, with C_s and mu_s in Y_scale units."""
+        return {k: get_metrics(Y_e, X_e @ C_s + mu_s[None, :]) for k, (Y_e, X_e) in eval_data.items()}
+
     # the whitened series are zero-mean (DC bin of the kernel is 0), so no intercept is added
     print(f"Start fixAR-IRLS fitting ({subject})")
     x_df = pd.DataFrame(X_white, columns=reg_names)
@@ -325,30 +377,39 @@ def run_subject(subject):
     def fit_irrr(lam1):
         C, mu, _, _, _ = irrr_normal(Y_white_s, [X_white], lam1,
                                      {'varyrho': True, 'Tol': 0.01, 'fig': False, 'weight': irrr_weight})
-        return {'lam1': lam1, 'C': C, 'mu': np.ravel(mu), 'rank': matrix_rank(C)}
+        mu = np.ravel(mu)
+        return {'lam1': lam1, 'C': C, 'mu': mu, 'rank': matrix_rank(C), 'metrics': evaluate(C, mu)}
 
     irrr_scan = [fit_irrr(lam1) for lam1 in tqdm(cand_irrr_lam1, desc='iRRR lam1 scan')]
 
-    # select irrr_lam1: the smallest lam1 (least shrinkage) whose fit has rank target_rank
-    rank_hits = [f for f in irrr_scan if f['rank'] == target_rank]
-    if not rank_hits:
-        # bisect on log10(lam1) between the largest lam1 above target_rank and the next lam1 below it
-        lo = max(f['lam1'] for f in irrr_scan if f['rank'] > target_rank)
-        hi = min(f['lam1'] for f in irrr_scan if f['rank'] < target_rank and f['lam1'] > lo)
-        for _ in range(n_bisect):
-            fit = fit_irrr(np.sqrt(lo * hi))
-            irrr_scan.append(fit)
-            if fit['rank'] == target_rank:
-                rank_hits = [fit]
-                break
-            lo, hi = (fit['lam1'], hi) if fit['rank'] > target_rank else (lo, fit['lam1'])
-        else:
-            raise RuntimeError(f"no irrr_lam1 in [{lo:.4g}, {hi:.4g}] gives rank {target_rank}")
+    def select_rank(rank):
+        """The smallest lam1 (least shrinkage) whose fit has the given rank; bisects on log10(lam1) between
+        the largest lam1 above the rank and the next lam1 below it if no fit in irrr_scan has it."""
+        rank_hits = [f for f in irrr_scan if f['rank'] == rank]
+        if not rank_hits:
+            lo = max(f['lam1'] for f in irrr_scan if f['rank'] > rank)
+            hi = min(f['lam1'] for f in irrr_scan if f['rank'] < rank and f['lam1'] > lo)
+            for _ in range(n_bisect):
+                fit = fit_irrr(np.sqrt(lo * hi))
+                irrr_scan.append(fit)
+                if fit['rank'] == rank:
+                    rank_hits = [fit]
+                    break
+                lo, hi = (fit['lam1'], hi) if fit['rank'] > rank else (lo, fit['lam1'])
+            else:
+                raise RuntimeError(f"no irrr_lam1 in [{lo:.4g}, {hi:.4g}] gives rank {rank}")
+        return min(rank_hits, key=lambda f: f['lam1'])
+
+    irrr_ranks = dict()
+    for rank in target_ranks:
+        fit = select_rank(rank)
+        print(f"rank {rank}: irrr_lam1 = {fit['lam1']:.4g}")
+        C = fit['C'] * Y_scale # (regressor x parcel), M
+        irrr_ranks[rank] = {'C': C, 'mu': fit['mu'] * Y_scale, 'hrf': to_hrf(C)[0], 'irrr_lam1': fit['lam1'],
+                            'rank': fit['rank'], 'metrics': fit['metrics']}
     irrr_scan = sorted(irrr_scan, key=lambda f: f['lam1'])
-    irrr_fit = min(rank_hits, key=lambda f: f['lam1'])
-    print(f"irrr_lam1 = {irrr_fit['lam1']:.4g} (rank {irrr_fit['rank']})")
-    C_irrr = irrr_fit['C'] * Y_scale # (regressor x parcel), M
-    hrf_irrr, _ = to_hrf(C_irrr)
+    irrr_fit = irrr_ranks[target_rank]
+    C_irrr, hrf_irrr = irrr_fit['C'], irrr_fit['hrf']
 
     hrfs = {'AR-IRLS': (hrf_ar, hrf_se_ar), 'fixAR-IRLS': (hrf_fix, hrf_se_fix), 'AR-iRRR': (hrf_irrr, None)}
 
@@ -399,7 +460,7 @@ def run_subject(subject):
     surf_ax.imshow(plt.imread(surf_png))
     surf_ax.set_title('Parcel location (superior view, Cz marked)', fontsize='small')
     surf_ax.axis('off')
-    fig.suptitle(f'{subject}: mnt-correct HRF, mean ± 1 SE (none for AR-iRRR), trained on all runs')
+    fig.suptitle(f'{subject}: mnt-correct HRF, mean ± 1 SE (none for AR-iRRR), trained on {train_tag}')
     fig.tight_layout()
     fig.savefig(os.path.join(plot_dir, f'{subject}_hrf_{select_parcel}.png'), dpi=150)
     if is_plot:
@@ -428,7 +489,7 @@ def run_subject(subject):
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8)
     axs[0].set_ylabel(f'{select_chromo} (µM)')
-    fig.suptitle(f'{subject}: {select_network} network mnt-correct HRF, trained on all runs')
+    fig.suptitle(f'{subject}: {select_network} network mnt-correct HRF, trained on {train_tag}')
     fig.tight_layout()
     fig.savefig(os.path.join(plot_dir, f'{subject}_hrf_network_{select_network}.png'), dpi=150)
     if is_plot:
@@ -437,15 +498,19 @@ def run_subject(subject):
 
     # save
     results_dict = {
-        'subject': subject, 'train_runs': run_keys, 'parcels': parcels, 'regressors': reg_names,
+        'subject': subject, 'train_runs': run_keys, 'test_runs': test_keys, 'parcels': parcels, 'regressors': reg_names,
         'select_network': select_network, 'network_parcels': network_parcels, 'select_parcel': select_parcel,
         'hrf_basis': B, 'hrf_t': hrf_t, 'hrf_corr': hrf_corr,
-        'ar_irls': {'C': C_ar, 'cov': cov_ar, 'hrf': hrf_ar, 'hrf_se': hrf_se_ar, 'ar_order': ar_order},
+        'ar_irls': {'C': C_ar, 'cov': cov_ar, 'hrf': hrf_ar, 'hrf_se': hrf_se_ar, 'ar_order': ar_order,
+                    'metrics': evaluate(C_ar / Y_scale, np.zeros(len(parcels)))},
         'fixar_irls': {'C': C_fix, 'cov': cov_fix, 'hrf': hrf_fix, 'hrf_se': hrf_se_fix, 'Y_scale': Y_scale,
+                       'metrics': evaluate(C_fix / Y_scale, np.zeros(len(parcels))),
                        'whiten_kernel_acf': noise_model.acf_kernel[:int(np.round(np.sqrt(len(Y))))]},
-        'ar_irrr': {'C': C_irrr, 'mu': irrr_fit['mu'] * Y_scale, 'hrf': hrf_irrr, 'irrr_lam1': irrr_fit['lam1'],
-                    'rank': irrr_fit['rank'], 'target_rank': target_rank, 'weight': irrr_weight,
-                    'scan': [{k: f[k] for k in ['lam1', 'rank']} for f in irrr_scan]},
+        'ar_irrr': {**irrr_fit, 'target_rank': target_rank, 'weight': irrr_weight,
+                    'scan': [{k: f[k] for k in ['lam1', 'rank', 'metrics']} for f in irrr_scan]},
+        # metrics are on whitened Y / Y_scale; null = no regressors, Y_hat = the training mean
+        'null_metrics': evaluate(np.zeros_like(C_fix), Y_white_s.mean(0)),
+        'ar_irrr_ranks': irrr_ranks, # rank -> fit at the smallest lam1 giving that rank
     }
     if is_save:
         save_path = os.path.join(data_save_path, f'{subject}_{model_name}.pkl')
