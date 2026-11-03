@@ -1,3 +1,4 @@
+#%%
 """
 Joint Bayesian estimation of a parcel HRF and AR(p) noise in PyMC.
 
@@ -15,6 +16,7 @@ import pytensor.tensor as pt
 import arviz as az
 from scipy.interpolate import BSpline
 from scipy.stats import gamma
+import matplotlib.pyplot as plt
 
 
 # ----------------------------------------------------------------------------
@@ -151,8 +153,6 @@ def simulate(B, fs, T, seed=0):
 # Figure: truth vs posterior
 # ----------------------------------------------------------------------------
 def plot_recovery(idata, sim, x_s, D, P, fs, scale, path="hrf_ar_sim.png"):
-    import matplotlib.pyplot as plt
-
     post = idata.posterior
     t = sim["t"]
     hrf = post["hrf"].stack(s=("chain", "draw")).values.T            # (draws, n_lag)
@@ -216,56 +216,56 @@ def plot_recovery(idata, sim, x_s, D, P, fs, scale, path="hrf_ar_sim.png"):
     print(f"saved {path}")
 
 
-# ----------------------------------------------------------------------------
+#%% ----------------------------------------------------------------------------
 # Run
 # ----------------------------------------------------------------------------
-if __name__ == "__main__":
-    import time
+import time
 
-    fs, T = 4.0, 2400               # 10 min at 4 Hz
-    lag_sec, L, P = 20.0, 10, 4     # HRF window, spline basis size, AR order
-    USE_NUTPIE = False              # False reproduces the reported numbers; True is faster
+fs, T = 4.0, 2400               # 10 min at 4 Hz
+lag_sec, L, P = 20.0, 10, 4     # HRF window, spline basis size, AR order
+USE_NUTPIE = False              # False reproduces the reported numbers; True is faster
 
-    B = lag_basis(int(lag_sec * fs), L)
-    sim = simulate(B, fs, T, seed=0)
+B = lag_basis(int(lag_sec * fs), L)
+sim = simulate(B, fs, T, seed=0)
 
-    x = sim["x"]
-    scale = x.std()
-    x_s = (x - x.mean()) / scale
-    D = event_design(sim["onsets"], T, B)
-    N = np.zeros((T, 0))            # no nuisance regressors in the simulation
-    w0, Q = canonical_prior_mean(B, fs)
+x = sim["x"]
+scale = x.std()
+x_s = (x - x.mean()) / scale
+D = event_design(sim["onsets"], T, B)
+N = np.zeros((T, 0))            # no nuisance regressors in the simulation
+w0, Q = canonical_prior_mean(B, fs)
 
-    model = build_model(x_s, D, N, B, w0, Q, P)
+model = build_model(x_s, D, N, B, w0, Q, P)
 
-    t0 = time.time()
-    with model:
-        idata = pm.sample(draws=500, tune=500, chains=4, cores=4, target_accept=0.9,
-                          nuts_sampler="nutpie" if USE_NUTPIE else "pymc",
-                          random_seed=1, progressbar=False)
-    print(f"sampling time {time.time() - t0:.0f} s")
+#%%
+t0 = time.time()
+with model:
+    idata = pm.sample(draws=500, tune=500, chains=4, cores=4, target_accept=0.9,
+                        nuts_sampler="nutpie" if USE_NUTPIE else "pymc",
+                        random_seed=1, progressbar=False)
+print(f"sampling time {time.time() - t0:.0f} s")
 
-    # ---- diagnostics ----
-    print("divergences:", int(idata.sample_stats["diverging"].sum()))
-    print(az.summary(idata, var_names=["a", "b0", "phi", "sigma", "nu", "tau"], round_to=3))
+# ---- diagnostics ----
+print("divergences:", int(idata.sample_stats["diverging"].sum()))
+print(az.summary(idata, var_names=["a", "b0", "phi", "sigma", "nu", "tau"], round_to=3))
 
-    # ---- recovery report ----
-    hrf = idata.posterior["hrf"].stack(s=("chain", "draw")).values.T
-    lo, hi = np.percentile(hrf, [2.5, 97.5], 0)
-    a_post = idata.posterior["a"]
-    print("\nRecovery vs truth")
-    print(f"  HRF 95% band coverage : {np.mean((sim['h_true'] >= lo) & (sim['h_true'] <= hi)):.0%}")
-    print(f"  corr(HRF est, truth)  : {np.corrcoef(hrf.mean(0), sim['h_true'])[0, 1]:.4f}")
-    print(f"  peak time true / est  : {sim['t'][sim['h_true'].argmax()]:.2f} / "
-          f"{sim['t'][hrf.mean(0).argmax()]:.2f} s")
-    print(f"  phi true              : {sim['phi_true']}")
-    print(f"  phi est               : {idata.posterior['phi'].mean(('chain', 'draw')).values.round(3)}")
-    print(f"  a ratio true / est    : {sim['a_true'][1] / sim['a_true'][0]:.3f} / "
-          f"{(a_post[..., 1] / a_post[..., 0]).mean().item():.3f}")
-    print(f"  a true (standardized) : {(sim['a_true'] / scale).round(3)}")
+# ---- recovery report ----
+hrf = idata.posterior["hrf"].stack(s=("chain", "draw")).values.T
+lo, hi = np.percentile(hrf, [2.5, 97.5], 0)
+a_post = idata.posterior["a"]
+print("\nRecovery vs truth")
+print(f"  HRF 95% band coverage : {np.mean((sim['h_true'] >= lo) & (sim['h_true'] <= hi)):.0%}")
+print(f"  corr(HRF est, truth)  : {np.corrcoef(hrf.mean(0), sim['h_true'])[0, 1]:.4f}")
+print(f"  peak time true / est  : {sim['t'][sim['h_true'].argmax()]:.2f} / "
+        f"{sim['t'][hrf.mean(0).argmax()]:.2f} s")
+print(f"  phi true              : {sim['phi_true']}")
+print(f"  phi est               : {idata.posterior['phi'].mean(('chain', 'draw')).values.round(3)}")
+print(f"  a ratio true / est    : {sim['a_true'][1] / sim['a_true'][0]:.3f} / "
+        f"{(a_post[..., 1] / a_post[..., 0]).mean().item():.3f}")
+print(f"  a true (standardized) : {(sim['a_true'] / scale).round(3)}")
 
-    plot_recovery(idata, sim, x_s, D, P, fs, scale)
-    try:
-        idata.to_netcdf("hrf_ar_idata.nc")          # needs netCDF4 or h5netcdf
-    except ValueError as err:
-        print(f"posterior not saved: {err}")
+plot_recovery(idata, sim, x_s, D, P, fs, scale)
+try:
+    idata.to_netcdf("hrf_ar_idata.nc")          # needs netCDF4 or h5netcdf
+except ValueError as err:
+    print(f"posterior not saved: {err}")
