@@ -1,8 +1,11 @@
 #%% Joint Bayesian HRF + AR(p) noise for one image-space parcel (mnt-correct, Gaussian kernels)
-# Same model as example_hrf_ar_pymc.py, fit on real fNIRS instead of simulated data:
+# Linear model with AR noise, fit on real fNIRS:
 #
-#     y = a * (E * h) + N b + e,   h = B w,   e ~ AR(p) with Student-t innovations
+#     y = X h + N b + e,   e ~ AR(p) with Student-t innovations
 #
+# - X: the Gaussian-kernel event regressors, so h holds one weight per delayed kernel and the HRF is B h.
+#   There is no separate amplitude and no canonical-HRF prior: h ~ N(0, tau_h), with tau_h learned.
+#   If is_smooth_penalty, the 2nd differences of h get an extra N(0, tau_s) penalty (tau_s learned).
 # - y: HbO of one parcel (image space, sensitive parcels only), per-run highpassed (0.02 Hz) and truncated
 #   to [first onset - t_pre, last onset + t_post], runs concatenated, standardized
 # - B: consecutive Gaussian kernels (-2 to 18 s, 1 s spacing, 1 s std); E * B are the cedalion
@@ -10,7 +13,7 @@
 # - N: per-run Legendre drift (order 0..DRIFT_ORDER) and per-run GSR. Unlike the 3-stage strategy of
 #   run_model_cont_EEG_fNIRS.py (OLS drift -> OLS GSR -> AR-IRLS), the nuisance and event regressors sit
 #   in one design matrix and are fit jointly with the HRF and the AR noise. The per-run drift-0 columns
-#   are the run intercepts, so the model has no separate b0.
+#   are the run intercepts, so the model has no separate b0. b ~ N(0, 1) (y standardized, columns ~unit scale).
 # - the AR innovations are only evaluated where the p-lag history lies inside the same run.
 #%% load library
 import os
@@ -26,7 +29,6 @@ import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
 import statsmodels.api as sm
-from scipy.stats import gamma
 from scipy.signal import butter, sosfiltfilt
 modeling_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 git_path = os.path.join(modeling_path, os.pardir)
@@ -39,13 +41,14 @@ import cedalion.models.glm as glm
 
 #%% settings
 subject = 'sub-723'
-# select_parcel = 'DorsAttnB_PostC_2_RH'
-select_parcel = 'SomMotA_25_LH'
+select_parcel = 'DorsAttnB_PostC_2_RH'
+# select_parcel = 'SomMotA_25_LH'
 select_chromo = 'HbO'
 run_keys = ['gradcpt1'] # runs used for fitting, concatenated in this order (e.g. ['gradcpt1', 'gradcpt2', 'gradcpt3'])
 is_hp_fNIRS = True   # If True, highpass each run at 0.02 Hz before truncation
 l_cutoff = 0.02      # highpass cutoff (Hz)
 is_save = True       # If True, save the posterior (netCDF) and figures
+is_smooth_penalty = False  # If True, penalize the 2nd differences of the kernel weights h (scale learned)
 USE_GPU = False      # True: JAX/numpyro NUTS on the GPU (stops if JAX sees no GPU); False: PyMC NUTS on CPU
 # AR order in samples: start at p_start and add one lag while the last lag of an AR(P) fit to the OLS
 # residuals is significant (p < p_alpha), up to pmax
@@ -59,7 +62,8 @@ cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 18*units.s, 't_delta': 1*units.s,
 cfg_GLM['drift_order'] = DRIFT_ORDER
 
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
-model_name = f'Bayes-HRF-AR_mnt-correct_gauss_1-stage_{"-".join(run_keys)}_{hp_flag}'
+smooth_flag = 'smooth' if is_smooth_penalty else 'noSmooth'
+model_name = f'Bayes-HRF-AR_mnt-correct_gauss_1-stage_{"-".join(run_keys)}_{hp_flag}_{smooth_flag}'
 data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'bayes')
 plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, model_name)
 
@@ -76,24 +80,8 @@ if USE_GPU:
 
 
 # ----------------------------------------------------------------------------
-# Model pieces (from example_hrf_ar_pymc.py)
+# Model pieces
 # ----------------------------------------------------------------------------
-def canonical_prior_mean(B, t):
-    """Double-gamma HRF at lags t (s) projected onto B, scaled to unit peak.
-
-    Returns w0 and Q, an (L, L-1) orthonormal basis of the directions in w-space
-    that leave the projection of h = B w onto the canonical shape h0 = B w0 unchanged.
-    Writing w = w0 + Q v then fixes <h, h0> / <h0, h0> = 1 exactly, which identifies
-    the scale and sign of the bilinear term a_k * h without a soft constraint.
-    gamma.pdf is 0 for t < 0, so the pre-onset lags of the Gaussian kernels get a zero prior mean."""
-    h_can = gamma.pdf(t, 6) - gamma.pdf(t, 16) / 6
-    w0, *_ = np.linalg.lstsq(B, h_can, rcond=None)
-    w0 = w0 / (B @ w0).max()
-    g = B.T @ (B @ w0)                       # gradient of <B w, h0> w.r.t. w
-    Q = np.linalg.svd(g[None, :])[2][1:].T   # null space of g: (L, L-1)
-    return w0, Q
-
-
 def pacf_to_ar(r, P):
     """Durbin-Levinson: partial autocorrelations in (-1, 1) -> stationary AR coefficients.
     phi_k = [phi_{k-1} - r_k * reverse(phi_{k-1}), r_k], one vector op per order (P is a Python int)."""
@@ -125,35 +113,35 @@ def select_ar_order(e, run_starts, p_start, pmax, alpha):
         P += 1
 
 
-def build_model(x, D, N, B, w0, Q, P, run_starts, pacf_scale=1.0):
-    K, T, L = D.shape
+def build_model(x, X_ev, N, B, P, run_starts, is_smooth_penalty=True, pacf_scale=1.0):
+    """x: (T,) standardized data; X_ev: (T, L) Gaussian-kernel event regressors; N: (T, M) nuisance;
+    B: (n_lag, L) kernels on the HRF lag axis (only for the 'hrf' deterministic)."""
+    T, L = X_ev.shape
     M = N.shape[1]
     lag_scale = pacf_scale / np.arange(1, P + 1)
     t_idx, lag_idx = lag_index(run_starts, T, P)
 
     with pm.Model() as bayes_model:
-        # ---- HRF shape: w = w0 + Q v keeps the projection on the canonical HRF at 1 ----
-        tau = pm.HalfNormal("tau", 0.5)
-        v = pm.Normal("v", 0.0, 1.0, shape=L - 1)          # deviation from canonical (weak ridge)
-        dev = pt.dot(Q, v)
-        w = pm.Deterministic("w", w0 + dev)
-        # smoothness: 2nd differences of the deviation, scale learned
-        pm.Potential("smooth", pm.logp(pm.Normal.dist(0.0, tau), pt.diff(dev, n=2)).sum())
-        pm.Deterministic("hrf", pt.dot(B, w))
+        # ---- kernel weights: zero-mean ridge with a learned scale ----
+        tau_h = pm.HalfNormal("tau_h", 1.0)
+        h = pm.Normal("h", 0.0, tau_h, shape=L)
+        if is_smooth_penalty:
+            # smoothness: 2nd differences of h, scale learned
+            tau_s = pm.HalfNormal("tau_s", 0.5)
+            pm.Potential("smooth", pm.logp(pm.Normal.dist(0.0, tau_s), pt.diff(h, n=2)).sum())
+        pm.Deterministic("hrf", pt.dot(B, h))
 
-        # ---- amplitudes and nuisance (per-run drift-0 columns are the intercepts) ----
-        a = pm.Normal("a", 0.0, 1.0, shape=K)
-        b = pm.Normal("b", 0.0, 5.0, shape=M)
+        # ---- nuisance (per-run drift-0 columns are the intercepts) ----
+        b = pm.Normal("b", 0.0, 1.0, shape=M)
 
         # ---- AR noise: unconstrained PACF -> stationary phi ----
         z = pm.Normal("z", 0.0, lag_scale, shape=P)
         phi = pm.Deterministic("phi", pacf_to_ar(pt.tanh(z), P))
-        sigma = pm.HalfNormal("sigma", 1.0)
-        nu = pm.Deterministic("nu", 2.0 + pm.Gamma("nu_minus2", 2.0, 0.1))
+        sigma = pm.HalfNormal("sigma", 1.0) # variance for student t innov
+        nu = pm.Deterministic("nu", 2.0 + pm.Gamma("nu_minus2", 2.0, 0.1)) # degree of freedom for student t innov
 
         # ---- mean and residual ----
-        Dw = pt.tensordot(D, w, axes=[[2], [0]])            # (K, T)
-        mu = pt.dot(a, Dw) + pt.dot(N, b)
+        mu = pt.dot(X_ev, h) + pt.dot(N, b)
         e = x - mu
 
         # ---- whiten inside the model (vectorized): innov[t] = e[t] - sum_k phi_k e[t-k] ----
@@ -178,14 +166,13 @@ def ar_one_step(e, phi, run_starts):
 # ----------------------------------------------------------------------------
 # Figure: posterior summary (same layout as plot_recovery in example_hrf_ar_pymc.py, no ground truth)
 # ----------------------------------------------------------------------------
-def plot_result(idata, hrf_t, h0, t, x_s, fit_s, event_s, ev_times, P, fs, title, path=None):
+def plot_result(idata, hrf_t, t, x_s, fit_s, event_s, ev_times, P, fs, title, path=None):
     """t: time (s) of each sample of x_s; ev_times: event onsets (s) on the same axis."""
     post = idata.posterior
     hrf = post["hrf"].stack(s=("chain", "draw")).values.T            # (draws, n_lag)
     phi = post["phi"].stack(s=("chain", "draw")).values.T            # (draws, P)
-    a = post["a"].stack(s=("chain", "draw")).values.T                # (draws, K)
 
-    est_c, prior_c = "#2a6fdb", "#9a9a9a"
+    est_c = "#2a6fdb"
     fig, ax = plt.subplots(2, 2, figsize=(11, 7.5), constrained_layout=True)
     fig.suptitle(title)
 
@@ -194,10 +181,9 @@ def plot_result(idata, hrf_t, h0, t, x_s, fit_s, event_s, ev_times, P, fs, title
     a0 = ax[0, 0]
     a0.fill_between(hrf_t, lo, hi, color=est_c, alpha=0.2, lw=0, label="95% credible band")
     a0.plot(hrf_t, hrf.mean(0), color=est_c, lw=2, label="Posterior mean")
-    a0.plot(hrf_t, h0, color=prior_c, lw=1.2, ls=":", label="Canonical (prior mean)")
     a0.axhline(0, color="#cccccc", lw=0.8, zorder=0)
     a0.axvline(0, color="#cccccc", lw=0.8, zorder=0)
-    a0.set(title="HRF shape", xlabel="Lag (s)", ylabel="h (projection on canonical = 1)")
+    a0.set(title="HRF (B h)", xlabel="Lag (s)", ylabel="Standardized units")
     a0.legend(frameon=False, fontsize=9)
 
     # (2) AR coefficients
@@ -210,12 +196,11 @@ def plot_result(idata, hrf_t, h0, t, x_s, fit_s, event_s, ev_times, P, fs, title
     a1.set(title="AR coefficients φ", xlabel="Lag", ylabel="φ", xticks=lags)
     a1.legend(frameon=False, fontsize=9)
 
-    # (3) Condition amplitudes
+    # (3) Prior scales of h (ridge tau_h and, if used, smoothness tau_s)
     a2 = ax[1, 0]
-    for k in range(a.shape[1]):
-        a2.hist(a[:, k], bins=40, color=f"C{k}", alpha=0.55, label="mnt-correct posterior")
-    a2.axvline(0, color="#1f1f1f", lw=1, ls="--")
-    a2.set(title="Amplitude a (standardized units)", xlabel="a", ylabel="Draws")
+    for k, name in enumerate([n for n in ("tau_h", "tau_s") if n in post]):
+        a2.hist(post[name].values.ravel(), bins=40, color=f"C{k}", alpha=0.55, label=name)
+    a2.set(title="Prior scales of h (posterior)", xlabel="Scale (standardized units)", ylabel="Draws")
     a2.legend(frameon=False, fontsize=9)
 
     # (4) Data and fit, first 2 minutes
@@ -252,7 +237,7 @@ sensitive_parcels = np.unique(Adot_brain.sel(vertex=sensitivity_mask.values).par
 if select_parcel not in sensitive_parcels:
     raise ValueError(f"{select_parcel} is not among the {len(sensitive_parcels)} sensitive parcels.")
 
-#%% load image-space parcel time series and stims
+# load image-space parcel time series and stims
 der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
 with gzip.open(os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl'), 'rb') as f:
     all_stims = pickle.load(f)['stims']
@@ -276,7 +261,7 @@ for run_key in run_keys:
     else:
         raise ValueError(f"{subject}: no image-space run matches {run_key}.")
 
-#%% per run: highpass, truncate to the event window, mnt-correct Gaussian-kernel regressors
+# per run: highpass, truncate to the event window, mnt-correct Gaussian-kernel regressors
 all_runs = []
 event_dms = []
 mnt_onsets = []   # per run, mnt-correct onsets in the truncated run's time (starts at 0)
@@ -325,7 +310,7 @@ gauss_basis = gauss_kernels(all_runs[0]).transpose('time', 'component')  # (HRF 
 B = gauss_basis.values
 hrf_t = gauss_basis.time.values
 
-#%% one design matrix: Gaussian kernels + per-run drift + per-run GSR
+# one design matrix: Gaussian kernels + per-run drift + per-run GSR
 Y_all, dm_all, runs_updated = model.concatenate_runs_dms(all_runs, event_dms)
 # concatenate_runs_dms relabels the data as molar; the values are in micromolar (converted above)
 event_names = list(dm_all.common.regressor.values)
@@ -347,7 +332,7 @@ for r in nuis_names:
 
 model.vis_dm(dm_all)
 
-#%% model inputs
+# model inputs
 X_dm = dm_all.common.sel(chromo=select_chromo).transpose('time', 'regressor')
 X_ev = X_dm.sel(regressor=event_names).values         # (T, L)
 N = X_dm.sel(regressor=nuis_names).values             # (T, M)
@@ -361,10 +346,8 @@ if B.shape[1] != X_ev.shape[1]:
 
 y_mean, scale = y.mean(), y.std()
 y_s = (y - y_mean) / scale
-D = X_ev[None]                                         # (K=1, T, L)
-w0, Q = canonical_prior_mean(B, hrf_t)
 
-#%% AR order from the OLS residuals of the full design (events + nuisance)
+# AR order from the OLS residuals of the full design (events + nuisance)
 X_full = np.column_stack([X_ev, N])
 e_ols = y_s - X_full @ np.linalg.lstsq(X_full, y_s, rcond=None)[0]
 P, ar_pvals = select_ar_order(e_ols, run_starts, p_start, pmax, p_alpha)
@@ -372,7 +355,7 @@ if P == pmax and ar_pvals[P] < p_alpha:
     print(f"warning: last lag still significant at pmax = {pmax}")
 print(f"{subject} {select_parcel}: T = {T}, fs = {fs:.2f} Hz, L = {B.shape[1]}, M = {N.shape[1]}, P = {P}")
 
-bayes_model = build_model(y_s, D, N, B, w0, Q, P, run_starts)
+bayes_model = build_model(y_s, X_ev, N, B, P, run_starts, is_smooth_penalty=is_smooth_penalty)
 
 #%% sample
 t_begin = time.time()
@@ -389,11 +372,12 @@ print(f"sampling time {time.time() - t_begin:.0f} s")
 
 # ---- diagnostics ----
 print("divergences:", int(idata.sample_stats["diverging"].sum()))
-print(az.summary(idata, var_names=["a", "phi", "sigma", "nu", "tau"], round_to=3))
+print(az.summary(idata, var_names=["h", "tau_h"] + (["tau_s"] if is_smooth_penalty else [])
+                 + ["phi", "sigma", "nu"], round_to=3))
 
 #%% posterior-mean fit pieces (standardized units)
 post = idata.posterior.stack(s=("chain", "draw"))
-beta_ev = (post["a"].values[0] * post["w"].values).mean(-1)   # E[a w]: (L,)
+beta_ev = post["h"].values.mean(-1)          # kernel weights: (L,)
 b_mean = post["b"].values.mean(-1)
 phi_mean = post["phi"].values.mean(-1)
 
@@ -406,8 +390,8 @@ e_pred_s = ar_one_step(y_s - mu_s, phi_mean, run_starts)  # autocorrelated noise
 yhat = (mu_s + e_pred_s) * scale + y_mean
 y_partial = (y_s - nuis_s - e_pred_s) * scale
 yhat_event = event_s * scale
-hrf_uM = (post["a"].values[0] * post["hrf"].values).mean(-1) * scale  # a * h in micromolar
-print(f"peak of a*h: {hrf_uM.max():.4g} uM at {hrf_t[hrf_uM.argmax()]:.1f} s")
+hrf_uM = post["hrf"].values.mean(-1) * scale  # B h in micromolar
+print(f"peak of B h: {hrf_uM.max():.4g} uM at {hrf_t[hrf_uM.argmax()]:.1f} s")
 
 #%% figures
 if is_save:
@@ -417,7 +401,7 @@ if is_save:
 title = f"{subject} {select_parcel} {select_chromo} (mnt-correct)"
 ev_times = np.sort(np.concatenate([ons + off for ons, off in zip(mnt_onsets, run_offsets)]))  # concatenated time
 t_all = Y_all.time.values
-plot_result(idata, hrf_t, B @ w0, t_all, y_s, mu_s, event_s, ev_times, P, fs, title,
+plot_result(idata, hrf_t, t_all, y_s, mu_s, event_s, ev_times, P, fs, title,
             path=os.path.join(plot_dir, f'{subject}_{select_parcel}_posterior.png') if is_save else None)
 
 # 20 s around the third mnt-correct event
