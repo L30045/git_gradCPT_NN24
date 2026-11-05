@@ -25,6 +25,9 @@
 #   <ch>_erp_ok   epoch peak-to-peak <= 100 uV on this channel
 #   erp_ok_all    epoch kept by the existing pipeline (all present channels <= 100 uV)
 #
+#   EEG source: <subject>/preprocessed_EEG_and_events/*_task-gradCPT_run-XX_preproc_eeg.fif, the same files
+#   run_model_cont_EEG_fNIRS.py reads via utils.eeg_preproc_subj_level.
+#
 #   Band power (all trials), from the continuous preprocessed EEG (0.1-45 Hz, re-referenced, ICA):
 #     <ch>_<band>_<pre|post>       absolute power (uV^2) in [onset - W, onset) / [onset, onset + W)
 #     <ch>_<band>_<pre|post>_rel   band power / total power over 1-30 Hz
@@ -44,9 +47,7 @@
 import os
 import sys
 import glob
-import gzip
 import json
-import pickle
 import argparse
 import numpy as np
 import pandas as pd
@@ -258,10 +259,25 @@ def load_events(subject, run_id):
     return pd.read_csv(ev_path, sep='\t')
 
 
+def get_eeg_fif_path(subject, run_id):
+    return os.path.join(get_eeg_preproc_dir(subject), f'{subject}_task-gradCPT_run-{run_id:02d}_preproc_eeg.fif')
+
+
+def load_eeg_runs(subject):
+    """Preprocessed gradCPT EEG per run, read from the same *_preproc_eeg.fif files that
+    utils.eeg_preproc_subj_level loads for ../modeling/run_model_cont_EEG_fNIRS.py. (The
+    <subject>_preprocessed_dict.pkl.gz copy can differ: eeg_preprocess_pipeline.py rewrites the
+    dict on every rerun but keeps an existing .fif.)"""
+    eeg_dict = dict()
+    for run_key in RUN_KEYS:
+        fif = get_eeg_fif_path(subject, int(run_key[-1]))
+        if os.path.exists(fif):
+            eeg_dict[run_key] = mne.io.read_raw_fif(fif, preload=True, verbose=False)
+    return eeg_dict
+
+
 def extract_subject(subject, bp_win=BP_WIN):
-    gz_path = os.path.join(data_save_path, subject, f'{subject}_preprocessed_dict.pkl.gz')
-    with gzip.open(gz_path, 'rb') as f:
-        eeg_dict = pickle.load(f)['EEG']
+    eeg_dict = load_eeg_runs(subject)
 
     run_tables = []
     erp_store = {}  # ch -> list of (run_df_index, X, ok) to score mountain trials pooled across runs
@@ -375,7 +391,7 @@ def get_trial_modulator(subject, run, ev_df, columns, feat_df=None):
 #%% main
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--subjects', nargs='*', help='subject ids (e.g. 723 695); default: all with a preprocessed dict')
+    ap.add_argument('--subjects', nargs='*', help='subject ids (e.g. 723 695); default: all with a preprocessed gradCPT .fif')
     ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--bp-win', type=float, default=BP_WIN, help='band-power window before/after onset (s)')
     args = ap.parse_args()
@@ -383,8 +399,9 @@ if __name__ == '__main__':
     if args.subjects:
         subjects = [s if s.startswith('sub-') else f'sub-{s}' for s in args.subjects]
     else:
-        subjects = sorted(os.path.basename(os.path.dirname(p)) for p in
-                          glob.glob(os.path.join(data_save_path, 'sub-*', 'sub-*_preprocessed_dict.pkl.gz')))
+        subjects = sorted({os.path.basename(p).split('_')[0] for p in
+                           glob.glob(os.path.join(data_save_path, 'sub-*', 'preprocessed_EEG_and_events',
+                                                  'sub-*_task-gradCPT_run-*_preproc_eeg.fif'))})
 
     params = dict(ch_names=CH_NAMES, epoch=(EPOCH_TMIN, EPOCH_TMAX), detrend=EPOCH_DETREND,
                   reject_ptp_uV=REJECT_PTP_UV, erp_trial_types=ERP_TRIAL_TYPES, components=COMPONENTS,
