@@ -171,6 +171,9 @@ def gen_EEG_event_tsv(subj_id, data_path=None, savepath=None, gradcpt_path=None)
     """
     TODO: sub-695 run2, mnt_correct number doesn't match with Laura's event file. 2026-01-14
     """
+    # fall back to the module-level raw-data path (the argument shadows the global)
+    if data_path is None:
+        data_path = globals()['data_path']
     # setup savepath
     if savepath is None:
         savepath = get_eeg_preproc_dir(f'sub-{subj_id}')
@@ -204,7 +207,7 @@ def gen_EEG_event_tsv(subj_id, data_path=None, savepath=None, gradcpt_path=None)
         run_id = fname.lower().split("run-0")[-1][0]
         # get EEG trigger
         EEG = fix_and_load_brainvision(os.path.join(raw_EEG_path,fname))
-        eeg_trigger = EEG.get_data(picks='Trigger')
+        eeg_trigger = EEG.get_data(picks='Trigger')[0]  # 1-D; a (1, n) array makes np.where()[0] return row indices
         # load corresponding gradCPT
         f_cpt = files[[i for i, x in enumerate(files) if x.split('run-0')[1][0]==run_id][0]]
         data_cpt = sp.io.loadmat(os.path.join(gradcpt_path,f_cpt))
