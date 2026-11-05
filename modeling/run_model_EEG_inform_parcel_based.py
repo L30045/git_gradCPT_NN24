@@ -36,12 +36,12 @@ l_cutoff = 0.02 # highpass cutoff (Hz)
 
 #%% design matrix
 # Built by build_dm_gaussian-kernel_mnt-correct_EEG-informed.py and saved to
-# <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-amp-Woody.pkl (get_gauss_eeg_dm_path):
+# <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody.pkl (get_gauss_eeg_dm_path):
 # 20 Gaussian kernels (-2 to 18 s) for mnt-correct trials, 'HRF mnt-correct-stim XX' (unmodulated) and
 # 'HRF mnt-correct-eeg XX' (scaled by the single-trial Cz Woody P3 peak amplitude), on the rows of the
 # shared Y_all. Keys: 'full' (eeg then stim), 'onlyStim', 'onlyEEG'. The kernel settings (cfg_HRF_basis)
 # are read from the same file.
-EEG_AMP_TAG = 'woodyP3'           # added to the saved file names of full / onlyEEG models
+EEG_AMP_TAG = 'woodyN2P3ptp'         # added to the saved file names of full / onlyEEG models
 MODEL_NAME = 'gaussian-kernel_mnt-correct'  # in the saved file names
 
 #%% mask out low-sensitivity parcels using the forward-model sensitivity matrix

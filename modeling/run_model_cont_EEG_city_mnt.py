@@ -107,7 +107,12 @@ subj_id_array = [x for x in subj_id_array if f'sub-{x}' not in excluded_subj]
 t_pre = 2 # EEG lead (sec): each fNIRS sample also sees the EEG up to t_pre seconds after it
 t_post = 18 # EEG lag (sec): each fNIRS sample sees the EEG up to t_post seconds before it
 len_delay = t_pre + t_post # length of the delay window [-t_pre, t_post) (sec)
-eeg_reg_type = f'cont_EEG_cz_mnt_correct_incorrect_pre{t_pre}post{t_post}'
+# per-trial EEG baseline (s, relative to onset): the mean Cz over this window is subtracted from the Cz
+# samples inside that trial (onset -> onset + duration) before masking, as in ERP baseline correction
+# (eeg_epoch_subj_level uses -0.2-0 s). None: no baseline correction (raw within-trial Cz).
+eeg_baseline = (-0.2, 0.0)
+bl_tag = f'_bl{-eeg_baseline[0]:g}-{eeg_baseline[1]:g}' if eeg_baseline is not None else ''
+eeg_reg_type = f'cont_EEG_cz_mnt_correct_incorrect_pre{t_pre}post{t_post}{bl_tag}'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save Y_all, DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by fnirs_hp_cutoff
@@ -140,7 +145,8 @@ plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf')
 # (onset -> onset + duration). Preprocessing of Y is the same as cont_EEG_cz_3-stage_bspline-test in
 # run_model_cont_EEG_fNIRS.py (sensitive parcels, HbO, highpass, per-run window, drift/GSR
 # OLS-regressed out), but with fnirs_hp_cutoff and the [-t_pre, t_post) delay window.
-# The Cz EEG outside that trial type's trials is zeroed first, then the delays are built, projected onto
+# Within each trial, Cz is baseline-corrected (eeg_baseline). The Cz EEG outside that trial type's trials is
+# zeroed first, then the delays are built, projected onto
 # the B-splines and downsampled -- every fNIRS sample is modeled, by the within-trial EEG from t_post
 # seconds before to t_pre seconds after it.
 trial_type_selectors = {
@@ -258,6 +264,7 @@ for subj_id in subj_id_array:
     eeg_list = []
     all_runs_truncated = []
     eeg_masks = {tt: [] for tt in trial_type_prefixes}  # per run, bool over the cropped EEG samples
+    eeg_offsets = {tt: [] for tt in trial_type_prefixes}  # per run, per-trial baseline Cz (V) on the trial's samples, 0 elsewhere
     eeg_sample_nirs_t = []  # per run, fNIRS time of each cropped EEG sample
     fnirs_sample_t = []  # per run, fNIRS time of each kept fNIRS sample (before the reset to 0)
     n_trials_per_type = {tt: 0 for tt in trial_type_prefixes}
@@ -303,13 +310,21 @@ for subj_id in subj_id_array:
         eeg_sample_nirs_t.append(sample_nirs_t)
         fnirs_sample_t.append(fnirs_run.time.values)
         stim = all_stims[run_idx]
+        cz_run = EEG_raw.get_data(picks='cz').flatten()
         for tt, selector in trial_type_selectors.items():
             trials_df = stim[selector(stim)]
             n_trials_per_type[tt] += len(trials_df)
             run_mask = np.zeros(len(sample_nirs_t), dtype=bool)
+            run_offset = np.zeros(len(sample_nirs_t))
             for onset, duration in zip(trials_df['onset'].values, trials_df['duration'].values):
-                run_mask |= (sample_nirs_t >= onset) & (sample_nirs_t < onset + duration)
+                in_trial = (sample_nirs_t >= onset) & (sample_nirs_t < onset + duration)
+                run_mask |= in_trial
+                if eeg_baseline is not None:
+                    in_bl = (sample_nirs_t >= onset + eeg_baseline[0]) & (sample_nirs_t < onset + eeg_baseline[1])
+                    if in_bl.any():
+                        run_offset[in_trial] = cz_run[in_bl].mean()
             eeg_masks[tt].append(run_mask)
+            eeg_offsets[tt].append(run_offset)
 
         # reset fnirs_run.time to 0
         fnirs_run = fnirs_run.assign_coords(time=fnirs_run.time.values - fnirs_run.time.values[0])
@@ -349,7 +364,8 @@ for subj_id in subj_id_array:
             resid_runs.append((run - gsr_fit).transpose(*run.dims))
         all_runs = resid_runs
 
-    #%% create EEG regressors: per trial type, zero the Cz EEG outside that trial type's trials, build the
+    #%% create EEG regressors: per trial type, baseline-correct the Cz within each trial (eeg_offsets), zero the
+    # Cz EEG outside that trial type's trials, build the
     # delayed regressors from the masked EEG and project the delay axis onto the low-rank B-spline basis
     # (at EEG rate), lowpass at the fNIRS Nyquist and read them at the fNIRS sample times
     # (model.sample_cont_EEG_bspline_regressor). Every fNIRS sample is kept, so each trial's EEG
@@ -377,7 +393,7 @@ for subj_id in subj_id_array:
         # (n_fnirs_samples x n_regressor_total), trial types stacked along the regressor axis; the masked EEG
         # is zero outside the trials and the EEG crop covers every sample's delay history
         run_dm = np.concatenate([
-            model.sample_cont_EEG_bspline_regressor(eeg_reg_value_list[run_i] * eeg_masks[tt][run_i],
+            model.sample_cont_EEG_bspline_regressor((eeg_reg_value_list[run_i] - eeg_offsets[tt][run_i]) * eeg_masks[tt][run_i],
                                                     eeg_sample_nirs_t[run_i], bspline_basis, t_pre,
                                                     fnirs_sample_t[run_i], fnirs_sfreq / 2)
             for tt in trial_type_prefixes], axis=1)

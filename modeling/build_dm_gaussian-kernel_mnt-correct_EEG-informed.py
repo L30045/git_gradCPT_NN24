@@ -1,6 +1,6 @@
 #%% Build the Gaussian-kernel design matrix (mnt-correct, -2 to 18 s) with EEG-informed regressors
 # For each subject, builds the event regressors used by run_model_EEG_inform_parcel_based.py and saves them to
-#   <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-amp-Woody.pkl
+#   <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody.pkl
 #
 # Regressors (20 Gaussian kernels each: centres -2 ... 17 s, 1 s spacing, t_std 1 s):
 #   'HRF mnt-correct-stim XX'  every mnt-correct trial with amplitude 1
