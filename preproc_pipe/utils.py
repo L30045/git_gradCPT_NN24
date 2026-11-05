@@ -126,7 +126,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
                       is_reref=True, reref_ch=None,
                       is_ica_rmEye=True):
     rm_ch_list = []
-    eeg_trigger = EEG.get_data()[4]
+    eeg_trigger = EEG.get_data(picks='Trigger')[0]
     # Check if Trigger is pressed before and after the experiment. (The duration of two triggers should be longer than 6 mins as experiment design.)
     thres_trigger = (np.max(eeg_trigger)-np.min(eeg_trigger))/2+np.min(eeg_trigger)
     eeg_duration = np.max(np.diff(np.where(eeg_trigger<thres_trigger)[0]))/EEG.info["sfreq"]/60 # mins
@@ -164,7 +164,7 @@ def eeg_preproc_basic(EEG, is_bpfilter=True, bp_f_range=[0.1, 45], is_check_flat
         ica.exclude = eog_inds
         EEG = ica.apply(EEG,verbose=False)
     # Restore original Trigger channel data
-    EEG._data[4] = eeg_trigger
+    EEG._data[EEG.ch_names.index('Trigger')] = eeg_trigger  # by name: index 4 shifts once channels are dropped
     return EEG, rm_ch_list
 
 def gen_EEG_event_tsv(subj_id, data_path=None, savepath=None, gradcpt_path=None):

@@ -1,7 +1,6 @@
 #%% load library
 import numpy as np
 import pickle
-import copy
 import gzip
 import glob
 import sys
@@ -21,32 +20,29 @@ import xarray as xr
 import cedalion.io
 import cedalion.models.glm as glm
 from scipy.signal import butter, sosfiltfilt
-from extract_EEG_trial_features import get_features_path, load_trial_features, get_trial_modulator
 
 #%% select model type
-model_type = 'onlyStim' # 'full', 'onlyStim', 'onlyEEG' -> key of dm_dict.pkl
+model_type = 'onlyStim' # 'full', 'onlyStim', 'onlyEEG' -> key of the saved DM (see below)
 is_overwrite = False # If True, force re-training GLM.
 is_save = True # If True, save DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by 0.02 Hz
 select_chromo = 'HbO'
 USE_GSR = True
 DO_3STAGE_REGRESSION = True # Same as run_model_cont_EEG_fNIRS.py: OLS-regress out per-run drift, then GSR,
-                            # before the AR-IRLS fit. Drift/short-sep regressors in dm_dict.pkl are then dropped,
-                            # since drift is already removed and short-sep regressors are channel-space only.
+                            # before the AR-IRLS fit. Required: the DM below has no drift / GSR columns.
 cfg_GLM['do_GSR'] = USE_GSR
 len_delay = 15 # Delay time in HRF (sec); fNIRS window ends len_delay after the last event (same as cont EEG pipeline)
 l_cutoff = 0.02 # highpass cutoff (Hz)
-# Gaussian HRF kernels used when dm_dict.pkl was built (t_post was 10 s then; params_setting now uses 18 s).
-# Must match the DM's HRF regressors to expand betas back to HRF time courses.
-cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 10*units.s, 't_delta': 1*units.s, 't_std': 1*units.s}
 
-#%% EEG amplitude modulation of the '-eeg' HRF regressors (full / onlyEEG models)
-# dm_dict.pkl scales each trial's Gaussian kernels by the Cz ERP area (model.get_ERP_area). Here the '-eeg'
-# regressors are rebuilt with the single-trial Woody peak amplitude from
-# preproc_pipe/extract_EEG_trial_features.py (<subject>_EEG_trial_features.csv.gz) instead.
-EEG_AMP_FEATURE = 'P3_amp_woody'  # column suffix in the feature table: <ch>_<EEG_AMP_FEATURE>
-EEG_AMP_CHS = ['cz', 'pz']        # first channel with valid amplitudes in a run is used (cz, else pz)
+#%% design matrix
+# Built by build_dm_gaussian-kernel_mnt-correct_EEG-informed.py and saved to
+# <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-amp-Woody.pkl (get_gauss_eeg_dm_path):
+# 20 Gaussian kernels (-2 to 18 s) for mnt-correct trials, 'HRF mnt-correct-stim XX' (unmodulated) and
+# 'HRF mnt-correct-eeg XX' (scaled by the single-trial Cz Woody P3 peak amplitude), on the rows of the
+# shared Y_all. Keys: 'full' (eeg then stim), 'onlyStim', 'onlyEEG'. The kernel settings (cfg_HRF_basis)
+# are read from the same file.
 EEG_AMP_TAG = 'woodyP3'           # added to the saved file names of full / onlyEEG models
+MODEL_NAME = 'gaussian-kernel_mnt-correct'  # in the saved file names
 
 #%% mask out low-sensitivity parcels using the forward-model sensitivity matrix
 # only needed when Y_all has to be rebuilt, so compute lazily
@@ -250,113 +246,6 @@ def preprocess_fnirs(subject):
     Y_all, _, _ = model.concatenate_runs(all_runs, list(nirs_ev_dfs.values()))
     return Y_all
 
-#%% align a dm_dict.pkl design matrix (built on full-length runs) to Y_all
-def align_dm_to_Y(dm, Y_all):
-    """dm_dict.pkl DMs span the full concatenated runs (run01, run02, run03), while Y_all
-    only keeps each run's event window. Y_all's 'samples' coord holds the original
-    per-run sample index (resets at each run boundary), and 'Drift 0 run k' marks
-    run k's rows in the DM, so pick the matching rows run by run."""
-    samples = Y_all.samples.values
-    run_starts = np.concatenate([[0], np.where(np.diff(samples) <= 0)[0] + 1, [len(samples)]])
-    n_runs = len(run_starts) - 1
-
-    dm_common = dm.common
-    dm_runs = []
-    for r_i in range(n_runs):
-        run_mask = (dm_common.sel(regressor=f'Drift 0 run {r_i}').isel(chromo=0) != 0).values
-        dm_run = dm_common.isel(time=np.where(run_mask)[0])
-        run_samples = samples[run_starts[r_i]:run_starts[r_i + 1]]
-        if run_samples.max() >= dm_run.sizes['time']:
-            raise ValueError(f"run {r_i}: Y_all sample index {run_samples.max()} exceeds DM run length {dm_run.sizes['time']}")
-        dm_runs.append(dm_run.isel(time=run_samples))
-
-    dm_aligned = copy.deepcopy(dm)
-    dm_aligned.common = xr.concat(dm_runs, dim='time').assign_coords(time=Y_all.time.values)
-    return dm_aligned
-
-#%% Woody-amplitude EEG regressors
-def get_woody_scale(subject, run_id, ev_df, feat_df):
-    """Per-trial scale factors for the rows of ev_df (mnt trials of one trial type in one run),
-    mirroring model.get_ERP_area / create_eeg_dm: the amplitude of clean trials is divided by the
-    run's max |amplitude|; rejected trials (epoch > 100 uV on the channel, or NaN amplitude) get the
-    mean scale of the clean trials. Returns (scale, channel used, n clean trials)."""
-    for ch in EEG_AMP_CHS:
-        col = f'{ch}_{EEG_AMP_FEATURE}'
-        if col not in feat_df:
-            continue
-        f = get_trial_modulator(subject, run_id, ev_df, [col, f'{ch}_erp_ok'], feat_df=feat_df)
-        amp = f[col].values.astype(float)
-        ok = f[f'{ch}_erp_ok'].astype(bool).values & np.isfinite(amp)
-        if ok.sum() == 0:
-            continue
-        scale = amp / np.max(np.abs(amp[ok]))
-        scale[~ok] = scale[ok].mean()
-        return scale, ch, int(ok.sum())
-    return None, None, 0
-
-
-def rebuild_eeg_regressors(dm, subject, feat_df):
-    """Replace the 'HRF mnt-(in)correct-eeg' regressors of a dm_dict.pkl DM (full-length runs) with
-    Gaussian-kernel regressors whose per-trial amplitude is the Woody peak amplitude. Regressor names,
-    order and time base are kept, so align_dm_to_Y and the HRF expansion below work unchanged."""
-    common = dm.common.copy(deep=True)
-    reg_names = list(common.regressor.values)
-    eeg_regs = [r for r in reg_names if r.startswith('HRF mnt-') and '-eeg' in r]
-    if len(eeg_regs) == 0:
-        return dm
-    common = common.transpose('time', 'regressor', 'chromo')
-    vals = common.values
-    vals[:, [reg_names.index(r) for r in eeg_regs], :] = 0.0
-
-    basis_fn = glm.GaussianKernels(cfg_HRF_basis['t_pre'], cfg_HRF_basis['t_post'],
-                                   cfg_HRF_basis['t_delta'], cfg_HRF_basis['t_std'])
-    chromos = common.chromo.values
-    t_all = common.time.values
-    n_runs = int(sum(r.startswith('Drift 0 run') for r in reg_names))
-    for r_i in range(n_runs):
-        run_id = r_i + 1  # dm_dict.pkl runs are concatenated in gradcpt1, 2, 3 order
-        run_idx = np.where((common.sel(regressor=f'Drift 0 run {r_i}').isel(chromo=0) != 0).values)[0]
-        t_run = t_all[run_idx]
-        # fNIRS run time starts at 0, so events sit at onset + the run's offset in the concatenated DM
-        ev_df = pd.read_csv(os.path.join(project_path, subject, 'nirs',
-                                         f'{subject}_task-gradCPT_run-{run_id:02d}_events.tsv'), sep='\t')
-        stim_list = []
-        for tt, resp_mask in [('mnt-correct-eeg', ev_df['response_code'] == 0),
-                              ('mnt-incorrect-eeg', ev_df['response_code'] != 0)]:
-            if not any(r.startswith(f'HRF {tt} ') for r in eeg_regs):
-                continue
-            tt_ev = ev_df[(ev_df['trial_type'] == 'mnt') & resp_mask]
-            if len(tt_ev) == 0:
-                continue
-            scale, ch, n_ok = get_woody_scale(subject, run_id, tt_ev, feat_df)
-            if scale is None:
-                print(f'  {subject} run {run_id} {tt}: no clean {EEG_AMP_FEATURE} trials, regressor left at 0')
-                continue
-            print(f'  {subject} run {run_id} {tt}: {ch}_{EEG_AMP_FEATURE}, {n_ok}/{len(tt_ev)} clean trials')
-            stim_list.append(pd.DataFrame({'onset': tt_ev['onset'].values + t_run[0],
-                                           'duration': tt_ev['duration'].values,
-                                           'value': scale,
-                                           'trial_type': tt}))
-        if len(stim_list) == 0:
-            continue
-        stim = pd.concat(stim_list, ignore_index=True)
-        ts = xr.DataArray(np.zeros((1, len(chromos), len(t_run))), dims=('channel', 'chromo', 'time'),
-                          coords={'channel': ['dummy'], 'chromo': chromos, 'time': t_run})
-        ts.time.attrs['units'] = 's'
-        ts = ts.pint.quantify('molar')
-        reg = glm.design_matrix.hrf_regressors(ts, stim, basis_fn).common
-        if hasattr(reg.data, 'magnitude'):
-            reg = reg.pint.dequantify()
-        reg = reg.transpose('time', 'regressor', 'chromo').sel(chromo=chromos)
-        for name in reg.regressor.values:
-            if name not in eeg_regs:
-                raise ValueError(f'{subject}: rebuilt regressor {name} not in the dm_dict.pkl DM')
-            vals[run_idx, reg_names.index(name), :] = np.asarray(reg.sel(regressor=name).values)
-
-    dm_new = copy.deepcopy(dm)
-    dm_new.common = common.copy(data=vals).transpose(*dm.common.dims)
-    return dm_new
-
 #%% main
 for subj_id in tqdm(subj_id_array):
     subject = f"sub-{subj_id}"
@@ -367,7 +256,7 @@ for subj_id in tqdm(subj_id_array):
     hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
     use_eeg_amp = model_type.startswith('full') or model_type.startswith('onlyEEG')
     model_tag = f'{model_type}-{EEG_AMP_TAG}' if use_eeg_amp else model_type
-    save_prefix = os.path.join(data_save_path, f'{subject}_event-based_onParcel_{model_tag}_{NOISE_MODEL}_{hp_flag}')
+    save_prefix = os.path.join(data_save_path, f'{subject}_event-based_onParcel_{MODEL_NAME}_{model_tag}_{NOISE_MODEL}_{hp_flag}')
     betas_save_path = get_betas_path(save_prefix)
     stats_save_path = get_stats_path(save_prefix)
     dm_all_save_path = get_dm_all_path(save_prefix)
@@ -375,13 +264,21 @@ for subj_id in tqdm(subj_id_array):
         print(f"{subject}: betas already exist, skipping.")
         continue
 
-    dm_dict_path = get_dm_dict_path(data_save_path)
-    if not os.path.exists(dm_dict_path):
-        print(f"{subject}: dm_dict.pkl not found, skipping.")
+    dm_path = get_gauss_eeg_dm_path(data_save_path)
+    if not os.path.exists(dm_path):
+        print(f"{subject}: {os.path.basename(dm_path)} not found (run build_dm_gaussian-kernel_mnt-correct_EEG-informed.py), skipping.")
         continue
-    if use_eeg_amp and not os.path.exists(get_features_path(subject)):
-        print(f"{subject}: EEG trial features not found, skipping.")
+    with open(dm_path, 'rb') as f:
+        dm_saved = pickle.load(f)
+    dm_key = next((k for k in ['full', 'onlyStim', 'onlyEEG'] if model_type.startswith(k)), None)
+    if dm_key not in dm_saved['dm']:
+        print(f"{subject}: no '{dm_key}' DM in {os.path.basename(dm_path)} (EEG features missing?), skipping.")
         continue
+    if not DO_3STAGE_REGRESSION:
+        raise ValueError("the saved DM has no drift / GSR columns; set DO_3STAGE_REGRESSION = True")
+    dm_all = dm_saved['dm'][dm_key]
+    cfg_HRF_basis = {k: v * units.s for k, v in dm_saved['cfg_HRF_basis'].items()}
+    del dm_saved
 
     #%% load Y_all from the cont EEG pipeline if available; otherwise rebuild it
     cont_Y_all_path = get_shared_Y_all_path(data_save_path, subject, hp_flag)
@@ -394,32 +291,10 @@ for subj_id in tqdm(subj_id_array):
         Y_all = preprocess_fnirs(subject)
     Y_all = Y_all.sel(chromo=[select_chromo])
 
-    #%% load DM and align it to Y_all
-    with open(dm_dict_path, 'rb') as f:
-        dm_dict = pickle.load(f)
-    if model_type.startswith('full'):
-        dm_all = dm_dict['full']
-    elif model_type.startswith('onlyStim'):
-        dm_all = dm_dict['onlyStim']
-    elif model_type.startswith('onlyEEG'):
-        dm_all = dm_dict['onlyEEG']
-    else:
-        dm_all = dm_dict['basis']
-    del dm_dict
-
-    # replace the ERP-area scaling of the '-eeg' regressors by the Woody peak amplitude
-    if use_eeg_amp:
-        dm_all = rebuild_eeg_regressors(dm_all, subject, load_trial_features(subject))
-
-    dm_all = align_dm_to_Y(dm_all, Y_all)
-
-    # drift is already regressed out of Y_all and short-sep regressors are channel-space, so keep HRF regressors only
-    if DO_3STAGE_REGRESSION:
-        keep_reg = [r for r in dm_all.common.regressor.values if not (r.startswith('Drift') or r.startswith('short'))]
-        if len(keep_reg) == 0:
-            raise ValueError(f"model_type={model_type} has no regressors left after dropping drift/short-sep regressors.")
-        dm_all.common = dm_all.common.sel(regressor=keep_reg)
-
+    #%% check that the DM rows are Y_all's samples (per-run fNIRS sample index, resets at run starts)
+    if not np.array_equal(dm_all.common.samples.values, Y_all.samples.values):
+        raise ValueError(f"{subject}: DM rows do not match Y_all samples; rebuild the DM.")
+    dm_all.common = dm_all.common.drop_vars('samples').assign_coords(time=Y_all.time.values)
     dm_all.common = dm_all.common.fillna(0)
 
     #%% select HbO to fasten training process
@@ -475,7 +350,7 @@ for subj_id in tqdm(subj_id_array):
     betas_dict['betas'] = betas_all
     betas_dict['cov_params'] = cov_params
     if not model_type.startswith('basis'):
-        trial_type_list = ['mnt-correct', 'mnt-incorrect']
+        trial_type_list = ['mnt-correct']
         run_unit = Y_all.pint.units
         basis_hrf = glm.GaussianKernels(cfg_HRF_basis['t_pre'], cfg_HRF_basis['t_post'], cfg_HRF_basis['t_delta'], cfg_HRF_basis['t_std'])(Y_all)
         n_hrf_reg = int(betas_all.regressor.str.startswith('HRF mnt-correct-').sum()) // (2 if model_type.startswith('full') else 1)

@@ -50,6 +50,12 @@ def get_dm_all_path(prefix):
 def get_dm_dict_path(subj_dir, fname='dm_dict.pkl'):
     return os.path.join(subj_dir, 'dm', fname)
 
+GAUSS_EEG_DM_FNAME = 'gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-amp-Woody.pkl'
+def get_gauss_eeg_dm_path(subj_dir):
+    """Gaussian-kernel (-2 to 18 s) mnt-correct DM with Woody-modulated EEG regressors, built by
+    build_dm_gaussian-kernel_mnt-correct_EEG-informed.py on the shared Y_all time base."""
+    return os.path.join(subj_dir, 'dm', GAUSS_EEG_DM_FNAME)
+
 def get_scale_tag(is_scale_Y):
     """Model-name tag for the Y scaling option of the spectrally whitened fits (iRRR_AR, fixAR-IRLS).
     Scaled fits (the default) keep the untagged name; unscaled fits get '_noScale'. The tag goes

@@ -156,7 +156,7 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
             continue
 
         # Step 0 – raw ────────────────────────────────────────────────────────
-        eeg_trigger = EEG_raw.get_data(picks='Trigger') # get data from Trigger channel
+        eeg_trigger = EEG_raw.get_data(picks='Trigger')[0] # 1-D Trigger data (a (1, n) array makes np.where()[0] return row indices)
         thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
         # check if the trigger goes to 0V or -0.9V when being pressed
         press_period = eeg_trigger < thres_trigger
@@ -253,7 +253,6 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
 
                 ica.exclude = eog_inds
                 EEG_step4 = ica.apply(EEG_step4, verbose=False)
-                EEG_step4._data[4] = eeg_trigger
             except Exception as e:
                 print(f"  ICA failed: {e}")
                 # save a placeholder scores figure showing the error
@@ -261,6 +260,9 @@ for vis_subj_id in tqdm(all_subj_ids, desc="subjects"):
                 ax_err.text(0.5, 0.5, f"ICA failed:\n{e}", ha='center', va='center', wrap=True)
                 ax_err.axis('off')
                 _savefig(fig_err, save_dir, f"{prefix}_step4_ICA_scores.png")
+        # restore the unfiltered Trigger channel by name (a fixed index points to another channel once
+        # bad channels are dropped)
+        EEG_step4._data[EEG_step4.ch_names.index('Trigger')] = eeg_trigger
 
         _savefig(_make_psd_fig(EEG_step4, ch_names, f"{prefix} – Post-ICA PSD"),
                  save_dir, f"{prefix}_step4_ICA_psd.png")
@@ -379,7 +381,7 @@ for _vhdr_file in _vhdr_files:
 
     # ── Step 0: load raw ──────────────────────────────────────────────────────
     EEG_raw = fix_and_load_brainvision(os.path.join(_raw_eeg_path, _vhdr_file))
-    eeg_trigger = EEG_raw.get_data()[4]
+    eeg_trigger = EEG_raw.get_data(picks='Trigger')[0]
     thres_trigger = (np.max(eeg_trigger) - np.min(eeg_trigger)) / 2 + np.min(eeg_trigger)
     # check if the trigger goes to 0V or -0.9V when being pressed
     press_period = eeg_trigger < thres_trigger
@@ -472,7 +474,9 @@ for _vhdr_file in _vhdr_files:
 
         ica.exclude = eog_inds
         EEG_step4 = ica.apply(EEG_step4, verbose=False)
-        EEG_step4._data[4] = eeg_trigger
+    # restore the unfiltered Trigger channel by name (a fixed index points to another channel once
+    # bad channels are dropped)
+    EEG_step4._data[EEG_step4.ch_names.index('Trigger')] = eeg_trigger
 
     _savefig(_make_psd_fig(EEG_step4, ch_names, f"{_prefix} – Post-ICA PSD"),
              _vis_dir, f"{_prefix}_step4_ICA_psd.png")

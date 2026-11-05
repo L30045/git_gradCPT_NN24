@@ -8,7 +8,8 @@
 #   ERP (mountain trials only; NaN for city trials), from epochs -0.2 to 1.6 s, baseline (-0.2, 0),
 #   linear detrend, 10 Hz zero-phase low-pass -- same epoching as eeg_epoch_subj_level.
 #   Windows and estimators follow single_trial_ERP_estimation.ipynb:
-#     N2 window 0.42-0.62 s (negative), P3 window 0.60-0.95 s (positive)
+#     N2 window 0.42-0.62 s (negative), P3 window 0.25-0.80 s (positive; widened from 0.60-0.95 s so the
+#     search starts before the N2 and a late search does not miss the P3)
 #     <ch>_<comp>_lat_woody, _amp_woody    Woody (1967) cross-correlation alignment
 #     <ch>_<comp>_lat_fal50                 50% fractional-area latency (Kiesel 2008)
 #     <ch>_<comp>_meanamp                   mean amplitude in the window
@@ -17,6 +18,10 @@
 #     <ch>_<comp>_area                      polarity-rectified area in the window (uV*s, >= 0)
 #     <ch>_<comp>_area_signed               signed integral in the window (uV*s)
 #     <ch>_<comp>_edge_woody / _nopeak_localpeak   QC flags
+#     <ch>_N2P3_ptp_woody                   N2-to-P3 peak-to-peak amplitude (>= 0): the Woody P3 peak minus
+#                                           the trial's minimum between the P3 window start (0.25 s) and the
+#                                           Woody P3 peak latency
+#     <ch>_N2P3_N2amp_woody, _N2lat_woody   that minimum (the N2 trough) and its latency
 #   Notebook recommendation: P3 latency -> woody or fal50; P3 amplitude -> mlr, woody or localpeak
 #   (or area/meanamp). Single-trial N2 is not recoverable at this SNR (r <= 0.11 in simulation);
 #   use only meanamp/area for N2, and expect attenuated slopes for every ERP feature.
@@ -71,7 +76,7 @@ ERP_TRIAL_TYPES = ('mnt',)  # trial_type values that get ERP features
 
 COMPONENTS = {
     'N2': dict(sign=-1, win=(0.42, 0.62)),
-    'P3': dict(sign=+1, win=(0.60, 0.95)),
+    'P3': dict(sign=+1, win=(0.25, 0.80)),
 }
 LP_HZ = 10.0
 LOCAL_PEAK_HW = 0.020  # s
@@ -144,9 +149,11 @@ def est_window_integrals(Y, t, sfreq, comp, frac=FAL_FRAC):
                 lat_fal=np.where(tot > 0, t[idx[kk]], np.nan))
 
 
-def est_woody(Y, t, sfreq, comp, fit_mask, max_lag=WOODY_MAX_LAG, n_iter=WOODY_N_ITER):
+def est_woody(Y, t, sfreq, comp, fit_mask, max_lag=WOODY_MAX_LAG, n_iter=WOODY_N_ITER, return_template=False):
     """Woody alignment. The template is iterated on the fit_mask (clean) trials; every trial gets the
-    lag that maximises its correlation with the final template."""
+    lag that maximises its correlation with the final template. return_template=True adds the final
+    template (on t[window]), the window indices, the per-trial lag (s), the template peak index and the
+    per-trial correlation at the chosen lag (for visualization)."""
     n = len(Y)
     idx = _win_idx(t, comp['win'])
     L = int(round(max_lag * sfreq))
@@ -169,7 +176,12 @@ def est_woody(Y, t, sfreq, comp, fit_mask, max_lag=WOODY_MAX_LAG, n_iter=WOODY_N
     kp = (comp['sign'] * tmpl).argmax()
     lag_s = lags[lag_i]
     pk = idx[kp] + lag_s
-    return dict(amp=Y[rows, pk], lat=t[pk], edge=np.abs(lag_s) == L)
+    out = dict(amp=Y[rows, pk], lat=t[pk], edge=np.abs(lag_s) == L, pk=pk)
+    if return_template:
+        tc = tmpl - tmpl.mean()
+        r = seg_n[rows, lag_i] @ (tc / max(np.linalg.norm(tc), 1e-12))
+        out.update(template=tmpl, win_idx=idx, lag_s=lag_s / sfreq, peak_idx=kp, corr=r)
+    return out
 
 
 def est_template_mlr(Y, t, sfreq, comp, fit_mask, pad=MLR_PAD):
@@ -189,6 +201,19 @@ def est_template_mlr(Y, t, sfreq, comp, fit_mask, pad=MLR_PAD):
     res = window_peak(full, t, comp)
     res['edge'] = res['edge'] | (B[1] <= 0)
     return res
+
+
+def n2p3_ptp(Y, t, p3_pk, n2_start):
+    """N2-to-P3 peak-to-peak: Y at the P3 peak sample p3_pk minus the trial's minimum between n2_start (s)
+    and p3_pk (inclusive), so it is >= 0. Returns ptp, the N2 trough amplitude and its latency."""
+    i0 = int(np.searchsorted(t, n2_start))
+    cols = np.arange(Y.shape[1])
+    lo = np.minimum(i0, p3_pk)  # a P3 peak before n2_start gives a one-sample segment (ptp = 0)
+    seg = np.where((cols[None, :] >= lo[:, None]) & (cols[None, :] <= p3_pk[:, None]), Y, np.inf)
+    k = seg.argmin(1)
+    rows = np.arange(len(Y))
+    n2 = Y[rows, k]
+    return Y[rows, p3_pk] - n2, n2, t[k]
 
 
 def erp_features(X, t, sfreq, ok):
@@ -219,6 +244,14 @@ def erp_features(X, t, sfreq, ok):
         out[f'{cname}_amp_mlr'] = ml['amp']
         out[f'{cname}_lat_mlr'] = ml['lat']
         out[f'{cname}_edge_mlr'] = ml['edge']
+        if cname == 'P3':
+            if use_template:
+                ptp, n2, n2_lat = n2p3_ptp(Y, t, wd['pk'], comp['win'][0])
+            else:
+                ptp = n2 = n2_lat = nan
+            out['N2P3_ptp_woody'] = ptp
+            out['N2P3_N2amp_woody'] = n2
+            out['N2P3_N2lat_woody'] = n2_lat
     return out
 
 
