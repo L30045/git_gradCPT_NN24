@@ -428,7 +428,8 @@ def plot_ch_erp(epochs, vis_ch, center_method=np.mean, shaded_method=lambda x: n
     if is_return_data:
         return plt_center, plt_shade, plt_time
 
-def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None, ref_onset=None, sort_label='VTC'):
+def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, clim=[-10*1e-6, 10*1e-6], title_txt=None, ref_onset=None, sort_label='VTC',
+                 cmap='RdBu_r', cbar_label='Amplitude (µV)', avg_ylabel='Amplitude (V)', img_title='ERP Image', avg_title='Average ERP', show=True):
     """
     Plot ERPImage for a 2D matrix (trial, times) and the average ERP across all trials.
 
@@ -441,6 +442,7 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
         title_txt: title.
         ref_onset: 1d array. The time series relative to the onset (e.g. stim vs response)
         sort_label: str. sorting varaiable
+        cmap, cbar_label, avg_ylabel, img_title, avg_title: colormap and labels (defaults are for ERP amplitude).
     
     Return:
         fig: fig object.
@@ -464,7 +466,7 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
 
     # Top subplot: ERP Image
     n_trials = plt_epoch_smooth.shape[0]
-    im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap='RdBu_r',
+    im = axes[0].imshow(plt_epoch_smooth, aspect='auto', origin='lower', cmap=cmap,
                         extent=[time_vector[0], time_vector[-1], 0, n_trials],
                         vmin=clim[0], vmax=clim[1]
                         )
@@ -475,10 +477,10 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
         y_coords = np.arange(len(ref_onset_smooth)) + 0.5
         axes[0].plot(ref_onset_smooth, y_coords, color='black', linewidth=2, label='Ref Onset')
 
-    plt.colorbar(im, ax=axes[0], label='Amplitude (µV)')
+    plt.colorbar(im, ax=axes[0], label=cbar_label)
     axes[0].set_xlabel('Time (s)')
     axes[0].set_ylabel(sort_label)
-    axes[0].set_title(f'ERP Image - {title_txt}')
+    axes[0].set_title(f'{img_title} - {title_txt}')
     axes[0].legend(loc='upper right')
 
     # Bottom subplot: Average of all trials
@@ -490,12 +492,13 @@ def plt_ERPImage(time_vector, plt_epoch, sort_idx=None, smooth_window_size=10, c
     axes[1].axvline(x=0, color='black', linestyle='--', linewidth=1.5, label='Stimulus onset')
     axes[1].axhline(y=0, color='gray', linestyle='-', linewidth=0.5)
     axes[1].set_xlabel('Time (s)')
-    axes[1].set_ylabel('Amplitude (V)')
-    axes[1].set_title(f'Average ERP - {title_txt}')
+    axes[1].set_ylabel(avg_ylabel)
+    axes[1].set_title(f'{avg_title} - {title_txt}')
     axes[1].legend(loc='upper right')
     axes[1].grid(True, alpha=0.3)
 
-    plt.show()
+    if show:
+        plt.show()
     return fig
 
 # visualize multitaper result
@@ -506,7 +509,8 @@ def plt_multitaper(plt_epoch,
                     expectation_type="trials_tapers",
                     ratio_to=None,
                     is_plot=True,
-                    vis_f_range=[0, 50]):
+                    vis_f_range=[0, 50],
+                    show=True):
     if not time_window_step:
         time_window_step = time_window_duration
     time_vector = plt_epoch.times
@@ -592,7 +596,8 @@ def plt_multitaper(plt_epoch,
             avg_ref = avg_ref[time_mask]
             ax2.plot(trimmed_time_vector, avg_ref, 'r', linewidth=1.5, label="Ref")
         ax2.legend()
-        plt.show()
+        if show:
+            plt.show()
 
     return (log_power,multitaper,connectivity)
 

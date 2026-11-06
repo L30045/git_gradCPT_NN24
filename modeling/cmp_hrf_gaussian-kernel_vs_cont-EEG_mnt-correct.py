@@ -33,12 +33,14 @@
 #                is_save = False: joint HRF + drift/GSR + AR(P) Student-t model, PyMC NUTS, 20 Gaussian
 #                kernels (-2 to 18 s), mnt-correct trials, no 3-stage preprocessing. Its posterior 'hrf' (B h,
 #                standardized units) times the script's data std ('scale') gives uM. The draws are cached in
-#                <out_dir>/<subject>_Bayes_hrf_<parcel>.pkl (delete to refit). The older saved posteriors in
+#                <out_dir>/<subject>_Bayes_hrf_<parcel><flag>.pkl (delete to refit). The older saved posteriors in
 #                <derivatives>/eeg/<subject>/bayes/ (2026-11-02, previous model version) are not used: their
 #                'hrf' is not on the current script's scale. Each draw is baseline-corrected (mean over t < 0
 #                removed); the band is the 2.5-97.5% posterior interval of the corrected draws.
 #
-# Nothing is saved by the two model scripts (is_save = False). Outputs: a PNG in this folder and a pickle
+# SUBJ_ID = None runs every subject in SUBJ_ID_LIST, each in its own process.
+# Nothing is saved by the two model scripts (is_save = False). Outputs: a PNG in
+# derivatives/eeg/single_Subj_results/Compare_GK-onlyStim_GK-onlyEEG_Bayesian_ContEEG-mnt-correct and a pickle
 # with the curves in <derivatives>/eeg/<subject>/cmp_HRF_DM/.
 #%% load library
 import os
@@ -49,21 +51,38 @@ import numpy as np
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
+import subprocess
 
 MODELING = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, MODELING)
 from params_setting import *
 
 #%% settings
-SUBJ_ID = 723
+SUBJ_ID_LIST = [670, 695, 721, 723, 726, 730]
+SUBJ_ID = None          # None: run every subject in SUBJ_ID_LIST (one subprocess each); or set one id, e.g. 723
 PARCELS = ['DorsAttnB_PostC_2_RH', 'SomMotA_25_LH']
 HRF_WIN = (-2.0, 18.0)   # s, block-average window
 CONT_HP = 0.02           # fNIRS highpass for the cont EEG model (shared Y_all uses 0.02 Hz)
 BAYES_SCRIPT = os.path.join('Bayesian model', 'run_Bayes_image-space_gaussian-kernel_mnt-correct.py')
 RUN_BAYES = True         # fit the Bayes model if no cached posterior exists (slow: NUTS, 4 chains)
+if os.environ.get('CMP_HRF_SUBJ_ID'):
+    SUBJ_ID = int(os.environ['CMP_HRF_SUBJ_ID'])
+if SUBJ_ID is None:
+    # driver: rerun this file once per subject in a fresh process (models of one subject do not leak into the next)
+    failed = []
+    for sid in SUBJ_ID_LIST:
+        print(f'\n######## sub-{sid} ########', flush=True)
+        rc = subprocess.run([sys.executable, '-u', os.path.abspath(__file__)],
+                            env={**os.environ, 'CMP_HRF_SUBJ_ID': str(sid)}).returncode
+        if rc != 0:
+            failed.append(sid)
+    print(f'done; failed subjects: {failed}')
+    sys.exit(1 if failed else 0)
 subject = f'sub-{SUBJ_ID}'
 out_dir = os.path.join(project_path, 'derivatives', 'eeg', subject, 'cmp_HRF_DM')
-fig_path = os.path.join(MODELING, f'cmp_HRF_DM_{subject}_mnt-correct.png')
+fig_dir = os.path.join(project_path, 'derivatives', 'eeg', 'single_Subj_results',
+                       'Compare_GK-onlyStim_GK-onlyEEG_Bayesian_ContEEG-mnt-correct')
+fig_path = os.path.join(fig_dir, f'cmp_HRF_DM_{subject}_mnt-correct.png')
 
 
 def run_script(fname, replacements, cut_at=None):
@@ -229,7 +248,7 @@ for p in PARCELS:
 #%% 4. Bayesian HRF (saved posterior, run 1)
 def bayes_curve(parcel):
     """posterior HRF in uM from the current Bayes script (cached), baseline-corrected per draw"""
-    cache = os.path.join(out_dir, f'{subject}_Bayes_hrf_{parcel}.pkl')
+    cache = os.path.join(out_dir, f'{subject}_Bayes_hrf_{parcel}{flag}.pkl')  # flag: forward model (params_setting)
     if os.path.exists(cache):
         with open(cache, 'rb') as f:
             bres = pickle.load(f)
@@ -314,6 +333,7 @@ for row, p in enumerate(PARCELS):
     a.set(xlim=HRF_WIN, xlabel='Time / delay (s)', ylabel='normalized to max |.| in 0-12 s', title=f'{p}: shape')
     a.grid(alpha=0.3)
 fig.suptitle(f'{subject} HbO, mnt-correct HRF: GLM (AR-IRLS) with three design matrices vs Bayesian model')
+os.makedirs(fig_dir, exist_ok=True)
 fig.savefig(fig_path, dpi=130)
 print(f'saved {fig_path}')
 
