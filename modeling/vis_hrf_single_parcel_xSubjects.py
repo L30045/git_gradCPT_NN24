@@ -189,8 +189,10 @@ def load_event_based_runs(subject, select_parcel):
     run_key_to_nirs_df = dict()
     for run_num, (nirs_file, nirs_df) in enumerate(nirs_ev_dfs.items(), start=1):
         nirs_onset0 = nirs_df['onset'].values[0]
+        nirs_rt0 = nirs_df['reaction_time'].values[:3]
         for r_i, stim in enumerate(all_stims):
-            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
+            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01) \
+                and np.allclose(stim['reaction_time'].values[:3], nirs_rt0, atol=0.01, equal_nan=True):
                 run_key_to_run_idx[f'gradcpt{run_num}'] = r_i
                 run_key_to_nirs_df[f'gradcpt{run_num}'] = nirs_df
                 break

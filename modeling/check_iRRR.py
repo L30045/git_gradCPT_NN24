@@ -224,8 +224,10 @@ for run_key, ev_df in eeg_ev_dfs.items():
 run_key_to_run_idx = dict()
 for run_key, nirs_file in matched_nirs_file.items():
     nirs_onset0 = nirs_ev_dfs[nirs_file]['onset'].values[0]
+    nirs_rt0 = nirs_ev_dfs[nirs_file]['reaction_time'].values[:3]
     for r_i, stim in enumerate(all_stims):
-        if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
+        if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01) \
+                and np.allclose(stim['reaction_time'].values[:3], nirs_rt0, atol=0.01, equal_nan=True):
             run_key_to_run_idx[run_key] = r_i
             break
 

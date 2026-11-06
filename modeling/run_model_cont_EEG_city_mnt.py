@@ -111,8 +111,14 @@ len_delay = t_pre + t_post # length of the delay window [-t_pre, t_post) (sec)
 # samples inside that trial (onset -> onset + duration) before masking, as in ERP baseline correction
 # (eeg_epoch_subj_level uses -0.2-0 s). None: no baseline correction (raw within-trial Cz).
 eeg_baseline = (-0.2, 0.0)
+# EEG kept around each trial (s, relative to onset); everything outside every trial's window is zeroed.
+# None: onset -> onset + duration (the 0.8 s trial). (-t_pre, t_post) keeps the same range the delay kernel
+# spans. Overlapping windows of consecutive trials are merged; a sample in an overlap is baseline-corrected
+# with the most recent trial's baseline.
+eeg_trial_window = None  # e.g. (-t_pre, t_post) keeps 20 s around each onset (tested on sub-723: mostly continuous EEG, not used)
 bl_tag = f'_bl{-eeg_baseline[0]:g}-{eeg_baseline[1]:g}' if eeg_baseline is not None else ''
-eeg_reg_type = f'cont_EEG_cz_mnt_correct_incorrect_pre{t_pre}post{t_post}{bl_tag}'
+win_tag = f'_eegwin{eeg_trial_window[0]:g}-{eeg_trial_window[1]:g}' if eeg_trial_window is not None else ''
+eeg_reg_type = f'cont_EEG_cz_mnt_correct_incorrect_pre{t_pre}post{t_post}{bl_tag}{win_tag}'
 is_overwrite = True # If True, force re-training GLM.
 is_save = True # If True, save Y_all, DM and GLM results
 is_hp_fNIRS = True # If True, highpass fNIRS by fnirs_hp_cutoff
@@ -249,8 +255,10 @@ for subj_id in subj_id_array:
     run_key_to_run_idx = dict()
     for run_key, nirs_file in matched_nirs_file.items():
         nirs_onset0 = nirs_ev_dfs[nirs_file]['onset'].values[0]
+        nirs_rt0 = nirs_ev_dfs[nirs_file]['reaction_time'].values[:3]
         for r_i, stim in enumerate(all_stims):
-            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01):
+            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onset0, atol=0.01) \
+                and np.allclose(stim['reaction_time'].values[:3], nirs_rt0, atol=0.01, equal_nan=True):
                 run_key_to_run_idx[run_key] = r_i
                 break
 
@@ -316,8 +324,10 @@ for subj_id in subj_id_array:
             n_trials_per_type[tt] += len(trials_df)
             run_mask = np.zeros(len(sample_nirs_t), dtype=bool)
             run_offset = np.zeros(len(sample_nirs_t))
+            trials_df = trials_df.sort_values('onset')  # later trials overwrite the baseline in overlaps
             for onset, duration in zip(trials_df['onset'].values, trials_df['duration'].values):
-                in_trial = (sample_nirs_t >= onset) & (sample_nirs_t < onset + duration)
+                w0, w1 = eeg_trial_window if eeg_trial_window is not None else (0.0, duration)
+                in_trial = (sample_nirs_t >= onset + w0) & (sample_nirs_t < onset + w1)
                 run_mask |= in_trial
                 if eeg_baseline is not None:
                     in_bl = (sample_nirs_t >= onset + eeg_baseline[0]) & (sample_nirs_t < onset + eeg_baseline[1])

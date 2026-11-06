@@ -130,27 +130,30 @@ t_pre_c = ns['t_pre']
 run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3']
 segs = []
 for r_i, rk in enumerate(run_keys):
-    sig = ns['eeg_reg_value_list'][r_i] - ns['eeg_offsets']['mnt_correct'][r_i]  # per-trial baseline-corrected Cz
+    sig = ns['eeg_reg_value_list'][r_i]
     mask = ns['eeg_masks']['mnt_correct'][r_i]
     t = ns['eeg_sample_nirs_t'][r_i]
     stim = ns['all_stims'][ns['run_key_to_run_idx'][rk]]
     mc = stim[(stim['trial_type'] == 'mnt') & (stim['response_code'] == 0)]
     print(f'{rk}: {len(mc)} mnt-correct trials, EEG kept in {mask.mean() * 100:.1f}% of the cropped samples')
     for on, dur in zip(mc['onset'].values, mc['duration'].values):
-        idx = np.where((t >= on) & (t < on + dur))[0]
+        w0, w1 = ns['eeg_trial_window'] if ns['eeg_trial_window'] is not None else (0.0, dur)
+        idx = np.where((t >= on + w0) & (t < on + w1))[0]
+        bl = (t >= on + ns['eeg_baseline'][0]) & (t < on + ns['eeg_baseline'][1]) if ns['eeg_baseline'] is not None else None
         if len(idx):
-            segs.append(sig[idx])
+            segs.append(sig[idx] - (sig[bl].mean() if bl is not None and bl.any() else 0.0))
 n_seg = max(len(s) for s in segs)
 eeg_avg = np.zeros(n_seg)  # average within-trial Cz (V), trials of different length zero-padded
 for s in segs:
     eeg_avg[:len(s)] += s
 eeg_avg /= len(segs)
 print(f'average within-trial Cz over {len(segs)} trials: mean {eeg_avg.mean() * 1e6:.2f} uV, '
-      f'duration {n_seg / fs_eeg:.2f} s')
+      f'duration {n_seg / fs_eeg:.2f} s (window {ns["eeg_trial_window"]})')
 
 B = ns['bspline_basis']                       # (n_delay, n_bspline)
 G = np.column_stack([np.convolve(eeg_avg, B[:, j]) for j in range(B.shape[1])])  # avg-trial response basis
-tau = -t_pre_c + np.arange(G.shape[0]) / fs_eeg
+seg_start = ns['eeg_trial_window'][0] if ns['eeg_trial_window'] is not None else 0.0  # EEG segment start rel. to onset
+tau = seg_start - t_pre_c + np.arange(G.shape[0]) / fs_eeg
 step = max(1, int(round(fs_eeg / 50)))      # plot at ~50 Hz
 G, tau = G[::step], tau[::step]
 reg_names = [f'mnt_correct_bspline{i}' for i in range(B.shape[1])]
