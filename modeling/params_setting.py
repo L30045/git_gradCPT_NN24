@@ -140,7 +140,7 @@ root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
 ADOT_FLAG = 'probe'
 spatial_dim = 'vertex'
 hrf_basis = 'cons_gaussians' # double_gamma_deriv, gamma_deriv, cons_gaussians
-flag = ''
+flag = '_ADOT_updated'
 
 if NOISE_MODEL == 'ols':
     DO_TDDR = True

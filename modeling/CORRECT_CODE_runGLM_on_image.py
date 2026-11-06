@@ -45,7 +45,7 @@ NOISE_MODEL = 'ar_irls'
 root_dir = "/projectnb/nphfnirs/s/datasets/gradCPT_NN24/"
 ADOT_FLAG = 'probe'
 spatial_dim = 'vertex'
-flag = ''
+flag = '_ADOT_updated'
 hrf_basis = 'cons_gaussians'
 
 if NOISE_MODEL == 'ols':

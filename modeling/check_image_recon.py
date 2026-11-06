@@ -55,7 +55,7 @@ ADOT_FLAG = 'probe'
 weight_flag = 'post'
 spatial_dim = 'vertex'
 hrf_basis = 'cons_gaussians'# double_gamma_deriv, gamma_deriv, cons_gaussians
-flag = ''
+flag = '_ADOT_updated'
 if NOISE_MODEL == 'ols':
     DO_TDDR = True
     DO_DRIFT = True
