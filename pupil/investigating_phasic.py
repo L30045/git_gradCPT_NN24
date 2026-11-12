@@ -427,6 +427,71 @@ ax.set_title('All trials pooled: pupil - stimulus phase', fontsize=10)
 plt.tight_layout()
 save_fig(fig, 'phase_locking_stimulus')
 
+#%% Run-to-run phase consistency and implied timing offsets
+# A physiological pupil latency should be stable across runs of the same
+# subject. For each run, take the circular-mean pupil phase relative to the
+# stimulus train and convert its deviation from the subject's mean phase into
+# a time shift:  dt = -dphi / (2*pi*f)  (positive = pupil rhythm later).
+# 360 deg = one SOA (0.8 s), so 1 deg ~ 2.2 ms. The shift is only known
+# modulo the SOA: dt and dt +/- k*0.8 s give the same phase, so the values
+# below are the smallest shift in (-SOA/2, SOA/2] consistent with the data.
+run_phase_rows = []
+for r in run_data:
+    m = np.mean(np.exp(1j * r['phase_rel']))
+    run_phase_rows.append({'subj': r['subj'], 'run': r['run'], 'soa': r['soa'],
+                           'run_itpc': np.abs(m), 'run_phase': np.angle(m)})
+run_phase = pd.DataFrame(run_phase_rows)
+subj_mean_phase = run_phase.groupby('subj')['run_phase'].apply(
+    lambda p: np.angle(np.mean(np.exp(1j * p.values))))
+run_phase['dphi'] = np.angle(np.exp(1j * (run_phase['run_phase'] - run_phase['subj'].map(subj_mean_phase))))
+run_phase['dt_s'] = -run_phase['dphi'] / (2 * np.pi / run_phase['soa'])
+print(run_phase.assign(run_phase_deg=np.degrees(run_phase['run_phase']),
+                       dphi_deg=np.degrees(run_phase['dphi']))
+      [['subj', 'run', 'run_itpc', 'run_phase_deg', 'dphi_deg', 'dt_s']]
+      .to_string(index=False, float_format=lambda x: f'{x:.3f}'))
+
+# Within-subject consistency across runs vs chance (random phases, same number of runs)
+multi = run_phase.groupby('subj').filter(lambda d: len(d) >= 2)
+R_within, R_chance = [], []
+for s, d in multi.groupby('subj'):
+    R_within.append(itpc(d['run_phase'].values))
+    R_chance.append(np.mean([itpc(rng.uniform(-np.pi, np.pi, len(d))) for _ in range(5000)]))
+R_within, R_chance = np.array(R_within), np.array(R_chance)
+w_res = sp.stats.wilcoxon(R_within - R_chance)
+R_runs = itpc(run_phase['run_phase'].values)
+z_runs, p_runs = rayleigh_test(run_phase['run_phase'].values)
+abs_dt = np.abs(multi['dt_s'].values) * 1000
+print(f"Within-subject across-run R = {R_within.mean():.3f} vs {R_chance.mean():.3f} expected by chance "
+      f"({len(R_within)} subjects with >=2 runs; Wilcoxon p = {w_res.pvalue:.3g})")
+print(f"Across all {len(run_phase)} runs: R = {R_runs:.3f}, Rayleigh p = {p_runs:.3g}")
+print(f"Implied run offsets from subject mean (mod {soa} s): median |dt| = {np.median(abs_dt):.0f} ms, "
+      f"max |dt| = {abs_dt.max():.0f} ms")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), gridspec_kw={'width_ratios': [3, 1.2]})
+ax = axes[0]
+subj_order = list(multi['subj'].unique())
+for i, s in enumerate(subj_order):
+    d = multi[multi['subj'] == s]
+    ax.plot([i] * len(d), d['dt_s'] * 1000, color='grey', lw=0.8, zorder=1)
+    sc = ax.scatter([i] * len(d), d['dt_s'] * 1000, c=d['run'], cmap='viridis', vmin=1, vmax=3,
+                    s=40, edgecolor='k', zorder=2)
+ax.axhline(0, color='k', lw=0.8)
+for y in (-soa / 2 * 1000, soa / 2 * 1000):
+    ax.axhline(y, color='tab:red', ls='--', lw=0.8)
+ax.set_xticks(range(len(subj_order)))
+ax.set_xticklabels(subj_order, rotation=60, fontsize=8)
+ax.set_ylabel('Run timing offset from subject mean (ms)')
+ax.set_title(f'Implied per-run time shift of the 1.25 Hz pupil rhythm (wrapped to ±{soa / 2 * 1000:.0f} ms)\n'
+             f'within-subject R = {R_within.mean():.2f} vs chance {R_chance.mean():.2f}, '
+             f'Wilcoxon p = {w_res.pvalue:.3g}')
+plt.colorbar(sc, ax=ax, label='Run', ticks=[1, 2, 3])
+axes[1].hist(abs_dt, bins=np.arange(0, soa / 2 * 1000 + 25, 25), color='steelblue')
+axes[1].set_xlabel('|offset| (ms)')
+axes[1].set_ylabel('# runs')
+axes[1].set_title(f'median |offset| = {np.median(abs_dt):.0f} ms')
+plt.tight_layout()
+save_fig(fig, 'phase_consistency_runs')
+
 #%% Phase locking vs VTC
 # Per subject: split trials into VTC quantile bins (equal trial counts, so
 # ITPC bias is matched) and compute ITPC and phase-locked amplitude.
