@@ -36,7 +36,8 @@ reliable HRF: the standard Cedalion AR-IRLS, a simpler fixed-whitening IRLS, or 
    four-way comparison of mnt-correct HRFs: EEG-weighted vs Gaussian-kernel design, crossed with
    whole-brain vs per-network pipeline.
 
-A side track in the same folder covers pupil, VTC (attention fluctuation), and behavior.
+A side track covers VTC (attention fluctuation) and behavior. The pupil vs behavior research now
+lives in [../pupil/](../pupil/).
 
 **Main findings so far.**
 - **The EEG→HbO effect is tiny.** In-sample R² is < 2% (Cz EEG design) and < 0.3% (mnt-correct
@@ -271,12 +272,9 @@ prefix, for 17 networks.
 - sub-670 is skipped by the network scripts because two of its runs hold duplicated fNIRS data in
   the shared `Y_all`.
 
-### Side track: pupil, VTC, behavior
-- [cmp_vtc_pupil.py](cmp_vtc_pupil.py): VTC smoothing and its relation to pupil.
-- [reproduce_Brink_2016.py](reproduce_Brink_2016.py): reproduces the van den Brink 2016
-  pupil/behavior time-on-task analysis.
-- [vis_pupil_preproc.py](vis_pupil_preproc.py): pupil preprocessing steps.
-- [alpha_pupil_coupling.py](alpha_pupil_coupling.py): posterior alpha vs high-frequency pupil.
+### Side track: VTC, behavior
+Pupil scripts (`cmp_vtc_pupil.py`, `reproduce_Brink_2016.py`, `vis_pupil_preproc.py`,
+`alpha_pupil_coupling.py`) moved to [../pupil/](../pupil/).
 - [ar-irls_eeg-power_vtc.py](ar-irls_eeg-power_vtc.py): EEG band power vs VTC, fit with AR-IRLS.
 - [find_EEG_ERP_by_GLM.py](find_EEG_ERP_by_GLM.py): ERP by GLM deconvolution of continuous EEG.
 
@@ -358,4 +356,4 @@ Run these interactively (`#%%` cells) to regenerate their plots. To keep a figur
 | cmp_model_hrf.py, cmp_model_MSE_EV_single_subj_single_channel.py, manual_fit_model.py, check_yhat_AR-IRLS_OLS.py, check_yhat_AR-IRLS_image_space.py, ar-irls_test.py | fit sanity checks |
 | CORRECT_CODE_runGLM_on_image.py, hrf_estimate_Laura_copy.py, check_image_recon.py | reference image-space GLM |
 | vis_hrf_single_parcel_xSubjects.py, vis_parcel_cluster.py | single-parcel HRF across subjects; parcel clustering |
-| cmp_vtc_pupil.py, reproduce_Brink_2016.py, alpha_pupil_coupling.py, vis_pupil_preproc.py, ar-irls_eeg-power_vtc.py, find_EEG_ERP_by_GLM.py | pupil / VTC / behavior / ERP side track |
+| ar-irls_eeg-power_vtc.py, find_EEG_ERP_by_GLM.py | VTC / ERP side track (pupil scripts are in ../pupil/) |

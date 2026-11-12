@@ -13,6 +13,7 @@ from scipy.ndimage import gaussian_filter1d
 
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
+sys.path.append(os.path.join(git_path, 'modeling'))  # params_setting.py
 sys.path.append('/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eyetracking')
 
 from params_setting import project_path

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import os
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
+sys.path.append(os.path.join(git_path, 'modeling'))  # params_setting.py
 # import utils
 from params_setting import *
 from utils import smoothing_VTC_gaussian_array
