@@ -25,7 +25,7 @@
 # time-on-task, as in the literature; the time-on-task-partialled correlation with `VTC_smoothed` from
 # `EEG_extra_features_vs_VTC.py` / `EEG_features_vs_behavior.py` is listed next to it.
 #
-# Inputs: the two feature tables (`extract_EEG_trial_features.py`, `extract_extra_trial_features.py`) and the
+# Inputs: the trial feature table (`extract_EEG_trial_features.py`) and the
 # preprocessed .fif files (waveforms, cached in `OUT_DIR/cache`). Outputs: `<data_save_path>/xSubj_results/EEG_zone_table/`.
 
 # %% [markdown]
@@ -48,8 +48,8 @@ from matplotlib.lines import Line2D
 code_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eeg/preproc_pipe'
 sys.path.insert(0, code_dir)
 from utils import data_save_path
-from extract_EEG_trial_features import get_features_path, get_eeg_fif_path, load_events, RUN_KEYS, CH_NAMES
-from extract_extra_trial_features import get_extra_features_path, THETA_FREQS, REJECT_PTP_UV
+from extract_EEG_trial_features import (get_features_path, get_eeg_fif_path, load_events, RUN_KEYS, CH_NAMES,
+                                        THETA_FREQS, THETA_N_CYCLES, REJECT_PTP_UV)
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 OUT_DIR = os.path.join(data_save_path, 'xSubj_results', 'EEG_zone_table')
@@ -71,17 +71,10 @@ plt.rcParams.update({'axes.spines.top': False, 'axes.spines.right': False, 'axes
 # ## 2. Trial table with zone labels
 
 # %%
-MAIN_COLS = ['run', 'trial_idx', 'trial_type', 'response_code', 'reaction_time', 'VTC', 'VTC_smoothed',
-             'pz_P3_meanamp', 'cz_P3_meanamp', 'pz_erp_ok', 'cz_erp_ok']
-
-
 def load_all():
     dfs = []
-    for p in sorted(glob.glob(get_extra_features_path('sub-*'))):
-        subj = os.path.basename(os.path.dirname(os.path.dirname(p)))
-        x = pd.read_csv(p)
-        b = pd.read_csv(get_features_path(subj), usecols=MAIN_COLS)
-        dfs.append(x.merge(b, on=['run', 'trial_idx', 'trial_type', 'response_code'], validate='1:1'))
+    for p in sorted(glob.glob(get_features_path('sub-*'))):
+        dfs.append(pd.read_csv(p))
     df = pd.concat(dfs, ignore_index=True)
     df['condition'] = np.select([(df.trial_type == 'city') & (df.response_code == 1), df.trial_type == 'city',
                                  (df.trial_type == 'mnt') & (df.response_code == 0)],
@@ -255,7 +248,7 @@ def subject_waveforms(subject, zone_tbl):
         n = len(next(iter(data.values())))
         lp = {hz: {c: sosfiltfilt(butter(4, hz, btype='low', fs=sf, output='sos'), data[c]) for c in chs}
               for hz in (10.0, 20.0)}
-        W = {c: mne.time_frequency.tfr_array_morlet(data[c][None, None], sf, THETA_FREQS, n_cycles=THETA_FREQS / 2,
+        W = {c: mne.time_frequency.tfr_array_morlet(data[c][None, None], sf, THETA_FREQS, n_cycles=THETA_N_CYCLES,
                                                     output='complex', verbose=False)[0, 0] for c in chs}
         tpow = np.log10((np.abs(W['fz']) ** 2).mean(0)) if 'fz' in chs else None
         on = ev.onset.values.astype(float)

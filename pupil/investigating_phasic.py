@@ -3,12 +3,22 @@
 Phasic pupil responses to city-correct trials in gradCPT.
 
 1. For each run, epoch city-correct trials (-8 s to +8 s around stimulus onset),
-   stack them, and sort by smoothed VTC.
+   stack them, and sort by a per-trial covariate (smoothed VTC or EEG theta).
 2. Test whether the pupil carries a rhythmic component at the stimulus rate
-   (1/0.8 s = 1.25 Hz): per-trial power around 1.25 Hz vs VTC.
+   (1/0.8 s = 1.25 Hz): per-trial power around 1.25 Hz vs the covariate.
 3. Test whether that rhythm is phase-locked to the stimulus train
    (inter-trial phase coherence vs a time-shift surrogate, pupil-vs-stimulus
-   phase lag, and phase locking vs VTC).
+   phase lag, and phase locking vs the covariate).
+
+Covariate (set `covariate` below):
+  'vtc'   : Gaussian-smoothed VTC (L = 20 trials).
+  'theta' : EEG theta power per trial from
+            derivatives/eeg/<subj>/features/<subj>_EEG_trial_features.csv.gz
+            (preproc_pipe/extract_EEG_trial_features.py). Default column
+            fz_theta_win = log10 4-8 Hz power at Fz in a 10 s window centred on
+            the trial onset, z-scored within run. Only subjects with that file
+            are included; trials with a missing theta value are dropped from
+            the covariate tests only.
 
 Note: city trials are 0.8 s apart, so neighboring 16 s epochs share ~95% of
 their samples. Trial-level p-values are therefore not independent; the
@@ -38,11 +48,23 @@ f_band          = (f_stim - 0.15, f_stim + 0.15)   # band for "power around 1.25
 f_noise_offset  = (0.25, 0.5)                       # neighbor bins (|f - f_stim|) for SNR
 n_perm          = 200    # surrogates for the phase-locking null
 vis_smooth      = 5      # % of trials used for the raster's moving average
-n_vtc_bins      = 5      # VTC quantile bins for phase-locking vs VTC
+n_cov_bins      = 5      # covariate quantile bins for phase-locking vs covariate
+covariate       = 'vtc'  # 'vtc' or 'theta'
+theta_feature   = 'fz_theta_win'   # theta column in the EEG extra-trial-feature table
+theta_zscore    = True   # z-score theta within run (removes run-level gain differences)
 rng             = np.random.default_rng(0)
 max_subjects    = None   # set to an int for a quick test
 save_dir        = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/derivatives/eye_tracking/phasic/'
+eeg_feat_dir    = os.path.join(project_path, 'derivatives', 'eeg')
+assert covariate in ('vtc', 'theta'), covariate
+if covariate == 'theta':
+    save_dir = os.path.join(save_dir, theta_feature)   # keep VTC figures untouched
 os.makedirs(save_dir, exist_ok=True)
+cov_name  = covariate                                             # used in figure names
+cov_label = 'VTC (smoothed)' if covariate == 'vtc' else \
+            f"{theta_feature}{' (z within run)' if theta_zscore else ''}"
+cov_short = 'VTC' if covariate == 'vtc' else 'theta'
+cov_low   = 'lowest VTC / in the zone' if covariate == 'vtc' else 'lowest theta'
 
 #%% functions
 def smoothing_VTC_gaussian_array(vtc, L=20, alpha=2.5, truncate=4):
@@ -153,6 +175,12 @@ for subj in subject_list:
     if not os.path.isdir(subj_neon_dir) or not os.path.isdir(subj_nirs):
         missing_list.append(f"{subj}: no Neon/nirs folder")
         continue
+    if covariate == 'theta':
+        feat_file = os.path.join(eeg_feat_dir, subj, 'features', f'{subj}_EEG_trial_features.csv.gz')
+        if not os.path.isfile(feat_file):
+            missing_list.append(f"{subj}: no EEG feature file")
+            continue
+        feat_df = pd.read_csv(feat_file)
     neon_dirs_subj = sorted([d for d in os.listdir(subj_neon_dir) if re.match(r'\d{4}-', d)])
     mapping = _parse_eyetracking_readme(subj_snirf_raw) if os.path.isdir(subj_snirf_raw) else {}
     for run_id in range(1, 4):
@@ -178,7 +206,17 @@ for subj in subject_list:
         sfreq = np.round(np.median(1 / np.diff(t_neon)))
 
         city_correct = ((events_df['trial_type'] == 'city') & (events_df['response_code'] != 0)).values
-        vtc = smoothing_VTC_gaussian_array(events_df['VTC'].values, L=20)
+        if covariate == 'vtc':
+            cov = smoothing_VTC_gaussian_array(events_df['VTC'].values, L=20)
+        else:
+            f_run = feat_df[feat_df['run'] == run_id].sort_values('trial_idx')
+            if len(f_run) != len(events_df):
+                missing_list.append(f"{subj} run-{run_id:02d}: EEG features ({len(f_run)} rows) "
+                                    f"do not match events ({len(events_df)})")
+                continue
+            cov = f_run[theta_feature].values.astype(float)
+            if theta_zscore:
+                cov = (cov - np.nanmean(cov)) / np.nanstd(cov)
         onsets = events_df['onset'].values[city_correct]
         ep, t_rel = epoch_with_times(onsets, t_neon, pupil_d, sfreq, baseline_length, epoch_length)
         keep = ~np.any(np.isnan(ep), axis=1)
@@ -188,11 +226,13 @@ for subj in subject_list:
         run_data.append({
             'subj': subj, 'run': run_id, 'sfreq': sfreq, 'soa': run_soa,
             'epochs': ep[keep], 't_rel': t_rel[keep],
-            'onsets': onsets[keep], 'vtc': vtc[city_correct][keep],
+            'onsets': onsets[keep], 'cov': cov[city_correct][keep],
             'all_onsets': events_df['onset'].values,
             't_neon': t_neon, 'pupil_d': pupil_d,
         })
 print('\n'.join(missing_list))
+print(f"Covariate: {cov_label}; {sum(np.isfinite(r['cov']).sum() for r in run_data)} of "
+      f"{sum(len(r['cov']) for r in run_data)} kept trials have a value")
 subjects = sorted({r['subj'] for r in run_data})
 n_subjects = len(subjects)
 assert len({r['sfreq'] for r in run_data}) == 1, 'Runs have different sampling rates'
@@ -201,11 +241,11 @@ n_samp = run_data[0]['epochs'].shape[1]
 t_epoch = (np.arange(n_samp) - int(round(sfreq * baseline_length))) / sfreq
 taper = sp.signal.windows.hann(n_samp, sym=False)
 
-#%% Raster: city-correct epochs stacked and sorted by VTC (pooled across runs)
+#%% Raster: city-correct epochs stacked and sorted by the covariate (pooled across runs)
 # Left: baseline-corrected pupil. Right: 0.5 Hz high-passed pupil to expose
 # the stimulus-rate ripple. Rows are smoothed over vis_smooth % of trials.
 b_hp, a_hp = sp.signal.butter(3, 0.5, btype='highpass', fs=sfreq)
-all_ep, all_ep_hp, all_vtc = [], [], []
+all_ep, all_ep_hp, all_cov = [], [], []
 for r in run_data:
     bl = np.mean(r['epochs'][:, t_epoch < 0], axis=1, keepdims=True)
     all_ep.append(r['epochs'] - bl)
@@ -213,18 +253,19 @@ for r in run_data:
     hp_cont = sp.signal.filtfilt(b_hp, a_hp, r['pupil_d'])
     ep_hp, _ = epoch_with_times(r['onsets'], r['t_neon'], hp_cont, sfreq, baseline_length, epoch_length)
     all_ep_hp.append(ep_hp)
-    all_vtc.append(r['vtc'])
-all_ep, all_ep_hp, all_vtc = np.vstack(all_ep), np.vstack(all_ep_hp), np.concatenate(all_vtc)
-sort_idx = np.argsort(all_vtc)
+    all_cov.append(r['cov'])
+all_ep, all_ep_hp, all_cov = np.vstack(all_ep), np.vstack(all_ep_hp), np.concatenate(all_cov)
+sort_idx = np.argsort(all_cov)
+sort_idx = sort_idx[np.isfinite(all_cov[sort_idx])]   # trials without a covariate value are left out
 win = max(1, int(len(sort_idx) * vis_smooth / 100))
 smooth_rows = lambda a: sp.ndimage.uniform_filter1d(a, size=win, axis=0, mode='nearest')
 rast = smooth_rows(all_ep[sort_idx])
 rast_hp = smooth_rows(all_ep_hp[sort_idx])
 
 fig, axes = plt.subplots(1, 3, figsize=(15, 6), gridspec_kw={'width_ratios': [1, 6, 6]}, sharey=True)
-axes[0].plot(all_vtc[sort_idx], np.arange(len(sort_idx)), color='steelblue')
-axes[0].set_xlabel('VTC (smoothed)')
-axes[0].set_ylabel('Trial (sorted by VTC, low → high)')
+axes[0].plot(all_cov[sort_idx], np.arange(len(sort_idx)), color='steelblue')
+axes[0].set_xlabel(cov_label)
+axes[0].set_ylabel(f'Trial (sorted by {cov_short}, low → high)')
 axes[0].set_ylim(len(sort_idx), 0)
 for ax, dat, ttl in zip(axes[1:], [rast, rast_hp], ['Baseline-corrected', 'High-passed (>0.5 Hz)']):
     vmax = np.nanpercentile(np.abs(dat), 99)
@@ -236,16 +277,16 @@ for ax, dat, ttl in zip(axes[1:], [rast, rast_hp], ['Baseline-corrected', 'High-
     ax.set_xlabel('Time from city-correct onset (s)')
     ax.set_title(ttl)
     plt.colorbar(im, ax=ax, label='Pupil diameter (mm)')
-fig.suptitle(f'City-correct epochs sorted by VTC (N={n_subjects} subjects, {len(sort_idx)} trials); '
+fig.suptitle(f'City-correct epochs sorted by {cov_short} (N={n_subjects} subjects, {len(sort_idx)} trials); '
              f'grey lines = stimulus onsets')
 plt.tight_layout()
-save_fig(fig, 'raster_city_correct_by_vtc')
+save_fig(fig, f'raster_city_correct_by_{cov_name}')
 
 # Grand-average (subject-level) high-passed epoch
 fig, ax = plt.subplots(figsize=(10, 3.5))
 subj_avg_hp = []
 for s in subjects:
-    eps = np.vstack([ep for ep, r in zip(np.split(all_ep_hp, np.cumsum([len(r['vtc']) for r in run_data])[:-1]), run_data)
+    eps = np.vstack([ep for ep, r in zip(np.split(all_ep_hp, np.cumsum([len(r['onsets']) for r in run_data])[:-1]), run_data)
                      if r['subj'] == s])
     subj_avg_hp.append(np.mean(eps, axis=0))
 subj_avg_hp = np.array(subj_avg_hp)
@@ -299,7 +340,7 @@ fig.suptitle(f'Pupil spectrum of city-correct epochs (N={n_subjects}); red = 1.2
 plt.tight_layout()
 save_fig(fig, 'spectrum_city_correct')
 
-#%% Scatter: power around 1.25 Hz vs VTC
+#%% Scatter: power around 1.25 Hz vs the covariate
 # Pooled trials (colored by subject) + per-subject Spearman rho, tested
 # across subjects (Fisher z, one-sample t-test).
 metrics = [('band_power', f'log10 band power {f_band[0]:.2f}-{f_band[1]:.2f} Hz', True),
@@ -311,23 +352,27 @@ for j, (key, label, logy) in enumerate(metrics):
     ax = axes[0, j]
     rhos = []
     for si, s in enumerate(subjects):
-        v = np.concatenate([r['vtc'] for r in run_data if r['subj'] == s])
+        v = np.concatenate([r['cov'] for r in run_data if r['subj'] == s])
         y = np.concatenate([r[key] for r in run_data if r['subj'] == s])
         y = np.log10(y) if logy else y
+        ok = np.isfinite(v)
+        v, y = v[ok], y[ok]
         ax.scatter(v, y, s=3, alpha=0.3, color=cmap(si))
         rhos.append(sp.stats.spearmanr(v, y).statistic)
     rhos = np.array(rhos)
     z = np.arctanh(rhos)
     t_res = sp.stats.ttest_1samp(z, 0)
-    v_all = np.concatenate([r['vtc'] for r in run_data])
+    v_all = np.concatenate([r['cov'] for r in run_data])
     y_all = np.concatenate([r[key] for r in run_data])
     y_all = np.log10(y_all) if logy else y_all
+    ok = np.isfinite(v_all)
+    v_all, y_all = v_all[ok], y_all[ok]
     # binned mean across pooled trials
     edges = np.quantile(v_all, np.linspace(0, 1, 11))
     bi = np.clip(np.digitize(v_all, edges[1:-1]), 0, 9)
     ax.plot([v_all[bi == b].mean() for b in range(10)], [y_all[bi == b].mean() for b in range(10)],
-            'k-o', ms=4, label='VTC-decile mean (pooled)')
-    ax.set_xlabel('VTC (smoothed)')
+            'k-o', ms=4, label=f'{cov_short}-decile mean (pooled)')
+    ax.set_xlabel(cov_label)
     ax.set_ylabel(('log10 ' if logy and key == 'snr' else '') + label)
     ax.set_title(f'{label}\nmean subject ρ = {np.tanh(z.mean()):.3f}, '
                  f't({n_subjects - 1}) = {t_res.statistic:.2f}, p = {t_res.pvalue:.3g}')
@@ -336,10 +381,10 @@ for j, (key, label, logy) in enumerate(metrics):
     axes[1, j].axvline(0, color='grey', lw=0.8)
     axes[1, j].scatter(rhos, rng.uniform(-0.3, 0.3, n_subjects), color=[cmap(i) for i in range(n_subjects)])
     axes[1, j].set_yticks([])
-    axes[1, j].set_xlabel('Per-subject Spearman ρ (VTC vs metric)')
-fig.suptitle(f'Pupil power at the stimulus rate vs VTC, city-correct trials (N={n_subjects})')
+    axes[1, j].set_xlabel(f'Per-subject Spearman ρ ({cov_short} vs metric)')
+fig.suptitle(f'Pupil power at the stimulus rate vs {cov_short}, city-correct trials (N={n_subjects})')
 plt.tight_layout()
-save_fig(fig, 'power_vs_vtc')
+save_fig(fig, f'power_vs_{cov_name}')
 
 #%% Phase: is the 1.25 Hz rhythm locked to the stimulus?
 # Phase convention: phi = angle of the Fourier coefficient with t = 0 at the
@@ -492,57 +537,59 @@ axes[1].set_title(f'median |offset| = {np.median(abs_dt):.0f} ms')
 plt.tight_layout()
 save_fig(fig, 'phase_consistency_runs')
 
-#%% Phase locking vs VTC
-# Per subject: split trials into VTC quantile bins (equal trial counts, so
+#%% Phase locking vs the covariate
+# Per subject: split trials into covariate quantile bins (equal trial counts, so
 # ITPC bias is matched) and compute ITPC and phase-locked amplitude.
 # Phase-locked amplitude per trial = Re(X * exp(-i*phi_subject)): the
 # component of the 1.25 Hz response aligned with that subject's mean phase.
-itpc_bins = np.full((n_subjects, n_vtc_bins), np.nan)
-pla_bins = np.full((n_subjects, n_vtc_bins), np.nan)
+itpc_bins = np.full((n_subjects, n_cov_bins), np.nan)
+pla_bins = np.full((n_subjects, n_cov_bins), np.nan)
 rho_pla = []
 for si, s in enumerate(subjects):
     rs = [r for r in run_data if r['subj'] == s]
-    v = np.concatenate([r['vtc'] for r in rs])
+    v = np.concatenate([r['cov'] for r in rs])
     X = np.concatenate([r['X'] for r in rs])
     ph = np.concatenate([r['phase_rel'] for r in rs])
+    ok = np.isfinite(v)
+    v, X, ph = v[ok], X[ok], ph[ok]
     # rotate X into the stimulus-train reference so runs can be pooled
     Xrel = np.abs(X) * np.exp(1j * ph)
     phi_s = np.angle(np.mean(np.exp(1j * ph)))
     pla = np.real(Xrel * np.exp(-1j * phi_s))
     rho_pla.append(sp.stats.spearmanr(v, pla).statistic)
-    q = np.quantile(v, np.linspace(0, 1, n_vtc_bins + 1))
-    b = np.clip(np.digitize(v, q[1:-1]), 0, n_vtc_bins - 1)
-    for k in range(n_vtc_bins):
+    q = np.quantile(v, np.linspace(0, 1, n_cov_bins + 1))
+    b = np.clip(np.digitize(v, q[1:-1]), 0, n_cov_bins - 1)
+    for k in range(n_cov_bins):
         if np.sum(b == k) > 1:
             itpc_bins[si, k] = itpc(ph[b == k])
             pla_bins[si, k] = np.mean(pla[b == k])
 rho_pla = np.array(rho_pla)
 t_pla = sp.stats.ttest_1samp(np.arctanh(rho_pla), 0)
-# linear trend of ITPC across VTC bins per subject
-slope_itpc = np.array([np.polyfit(np.arange(n_vtc_bins), row, 1)[0] for row in itpc_bins])
+# linear trend of ITPC across covariate bins per subject
+slope_itpc = np.array([np.polyfit(np.arange(n_cov_bins), row, 1)[0] for row in itpc_bins])
 t_slope = sp.stats.ttest_1samp(slope_itpc, 0)
 
 fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
-xb = np.arange(1, n_vtc_bins + 1)
+xb = np.arange(1, n_cov_bins + 1)
 for ax, M, ylab, ttl in zip(axes[:2], [itpc_bins, pla_bins],
                             ['ITPC at 1.25 Hz', 'Phase-locked amplitude (mm)'],
-                            [f'ITPC vs VTC bin\nslope t({n_subjects - 1}) = {t_slope.statistic:.2f}, p = {t_slope.pvalue:.3g}',
-                             'Phase-locked amplitude vs VTC bin']):
+                            [f'ITPC vs {cov_short} bin\nslope t({n_subjects - 1}) = {t_slope.statistic:.2f}, p = {t_slope.pvalue:.3g}',
+                             f'Phase-locked amplitude vs {cov_short} bin']):
     for row in M:
         ax.plot(xb, row, color='grey', alpha=0.3, lw=0.8)
     m, se = np.nanmean(M, 0), np.nanstd(M, 0, ddof=1) / np.sqrt(n_subjects)
     ax.errorbar(xb, m, se, color='k', marker='o', capsize=3, lw=2)
     ax.set_xticks(xb)
-    ax.set_xlabel('VTC quantile bin (1 = lowest VTC / in the zone)')
+    ax.set_xlabel(f'{cov_short} quantile bin (1 = {cov_low})')
     ax.set_ylabel(ylab)
     ax.set_title(ttl)
 axes[2].axvline(0, color='grey', lw=0.8)
 axes[2].hist(rho_pla, bins=15, color='steelblue')
-axes[2].set_xlabel('Per-subject Spearman ρ (VTC vs phase-locked amplitude)')
+axes[2].set_xlabel(f'Per-subject Spearman ρ ({cov_short} vs phase-locked amplitude)')
 axes[2].set_ylabel('# subjects')
 axes[2].set_title(f'mean ρ = {np.tanh(np.arctanh(rho_pla).mean()):.3f}, '
                   f't({n_subjects - 1}) = {t_pla.statistic:.2f}, p = {t_pla.pvalue:.3g}')
-fig.suptitle(f'Stimulus phase locking of the 1.25 Hz pupil rhythm vs VTC (N={n_subjects})')
+fig.suptitle(f'Stimulus phase locking of the 1.25 Hz pupil rhythm vs {cov_short} (N={n_subjects})')
 plt.tight_layout()
-save_fig(fig, 'phase_locking_vs_vtc')
+save_fig(fig, f'phase_locking_vs_{cov_name}')
 plt.show()

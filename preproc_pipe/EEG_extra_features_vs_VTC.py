@@ -2,9 +2,9 @@
 # # Literature-survey features vs VTC
 #
 # Do the EEG and eye-tracking features from the literature survey (2026-11-06) that were not yet in the pipeline
-# track the variance time course (VTC) in gradCPT? Features come from `extract_extra_trial_features.py`
-# (`<subject>_extra_trial_features.csv.gz`); VTC and trial condition from the EEG feature table of
-# `extract_EEG_trial_features.py`. The feature definitions are in the header of `extract_extra_trial_features.py`.
+# track the variance time course (VTC) in gradCPT? Features, VTC and trial condition come from the trial feature
+# table of `extract_EEG_trial_features.py` (`<subject>_EEG_trial_features.csv.gz`); the feature definitions are in
+# its header (section C) and in `feature_info()`.
 #
 # **Trials.** *window* features (centred 10 s window) and *rolling* features (trial-to-trial statistics over
 # 9-15 trials) use all trials. *trial* features (one value per trial: stimulus-locked theta, P1/N1, CPP, wavelet,
@@ -42,8 +42,7 @@ from matplotlib.lines import Line2D
 code_dir = '/projectnb/nphfnirs/s/datasets/gradCPT_NN24/code/eeg/preproc_pipe'
 sys.path.insert(0, code_dir)
 from utils import data_save_path
-from extract_EEG_trial_features import get_features_path
-from extract_extra_trial_features import get_extra_features_path, feature_info
+from extract_EEG_trial_features import get_features_path, feature_info
 
 warnings.filterwarnings('ignore', category=stats.ConstantInputWarning)
 warnings.filterwarnings('ignore', category=RuntimeWarning)
@@ -76,13 +75,8 @@ plt.rcParams.update({'axes.spines.top': False, 'axes.spines.right': False, 'axes
 # %%
 def load_all():
     dfs = []
-    for p in sorted(glob.glob(get_extra_features_path('sub-*'))):
-        subj = os.path.basename(os.path.dirname(os.path.dirname(p)))
-        x = pd.read_csv(p)
-        b = pd.read_csv(get_features_path(subj), usecols=['run', 'trial_idx', 'trial_type', 'response_code',
-                                                           'VTC', 'VTC_smoothed'])
-        x = x.merge(b, on=['run', 'trial_idx', 'trial_type', 'response_code'], how='inner', validate='1:1')
-        dfs.append(x)
+    for p in sorted(glob.glob(get_features_path('sub-*'))):
+        dfs.append(pd.read_csv(p))
     df = pd.concat(dfs, ignore_index=True)
     df['condition'] = np.select([(df.trial_type == 'city') & (df.response_code == 1), df.trial_type == 'city',
                                  (df.trial_type == 'mnt') & (df.response_code == 0)],

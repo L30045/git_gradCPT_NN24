@@ -11,10 +11,19 @@ Reproduces:
   - Yamashita TF figure: in-zone minus out-of-zone log power, -0.8 to 0.8 s,
     with significant clusters outlined.
 
-ERSP: mne tfr_array_multitaper with the same adaptive window as Lavie
-(2 cycles per frequency, dT = 2/f) and time_bandwidth = 2 -> a single DPSS taper
-(close to their single Hanning taper). Epochs are padded so every window lies inside
-real data; artifact rejection is only applied inside the analysis window.
+ERSP, --tf (independent of --preset):
+  multitaper : mne tfr_array_multitaper with the same adaptive window as Lavie
+               (2 cycles per frequency, dT = 2/f); --tw time_bandwidth (default 2 -> a single
+               DPSS taper, close to their single Hanning taper)
+  fft        : Hanning-tapered FFT (FieldTrip mtmconvol style), window dT = 2/f, as in Lavie
+  both       : both methods on the same epochs / zones, plus a side-by-side comparison figure
+               (ERSP_compare_*.png: multitaper | FFT, each with TF map + theta / beta time courses)
+  auto       : fft with --preset lavie, multitaper otherwise (the old behaviour)
+  The window is 2/f at every frequency for both methods, so the frequency resolution is f/2, as in
+  Lavie Fig 2 (NOT the fixed 2 s Welch segments of extract_EEG_trial_features.py). Time points
+  whose window does not lie fully inside the epoch are NaN for both methods (edge cone).
+Epochs are padded so every window lies inside real data (except --preset lavie);
+artifact rejection is only applied inside the analysis window.
 
 Zone split: per subject, in-zone = smoothed VTC < the subject's median VTC
 (median over all trials in all runs).
@@ -23,14 +32,19 @@ Zone split: per subject, in-zone = smoothed VTC < the subject's median VTC
   - zone: trial-wise |z RT| within run (Go trials), in <= 1 SD, out > 1 SD
   - re-reference to the average of all EEG channels (here fz/cz/pz/oz only)
   - 1.6 s segments (-0.8..0.8 s), no padding, mean voltage removed over the whole segment
-  - Hanning-tapered FFT (FieldTrip mtmconvol style), window dT = 2/f, 3-40 Hz, 1 Hz steps;
+  - Hanning-tapered FFT (FieldTrip mtmconvol style), window dT = 2/f, 3-40 Hz, 1 Hz steps
+    (with --tf auto; --tf multitaper / both also work with the preset);
     time points whose window does not fit inside the segment are NaN (edge cone)
   - power log-transformed per trial, then averaged across trials (mean of log)
   - theta 4-7 Hz, beta 15-30 Hz; figures show out - in (their sign)
 
 Results: xSubj_results/zone_ERP_ERSP_lock<delay>ms<variant>/
   group figures in the root, single-subject figures in single_subj/,
-  per-subject results (pickles) in subj_cache/
+  per-subject results (pickles) in subj_cache/, one per TF method
+
+Usage:
+  python xSubj_zone_fullImage_ERP_ERSP.py --preset lavie --tf both
+  python xSubj_zone_fullImage_ERP_ERSP.py --tf both              # VTC-median zones, mastoid reference
 """
 #%% load library
 import os
@@ -64,12 +78,25 @@ _ap.add_argument('--norm', default='none', choices=['none', 'broadband'],
 _ap.add_argument('--preset', default='none', choices=['none', 'lavie'],
                  help="lavie: zone=lavie, average reference, Hanning FFT (2/f), 1.6 s segments "
                       "with segment demean, mean of per-trial log power, plotted as out - in.")
+_ap.add_argument('--tf', default='auto', choices=['auto', 'multitaper', 'fft', 'both'],
+                 help="TF method: multitaper (DPSS), fft (Hanning, FieldTrip mtmconvol), both "
+                      "(+ side-by-side comparison figures), auto (fft with --preset lavie, else multitaper).")
+_ap.add_argument('--tw', type=float, default=2.0,
+                 help="multitaper time_bandwidth (2 -> 1 DPSS taper; 4 -> 3 tapers).")
+_ap.add_argument('--ref', default='auto', choices=['auto', 'average', 'mastoid'],
+                 help="EEG reference. auto: average with --preset lavie, else mastoid (as preprocessed). "
+                      "Overriding it changes only the reference and adds _ref-<ref> to the results folder.")
 _args, _ = _ap.parse_known_args()
 preset = _args.preset
 zone_method = 'lavie' if preset == 'lavie' else _args.zone
 norm_method = 'none' if preset == 'lavie' else _args.norm
-tf_method   = 'hanning' if preset == 'lavie' else 'multitaper'
-eeg_ref     = 'average' if preset == 'lavie' else 'mastoid'     # mastoid = as preprocessed
+if _args.tf == 'auto':
+    tf_methods = ['hanning' if preset == 'lavie' else 'multitaper']
+else:
+    tf_methods = {'multitaper': ['multitaper'], 'fft': ['hanning'],
+                  'both': ['multitaper', 'hanning']}[_args.tf]
+eeg_ref_default = 'average' if preset == 'lavie' else 'mastoid'  # mastoid = as preprocessed
+eeg_ref     = eeg_ref_default if _args.ref == 'auto' else _args.ref
 trial_avg   = 'meanlog' if preset == 'lavie' else 'logmean'     # group input: mean(log P) vs log(mean P)
 diff_sign   = -1 if preset == 'lavie' else 1                    # plot out - in (Lavie) or in - out
 diff_txt    = 'out-of-zone $-$ in-zone' if diff_sign < 0 else 'in-zone $-$ out-of-zone'
@@ -92,7 +119,7 @@ min_trials_per_zone = 10                        # per subject / channel / zone
 # 667 ms @ 3 Hz, 200 ms @ 10 Hz, 50 ms @ 40 Hz).
 tf_freqs = np.arange(3, 41, 1.0)                # 3-40 Hz in 1 Hz steps, as in the paper
 tf_n_cycles = 2.0
-tf_time_bandwidth = 2.0                         # -> single DPSS taper; spectral bandwidth = 2/window = f
+tf_time_bandwidth = _args.tw                    # 2 -> single DPSS taper; spectral bandwidth = TW/window
 tf_decim = 5                                    # 500 Hz -> 100 Hz TF time resolution
 win_len = tf_n_cycles / tf_freqs                # seconds, per frequency
 pad = float(np.ceil(win_len.max() / 2 * 10) / 10)  # half of the longest window, rounded up
@@ -108,8 +135,17 @@ ep_tmin = analysis_window[0] - pad
 ep_tmax = analysis_window[1] + pad
 
 lock_tag = f"lock{full_image_delay * 1000:.0f}ms"
-tf_tag = f"cyc{tf_n_cycles:g}_TW{tf_time_bandwidth:g}" if tf_method == 'multitaper' else \
-         f"hann{tf_n_cycles:g}cyc"
+def tf_tag_of(method):
+    return f"cyc{tf_n_cycles:g}_TW{tf_time_bandwidth:g}" if method == 'multitaper' else f"hann{tf_n_cycles:g}cyc"
+
+
+def tf_desc_of(method):
+    avg = 'mean of log power' if trial_avg == 'meanlog' else 'log of mean power'
+    return (f'multitaper {tf_n_cycles:g} cycles, TW={tf_time_bandwidth:g}, {avg}' if method == 'multitaper'
+            else f'Hanning FFT, {tf_n_cycles:g} cycles (dT=2/f), {avg}')
+
+
+tf_label = {'multitaper': 'Multitaper (DPSS)', 'hanning': 'FFT (Hanning)'}
 variant_tag = ''
 if preset != 'none':
     variant_tag += f'_preset-{preset}'
@@ -117,6 +153,8 @@ elif zone_method != 'vtc_median':
     variant_tag += f'_zone-{zone_method}'
 if norm_method != 'none':
     variant_tag += f'_norm-{norm_method}'
+if eeg_ref != eeg_ref_default:
+    variant_tag += f'_ref-{eeg_ref}'
 results_dir = os.path.join(data_save_path, "xSubj_results", f"zone_ERP_ERSP_{lock_tag}{variant_tag}")
 cache_dir   = os.path.join(results_dir, "subj_cache")
 single_dir  = os.path.join(results_dir, "single_subj")
@@ -132,11 +170,9 @@ time_label = ('Time from stimulus onset (transition point) (s)' if full_image_de
 marker_txt = 'dotted: stimulus onset, dashed: image fully present'
 
 norm_label = '' if norm_method == 'none' else ' (broadband-normalised)'
-tf_desc = (f'multitaper {tf_n_cycles:g} cycles, TW={tf_time_bandwidth:g}' if tf_method == 'multitaper'
-           else f'Hanning FFT, {tf_n_cycles:g} cycles (dT=2/f), mean of log power')
 print(f"TF window length: {win_len.max():.2f} s @ {tf_freqs[0]:.0f} Hz -> "
       f"{win_len.min():.3f} s @ {tf_freqs[-1]:.0f} Hz; padding = {pad:.1f} s; {lock_tag}; "
-      f"zone={zone_method}; norm={norm_method}; tf={tf_method}; ref={eeg_ref}; avg={trial_avg}")
+      f"zone={zone_method}; norm={norm_method}; tf={tf_methods}; ref={eeg_ref}; avg={trial_avg}")
 print("Results ->", results_dir)
 
 
@@ -145,6 +181,27 @@ def norm_offset(logpow):
     if norm_method == 'broadband':
         return logpow.mean(axis=(-2, -1), keepdims=True)
     return np.zeros(logpow.shape[:-2] + (1, 1))
+
+
+def edge_ok(n_t, sfreq, freqs, n_cycles, decim):
+    """(n_freq, n_tf_times) True where the window (n_cycles / f, centred) lies fully inside the epoch."""
+    t_idx = np.arange(0, n_t, decim)
+    ok = np.zeros((len(freqs), len(t_idx)), bool)
+    for fi, f in enumerate(freqs):
+        N = int(round(n_cycles / f * sfreq))
+        start = t_idx - N // 2
+        ok[fi] = (start >= 0) & (start <= n_t - N)
+    return ok
+
+
+def tfr_power(data, sfreq, method):
+    """Single-trial power (n_ep, n_freq, n_tf_times); NaN outside the edge cone for both methods."""
+    if method == 'hanning':
+        return tfr_hanning(data, sfreq, tf_freqs, tf_n_cycles, tf_decim)
+    pw = tfr_array_multitaper(data[:, None, :], sfreq=sfreq, freqs=tf_freqs, n_cycles=tf_n_cycles,
+                              time_bandwidth=tf_time_bandwidth, output='power', decim=tf_decim,
+                              n_jobs=1, verbose=False)[:, 0]
+    return np.where(edge_ok(data.shape[1], sfreq, tf_freqs, tf_n_cycles, tf_decim)[None], pw, np.nan)
 
 
 def tfr_hanning(data, sfreq, freqs, n_cycles, decim):
@@ -238,11 +295,20 @@ def zone_compare(a, b):
                 sig=fdr(p))
 
 
+def cache_path_of(key_name, method):
+    return os.path.join(cache_dir, f"{key_name}_zone_{lock_tag}{variant_tag}_{tf_tag_of(method)}_dec{tf_decim}.pkl")
+
+
 def process_subject(key_name):
-    cache_path = os.path.join(cache_dir, f"{key_name}_zone_{lock_tag}{variant_tag}_{tf_tag}_dec{tf_decim}.pkl")
-    if os.path.exists(cache_path) and not is_overwrite_cache:
-        with open(cache_path, 'rb') as f:
-            return pickle.load(f)
+    """Returns {method: result} for every method in tf_methods (cached per method)."""
+    outs = {}
+    for m in tf_methods:
+        if os.path.exists(cache_path_of(key_name, m)) and not is_overwrite_cache:
+            with open(cache_path_of(key_name, m), 'rb') as f:
+                outs[m] = pickle.load(f)
+    todo = [m for m in tf_methods if m not in outs]
+    if not todo:
+        return outs
 
     gz_path = os.path.join(data_save_path, key_name, f"{key_name}_preprocessed_dict.pkl.gz")
     with gzip.open(gz_path, 'rb') as f:
@@ -279,9 +345,10 @@ def process_subject(key_name):
     thres = np.median(np.concatenate(all_vtc)) if zone_method == 'vtc_median' else 1.0
     is_in = (lambda s: s < thres) if zone_method == 'vtc_median' else (lambda s: s <= thres)
 
-    out = dict(thres=thres, times=None, tf_times=None, res={})
+    new = {m: dict(thres=thres, times=None, tf_times=None, res={}) for m in todo}
     for ev in zone_events:
-        out['res'][ev] = {}
+        for m in todo:
+            new[m]['res'][ev] = {}
         for ch in ch_names:
             parts = [(e.get_data(picks=[ch])[:, 0, :], v) for e, v in run_epochs[ev]
                      if ch in e.ch_names]
@@ -291,55 +358,52 @@ def process_subject(key_name):
             in_zone = is_in(np.concatenate([p[1] for p in parts]))
             times = run_epochs[ev][0][0].times
             n_in, n_out = int(in_zone.sum()), int((~in_zone).sum())
-            r = dict(n_in=n_in, n_out=n_out)
-            if min(n_in, n_out) >= min_trials_per_zone:
-                awin = (times >= analysis_window[0] - 1e-9) & (times <= analysis_window[1] + 1e-9)
-                # ERP
-                erp = data[:, awin]
-                r['erp_in'], r['erp_out'] = erp[in_zone].mean(0), erp[~in_zone].mean(0)
-                r['ss_erp'] = zone_compare(erp[in_zone], erp[~in_zone])
-                # single-trial power (n_ep, n_freq, n_tf_times)
-                if tf_method == 'hanning':
-                    pw = tfr_hanning(data, sfreq, tf_freqs, tf_n_cycles, tf_decim)
-                else:
-                    pw = tfr_array_multitaper(data[:, None, :], sfreq=sfreq,
-                                              freqs=tf_freqs, n_cycles=tf_n_cycles,
-                                              time_bandwidth=tf_time_bandwidth,
-                                              output='power', decim=tf_decim,
-                                              n_jobs=1, verbose=False)[:, 0]
-                tf_times = times[::tf_decim]
-                tf_awin = (tf_times >= analysis_window[0] - 1e-9) & \
-                          (tf_times <= analysis_window[1] + 1e-9)
-                pw = pw[..., tf_awin]
-                # group-level input: log10 of trial-averaged power (logmean) or trial-average of
-                # log10 power (meanlog, Lavie); optionally broadband-normalised per condition
-                for zone, mask in (('in', in_zone), ('out', ~in_zone)):
-                    lpm = np.log10(pw[mask]).mean(0) if trial_avg == 'meanlog' else \
-                          np.log10(pw[mask].mean(0))
-                    r[f'logpow_{zone}'] = lpm - norm_offset(lpm)
-                # single-subject stats on single-trial log power (normalised per trial)
-                lp = np.log10(pw)
-                trial_off = norm_offset(lp)                          # (n_ep, 1, 1)
-                lp = lp - trial_off
-                t_map, p_map = stats.ttest_ind(lp[in_zone], lp[~in_zone], axis=0, equal_var=False)
-                r['ss_tf'] = dict(t=t_map, sig=fdr(p_map))
-                r['ss_band'] = {}
-                for bname, (lo, hi) in bands.items():
-                    bm = (tf_freqs >= lo) & (tf_freqs <= hi)
-                    bp = (np.log10(pw[:, bm]).mean(1) if trial_avg == 'meanlog' else
-                          np.log10(pw[:, bm].mean(1))) - trial_off[:, 0]   # (n_ep, n_t)
-                    r['ss_band'][bname] = zone_compare(bp[in_zone], bp[~in_zone])
-                out['times'] = times[awin]
-                out['tf_times'] = tf_times[tf_awin]
-            out['res'][ev][ch] = r
+            for m in todo:
+                out = new[m]
+                r = dict(n_in=n_in, n_out=n_out)
+                if min(n_in, n_out) >= min_trials_per_zone:
+                    awin = (times >= analysis_window[0] - 1e-9) & (times <= analysis_window[1] + 1e-9)
+                    # ERP
+                    erp = data[:, awin]
+                    r['erp_in'], r['erp_out'] = erp[in_zone].mean(0), erp[~in_zone].mean(0)
+                    r['ss_erp'] = zone_compare(erp[in_zone], erp[~in_zone])
+                    # single-trial power (n_ep, n_freq, n_tf_times)
+                    pw = tfr_power(data, sfreq, m)
+                    tf_times = times[::tf_decim]
+                    tf_awin = (tf_times >= analysis_window[0] - 1e-9) & \
+                              (tf_times <= analysis_window[1] + 1e-9)
+                    pw = pw[..., tf_awin]
+                    # group-level input: log10 of trial-averaged power (logmean) or trial-average of
+                    # log10 power (meanlog, Lavie); optionally broadband-normalised per condition
+                    for zone, mask in (('in', in_zone), ('out', ~in_zone)):
+                        lpm = np.log10(pw[mask]).mean(0) if trial_avg == 'meanlog' else \
+                              np.log10(pw[mask].mean(0))
+                        r[f'logpow_{zone}'] = lpm - norm_offset(lpm)
+                    # single-subject stats on single-trial log power (normalised per trial)
+                    lp = np.log10(pw)
+                    trial_off = norm_offset(lp)                          # (n_ep, 1, 1)
+                    lp = lp - trial_off
+                    t_map, p_map = stats.ttest_ind(lp[in_zone], lp[~in_zone], axis=0, equal_var=False)
+                    r['ss_tf'] = dict(t=t_map, sig=fdr(p_map))
+                    r['ss_band'] = {}
+                    for bname, (lo, hi) in bands.items():
+                        bm = (tf_freqs >= lo) & (tf_freqs <= hi)
+                        bp = (np.log10(pw[:, bm]).mean(1) if trial_avg == 'meanlog' else
+                              np.log10(pw[:, bm].mean(1))) - trial_off[:, 0]   # (n_ep, n_t)
+                        r['ss_band'][bname] = zone_compare(bp[in_zone], bp[~in_zone])
+                    out['times'] = times[awin]
+                    out['tf_times'] = tf_times[tf_awin]
+                out['res'][ev][ch] = r
 
-    with open(cache_path, 'wb') as f:
-        pickle.dump(out, f)
-    return out
+    for m in todo:
+        with open(cache_path_of(key_name, m), 'wb') as f:
+            pickle.dump(new[m], f)
+    outs.update(new)
+    return outs
 
 
 #%% single-subject figure: columns = channels, rows = TF diff / theta / beta / ERP
-def plot_single_subject(key_name, r_subj, ev):
+def plot_single_subject(key_name, r_subj, ev, method):
     chs = [c for c in ch_names if 'erp_in' in r_subj['res'][ev].get(c, {})]
     if len(chs) == 0:
         return
@@ -395,26 +459,29 @@ def plot_single_subject(key_name, r_subj, ev):
             axe.set_ylabel(r'ERP ($\mu$V)')
             axes[1, 0].legend(fontsize=7, loc='upper right')
     fig.colorbar(im, ax=axes[0, :].tolist(), label=r'$\log_{10}$ power ' + diff_txt, shrink=0.9)
-    fig.suptitle(f'{key_name} — {ev} | {tf_desc} '
+    fig.suptitle(f'{key_name} — {ev} | {tf_desc_of(method)} '
                  f'| zone={zone_method}, norm={norm_method}, ref={eeg_ref} '
                  f'| black: FDR p<{alpha} (Welch t across trials) | {marker_txt}', fontsize=10)
-    save_or_show_fig(fig, os.path.join(single_dir, f'{key_name}_{ev}_{tf_tag}.png'))
+    save_or_show_fig(fig, os.path.join(single_dir, f'{key_name}_{ev}_{tf_tag_of(method)}.png'))
 
 
 #%% run all subjects
 subj_keys = sorted(d for d in os.listdir(data_save_path)
                    if d.startswith('sub-') and os.path.exists(
                        os.path.join(data_save_path, d, f"{d}_preprocessed_dict.pkl.gz")))
-subj_res = {}
+subj_res_m = {m: {} for m in tf_methods}       # method -> subject -> result
 t0 = time.time()
 for key_name in tqdm(subj_keys):
     try:
-        subj_res[key_name] = process_subject(key_name)
+        res_k = process_subject(key_name)
     except Exception as err:
         print(f"{key_name}: failed ({err!r}), skipping")
         continue
-    for ev in zone_events:
-        plot_single_subject(key_name, subj_res[key_name], ev)
+    for m in tf_methods:
+        subj_res_m[m][key_name] = res_k[m]
+        for ev in zone_events:
+            plot_single_subject(key_name, res_k[m], ev, m)
+subj_res = subj_res_m[tf_methods[0]]          # ERP / trial counts do not depend on the TF method
 print(f"Processed {len(subj_res)} subjects in {time.time() - t0:.0f} s")
 
 times = next(r['times'] for r in subj_res.values() if r['times'] is not None)
@@ -434,11 +501,11 @@ print(count_df.groupby(['event', 'ch'])[['n_in', 'n_out', 'included']]
 
 
 #%% gather subject-level arrays
-def gather(ev, ch):
+def gather(ev, ch, method):
     """Return dict of subject-stacked arrays. ch='mean' averages available channels per subject."""
     keys = ['erp_in', 'erp_out', 'logpow_in', 'logpow_out']
     out = {k: [] for k in keys}
-    for s, r in subj_res.items():
+    for s, r in subj_res_m[method].items():
         chs = ch_names if ch == 'mean' else [ch]
         avail = [c for c in chs if 'erp_in' in r['res'][ev].get(c, {})]
         if len(avail) == 0:
@@ -448,7 +515,8 @@ def gather(ev, ch):
     return {k: np.array(v) for k, v in out.items()}
 
 
-def plot_ersp(d, ev, ch):
+def ersp_stats(d):
+    """Cluster permutation on in - out log power across subjects. Returns (diff, sig mask)."""
     diff = d['logpow_in'] - d['logpow_out']                     # (n_subj, n_freq, n_time)
     n = diff.shape[0]
     t_thresh = stats.t.ppf(1 - alpha / 2, n - 1)
@@ -459,13 +527,14 @@ def plot_ersp(d, ev, ch):
     for c, p in zip(clusters, cl_p):
         if p < alpha:
             sig |= c
+    return diff, sig
 
+
+def draw_ersp(fig, axes, d, diff, sig, vmax, title):
+    """Fig 2A layout in a column of 3 axes: TF map (diff_sign * (in - out)), theta and beta time courses."""
+    n = diff.shape[0]
     mean_diff = diff_sign * diff.mean(0)
-    vmax = np.nanpercentile(np.abs(mean_diff), 99)
-
-    fig = plt.figure(figsize=(9, 9), constrained_layout=True)
-    gs = fig.add_gridspec(3, 1, height_ratios=[2.2, 1, 1])
-    ax = fig.add_subplot(gs[0])
+    ax = axes[0]
     im = ax.pcolormesh(tf_times, tf_freqs, mean_diff, cmap='RdBu_r',
                        vmin=-vmax, vmax=vmax, shading='nearest')
     if sig.any():
@@ -477,14 +546,11 @@ def plot_ersp(d, ev, ch):
     add_markers(ax)
     fig.colorbar(im, ax=ax, label=r'$\log_{10}$ power  ' + diff_txt + norm_label)
     ax.set_ylabel('Frequency (Hz)')
-    ax.set_title(f'{ev} — {ch.upper()} — n={n} | {tf_desc} '
-                 f'| zone={zone_method}, norm={norm_method}, ref={eeg_ref}'
-                 f'\nblack: cluster p<{alpha} ({marker_txt})',
-                 fontsize=10)
+    ax.set_title(title, fontsize=10)
 
     # band time courses (Lavie Fig 2A lower panels)
     for i, (bname, (lo, hi)) in enumerate(bands.items()):
-        axb = fig.add_subplot(gs[1 + i], sharex=ax)
+        axb = axes[1 + i]
         bm = (tf_freqs >= lo) & (tf_freqs <= hi)
         bp_in, bp_out = d['logpow_in'][:, bm].mean(1), d['logpow_out'][:, bm].mean(1)
         for y, c, lab in ((bp_in, 'tab:blue', 'In-the-zone'), (bp_out, 'tab:red', 'Out-of-the-zone')):
@@ -501,9 +567,40 @@ def plot_ersp(d, ev, ch):
         axb.set_ylabel(rf'{bname} {lo}-{hi} Hz' + '\n' + r'$\log_{10}$ power')
         axb.legend(fontsize=8, loc='upper right')
         axb.grid(alpha=0.3)
-    axb.set_xlabel(time_label)
-    axb.set_xlim(*analysis_window)
-    save_or_show_fig(fig, os.path.join(results_dir, f'ERSP_inzone_minus_outzone_{ev}_{ch}_{tf_tag}.png'))
+    axes[-1].set_xlabel(time_label)
+    axes[-1].set_xlim(*analysis_window)
+
+
+def plot_ersp(d, ev, ch, method, diff=None, sig=None):
+    if diff is None:
+        diff, sig = ersp_stats(d)
+    vmax = np.nanpercentile(np.abs(diff.mean(0)), 99)
+    fig = plt.figure(figsize=(9, 9), constrained_layout=True)
+    gs = fig.add_gridspec(3, 1, height_ratios=[2.2, 1, 1])
+    ax0 = fig.add_subplot(gs[0])
+    axes = [ax0] + [fig.add_subplot(gs[i], sharex=ax0) for i in (1, 2)]
+    draw_ersp(fig, axes, d, diff, sig, vmax,
+              f'{ev} — {ch.upper()} — n={diff.shape[0]} | {tf_desc_of(method)} '
+              f'| zone={zone_method}, norm={norm_method}, ref={eeg_ref}'
+              f'\nblack: cluster p<{alpha} ({marker_txt})')
+    save_or_show_fig(fig, os.path.join(results_dir, f'ERSP_inzone_minus_outzone_{ev}_{ch}_{tf_tag_of(method)}.png'))
+
+
+def plot_ersp_compare(ds, stats_m, ev, ch):
+    """Side-by-side Fig 2A layout, one column per TF method, shared colour scale."""
+    vmax = max(np.nanpercentile(np.abs(stats_m[m][0].mean(0)), 99) for m in ds)
+    fig = plt.figure(figsize=(8 * len(ds), 9), constrained_layout=True)
+    gs = fig.add_gridspec(3, len(ds), height_ratios=[2.2, 1, 1])
+    for j, m in enumerate(ds):
+        ax0 = fig.add_subplot(gs[0, j])
+        axes = [ax0] + [fig.add_subplot(gs[i, j], sharex=ax0) for i in (1, 2)]
+        diff, sig = stats_m[m]
+        draw_ersp(fig, axes, ds[m], diff, sig, vmax,
+                  f'{tf_label[m]}: {tf_desc_of(m)}\nn={diff.shape[0]}, black: cluster p<{alpha}')
+    fig.suptitle(f'{ev} — {ch.upper()} | zone={zone_method}, norm={norm_method}, ref={eeg_ref} '
+                 f'| {diff_txt} | {marker_txt}', fontsize=11)
+    tags = '_vs_'.join(tf_tag_of(m) for m in ds)
+    save_or_show_fig(fig, os.path.join(results_dir, f'ERSP_compare_{ev}_{ch}_{tags}.png'))
 
 
 def plot_erp(d, ev, ch):
@@ -541,21 +638,26 @@ def plot_erp(d, ev, ch):
 #%% group plots
 for ev in zone_events:
     for ch in ch_names + ['mean']:
-        d = gather(ev, ch)
+        ds = {m: gather(ev, ch, m) for m in tf_methods}
+        d = ds[tf_methods[0]]
         if len(d['erp_in']) < 3:
             print(f"{ev} {ch}: too few subjects, skip")
             continue
         print(f"{ev} {ch}: n_subj = {len(d['erp_in'])}")
         plot_erp(d, ev, ch)
-        plot_ersp(d, ev, ch)
+        stats_m = {m: ersp_stats(ds[m]) for m in tf_methods}
+        for m in tf_methods:
+            plot_ersp(ds[m], ev, ch, m, *stats_m[m])
+        if len(tf_methods) > 1:
+            plot_ersp_compare(ds, stats_m, ev, ch)
 
 #%% log
-with open(os.path.join(results_dir, f"run_info_{tf_tag}.txt"), 'w') as f:
+with open(os.path.join(results_dir, f"run_info_{'_'.join(tf_tag_of(m) for m in tf_methods)}.txt"), 'w') as f:
     f.write(f"Generated {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\n")
     f.write(f"Subjects processed: {list(subj_res)}\n")
     f.write(f"Time-lock: onset + {full_image_delay} s; analysis window {analysis_window} s; "
             f"padding {pad} s\n")
-    f.write(f"Preset: {preset}; TF method: {tf_method}; reference: {eeg_ref}; "
+    f.write(f"Preset: {preset}; TF methods: {tf_methods}; reference: {eeg_ref}; "
             f"trial averaging: {trial_avg}; plotted sign: {'out - in' if diff_sign < 0 else 'in - out'}\n")
     f.write(f"Bands: {bands}\n")
     f.write(f"TF: freqs {tf_freqs[0]}-{tf_freqs[-1]} Hz, n_cycles={tf_n_cycles}, "
