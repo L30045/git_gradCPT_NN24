@@ -4,7 +4,8 @@
 #     y = X h + N b + e,   e ~ AR(p) with Student-t innovations
 #
 # - X: the Gaussian-kernel event regressors, so h holds one weight per delayed kernel and the HRF is B h.
-#   There is no separate amplitude and no canonical-HRF prior: h ~ N(0, tau_h), with tau_h learned.
+#   There is no separate amplitude and no canonical-HRF prior: h ~ N(0, tau_h), with tau_h learned (ridge).
+#   If not is_ridge, h ~ N(0, h_flat_sd) with a fixed, wide scale (effectively no shrinkage).
 #   If is_smooth_penalty, the 2nd differences of h get an extra N(0, tau_s) penalty (tau_s learned).
 # - y: HbO of one parcel (image space, sensitive parcels only), per-run highpassed (0.02 Hz) and truncated
 #   to [first onset - t_pre, last onset + t_post], runs concatenated, standardized
@@ -47,9 +48,21 @@ select_chromo = 'HbO'
 run_keys = ['gradcpt1'] # runs used for fitting, concatenated in this order (e.g. ['gradcpt1', 'gradcpt2', 'gradcpt3'])
 is_hp_fNIRS = True   # If True, highpass each run at 0.02 Hz before truncation
 l_cutoff = 0.02      # highpass cutoff (Hz)
+# If True (and is_hp_fNIRS), the event regressors are built on the full run, highpassed with the same filter
+# as y, then truncated. Without it the zero-phase highpass shrinks the HRF (~30% in the sub-723 simulation)
+# and adds a dip before onset, since y carries the filter's lobes and the design does not.
+is_hp_design = True
 is_save = True       # If True, save the posterior (netCDF) and figures
 is_smooth_penalty = False  # If True, penalize the 2nd differences of the kernel weights h (scale learned)
+is_ridge = True      # If True, h ~ N(0, tau_h) with tau_h learned; False: h ~ N(0, h_flat_sd), no learned shrinkage
+h_flat_sd = 10.0     # prior sd of h when not is_ridge (y is standardized, so this is effectively flat)
 USE_GPU = False      # True: JAX/numpyro NUTS on the GPU (stops if JAX sees no GPU); False: PyMC NUTS on CPU
+# Simulated data: a folder name under derivatives/eeg/<subject>/simulation/ written by
+# data simulation/simulate_mnt-correct_HRF.py. Its stims hold the simulated mnt-correct trials
+# ('mnt', response_code 0; the real mnt trials are 'mnt-orig') and its parcel_ts the real data plus
+# the injected HRFs. None fits the real data.
+sim_name = None
+# sim_name = 'sim_mnt-correct_10pct-city_canonical_A0.2_cv0.25_slogsd0.15_jit3_seed0'
 # AR order in samples: start at p_start and add one lag while the last lag of an AR(P) fit to the OLS
 # residuals is significant (p < p_alpha), up to pmax
 p_start = 10
@@ -63,9 +76,18 @@ cfg_GLM['drift_order'] = DRIFT_ORDER
 
 hp_flag = 'Hp' if is_hp_fNIRS else 'noHp'
 smooth_flag = 'smooth' if is_smooth_penalty else 'noSmooth'
-model_name = f'Bayes-HRF-AR_mnt-correct_gauss_1-stage_{"-".join(run_keys)}_{hp_flag}_{smooth_flag}'
-data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'bayes')
-plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, model_name)
+ridge_flag = '' if is_ridge else '_noRidge'
+is_hp_design = is_hp_design and is_hp_fNIRS
+design_flag = '_hpDesign' if is_hp_design else ''
+model_name = (f'Bayes-HRF-AR_mnt-correct_gauss_1-stage_{"-".join(run_keys)}_{hp_flag}_{smooth_flag}'
+              f'{ridge_flag}{design_flag}')
+if sim_name is None:
+    data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'bayes')
+    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, model_name)
+else:
+    sim_dir = os.path.join(project_path, 'derivatives', 'eeg', subject, 'simulation', sim_name)
+    data_save_path = os.path.join(sim_dir, 'bayes')
+    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, sim_name, model_name)
 
 gauss_kernels = glm.GaussianKernels(cfg_HRF_basis['t_pre'], cfg_HRF_basis['t_post'],
                                     cfg_HRF_basis['t_delta'], cfg_HRF_basis['t_std'])
@@ -113,7 +135,8 @@ def select_ar_order(e, run_starts, p_start, pmax, alpha):
         P += 1
 
 
-def build_model(x, X_ev, N, B, P, run_starts, is_smooth_penalty=True, pacf_scale=1.0):
+def build_model(x, X_ev, N, B, P, run_starts, is_smooth_penalty=True, is_ridge=True, h_flat_sd=10.0,
+                pacf_scale=1.0):
     """x: (T,) standardized data; X_ev: (T, L) Gaussian-kernel event regressors; N: (T, M) nuisance;
     B: (n_lag, L) kernels on the HRF lag axis (only for the 'hrf' deterministic)."""
     T, L = X_ev.shape
@@ -123,7 +146,7 @@ def build_model(x, X_ev, N, B, P, run_starts, is_smooth_penalty=True, pacf_scale
 
     with pm.Model() as bayes_model:
         # ---- kernel weights: zero-mean ridge with a learned scale ----
-        tau_h = pm.HalfNormal("tau_h", 1.0)
+        tau_h = pm.HalfNormal("tau_h", 1.0) if is_ridge else h_flat_sd
         h = pm.Normal("h", 0.0, tau_h, shape=L)
         if is_smooth_penalty:
             # smoothness: 2nd differences of h, scale learned
@@ -237,12 +260,22 @@ sensitive_parcels = np.unique(Adot_brain.sel(vertex=sensitivity_mask.values).par
 if select_parcel not in sensitive_parcels:
     raise ValueError(f"{select_parcel} is not among the {len(sensitive_parcels)} sensitive parcels.")
 
-# load image-space parcel time series and stims
-der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
-with gzip.open(os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl'), 'rb') as f:
+# load image-space parcel time series and stims (real, or simulated in the same format)
+if sim_name is None:
+    der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data')
+    stim_path = os.path.join(der_dir, subject, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl')
+    filepath = os.path.join(der_dir, subject,
+                            f'{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}_v26.pkl')
+else:
+    stim_path = os.path.join(sim_dir, f'{subject}_sim_stims.pkl')
+    filepath = os.path.join(sim_dir, f'{subject}_sim_parcel_ts.pkl')
+    print(f"fitting simulated data: {sim_dir}")
+    # injected HRFs alone (uM, full runs, image-space run order): put through the same highpass and
+    # truncation as y, so a fit on it shows what the preprocessing and design leave of the truth
+    with open(os.path.join(sim_dir, f'{subject}_sim_injected_uM.pkl'), 'rb') as f:
+        sim_injected = pickle.load(f)
+with gzip.open(stim_path, 'rb') as f:
     all_stims = pickle.load(f)['stims']
-filepath = os.path.join(der_dir, subject,
-                        f'{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}_IR_ts_{NOISE_MODEL}{flag}_v26.pkl')
 with open(filepath, 'rb') as f:
     image_results = pickle.load(f)
 raw_runs = image_results['parcel_ts']
@@ -265,6 +298,7 @@ for run_key in run_keys:
 all_runs = []
 event_dms = []
 mnt_onsets = []   # per run, mnt-correct onsets in the truncated run's time (starts at 0)
+inj_runs = []     # simulation only: injected HRFs, preprocessed like y
 for run_key in run_keys:
     r_i = run_key_to_run_idx[run_key]
     stim, run = all_stims[r_i], raw_runs[r_i]
@@ -290,11 +324,31 @@ for run_key in run_keys:
     # window: first event - t_pre to last event + t_post, so every kernel of every kept trial fits
     t_start = max(stim['onset'].min() - cfg_HRF_basis['t_pre'].magnitude, run.time.values[0])
     t_stop = min(stim['onset'].max() + cfg_HRF_basis['t_post'].magnitude, run.time.values[-1])
-    run = run.sel(time=slice(t_start, t_stop))
+    if sim_name is not None:
+        inj = sim_injected[r_i]
+        if len(inj) != run.sizes['time']:
+            raise ValueError(f"run {r_i}: injected signal has {len(inj)} samples, data {run.sizes['time']}.")
+        if is_hp_fNIRS:
+            inj = sosfiltfilt(butter(4, l_cutoff, btype='highpass', fs=fs, output='sos'), inj)
+        tv = run.time.values
+        inj_runs.append(inj[(tv >= t_start) & (tv <= t_stop)])
     mnt = mnt[(mnt['onset'] >= t_start) & (mnt['onset'] <= t_stop)]
 
-    ev_dm = glm.design_matrix.hrf_regressors(run, mnt, gauss_kernels)
-    ev_dm.common = ev_dm.common.fillna(0)
+    if is_hp_design:
+        # regressors on the full run, highpassed like y over the full run, then truncated with y
+        ev_dm = glm.design_matrix.hrf_regressors(run, mnt, gauss_kernels)
+        common = ev_dm.common.fillna(0)
+        common = common.copy(data=sosfiltfilt(sos, np.asarray(common.values), axis=common.dims.index('time')))
+        ev_dm.common = common.sel(time=slice(t_start, t_stop))
+    run = run.sel(time=slice(t_start, t_stop))
+    if sim_name is not None and len(inj_runs[-1]) != run.sizes['time']:
+        raise ValueError(f"run {r_i}: truncated injected signal and data differ in length.")
+
+    if not is_hp_design:
+        ev_dm = glm.design_matrix.hrf_regressors(run, mnt, gauss_kernels)
+        ev_dm.common = ev_dm.common.fillna(0)
+    if ev_dm.common.sizes['time'] != run.sizes['time']:
+        raise ValueError(f"run {r_i}: event regressors and data differ in length.")
 
     # reset time to 0 (regressors and onsets shift with it)
     t0 = run.time.values[0]
@@ -355,7 +409,8 @@ if P == pmax and ar_pvals[P] < p_alpha:
     print(f"warning: last lag still significant at pmax = {pmax}")
 print(f"{subject} {select_parcel}: T = {T}, fs = {fs:.2f} Hz, L = {B.shape[1]}, M = {N.shape[1]}, P = {P}")
 
-bayes_model = build_model(y_s, X_ev, N, B, P, run_starts, is_smooth_penalty=is_smooth_penalty)
+bayes_model = build_model(y_s, X_ev, N, B, P, run_starts, is_smooth_penalty=is_smooth_penalty,
+                          is_ridge=is_ridge, h_flat_sd=h_flat_sd)
 
 #%% sample
 t_begin = time.time()
@@ -372,7 +427,7 @@ print(f"sampling time {time.time() - t_begin:.0f} s")
 
 # ---- diagnostics ----
 print("divergences:", int(idata.sample_stats["diverging"].sum()))
-print(az.summary(idata, var_names=["h", "tau_h"] + (["tau_s"] if is_smooth_penalty else [])
+print(az.summary(idata, var_names=["h"] + (["tau_h"] if is_ridge else []) + (["tau_s"] if is_smooth_penalty else [])
                  + ["phi", "sigma", "nu"], round_to=3))
 
 #%% posterior-mean fit pieces (standardized units)
@@ -398,7 +453,7 @@ if is_save:
     os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(data_save_path, exist_ok=True)
 
-title = f"{subject} {select_parcel} {select_chromo} (mnt-correct)"
+title = f"{subject} {select_parcel} {select_chromo} ({'simulated ' if sim_name else ''}mnt-correct)"
 ev_times = np.sort(np.concatenate([ons + off for ons, off in zip(mnt_onsets, run_offsets)]))  # concatenated time
 t_all = Y_all.time.values
 plot_result(idata, hrf_t, t_all, y_s, mu_s, event_s, ev_times, P, fs, title,
@@ -434,6 +489,26 @@ plt.show()
 
 #%% save posterior
 if is_save:
+    # what is needed to put the HRF back in micromolar on its lag axis, and which image-space runs were fit
+    # plus the exact model inputs, so other estimators can be refit on them (cmp_HRF_simulation.py)
+    if 'constant_data' not in idata.groups():
+        const = {
+            'hrf_t': ('lag', hrf_t),
+            'run_idx': ('run', np.array([run_key_to_run_idx[k] for k in run_keys])),
+            'y_scale': scale,
+            'y_mean': y_mean,
+            'B': (('lag', 'kernel'), B),
+            'X_ev': (('time', 'kernel'), X_ev),
+            'N': (('time', 'nuisance'), N),
+            'y_s': ('time', y_s),
+            'run_starts': ('run', run_starts),
+            'P': P,
+        }
+        if sim_name is not None:
+            const['y_inj'] = ('time', np.concatenate(inj_runs))   # uM, highpassed and truncated like y
+        idata.add_groups(constant_data=xr.Dataset(const, attrs={'subject': subject, 'parcel': select_parcel, 'chromo': select_chromo,
+                  'run_keys': ','.join(run_keys), 'sim_name': sim_name or '', 'unit': 'micromolar',
+                  'hp_design': int(is_hp_design), 'l_cutoff': l_cutoff if is_hp_fNIRS else 0.0}))
     idata_path = os.path.join(data_save_path, f'{subject}_{model_name}_{select_parcel}_idata.nc')
     try:
         idata.to_netcdf(idata_path)          # needs netCDF4 or h5netcdf
