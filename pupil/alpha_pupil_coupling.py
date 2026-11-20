@@ -36,15 +36,15 @@ XCORR_LAG_S = 1.0             # ±lag shown in cross-correlation plot
 # Trial type filter for the gradCPT coupling analysis.
 # Set to None to use all trials (full continuous signal).
 # Each entry: (trial_type value, response_code condition)
-#   city_correct:   trial_type='city', response_code != 0
-#   city_incorrect: trial_type='city', response_code == 0
-#   mnt_correct:    trial_type='mnt',  response_code == 0
+#   city_correct:   trial_type='city', response_code == 1   (BIDS: 1 hit, -1 miss)
+#   city_incorrect: trial_type='city', response_code != 1
+#   mnt_correct:    trial_type='mnt',  response_code == 0   (BIDS: 0 correct reject, -2 false alarm)
 #   mnt_incorrect:  trial_type='mnt',  response_code != 0
 TRIAL_TYPE = 'city_correct'
 
 TRIAL_FILTERS = {
-    'city_correct':   lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 0),
-    'city_incorrect': lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
+    'city_correct':   lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 1),
+    'city_incorrect': lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 1),
     'mnt_correct':    lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] == 0),
     'mnt_incorrect':  lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] != 0),
 }
@@ -535,8 +535,8 @@ PUPIL_WINDOW_S = 0.8   # seconds after stimulus onset
 CONDITIONS = {
     'mnt_correct':   lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] == 0),
     'mnt_incorrect': lambda df: (df['trial_type'] == 'mnt')  & (df['response_code'] != 0),
-    'city_correct':  lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 0),
-    'city_incorrect':lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 0),
+    'city_correct':  lambda df: (df['trial_type'] == 'city') & (df['response_code'] == 1),
+    'city_incorrect':lambda df: (df['trial_type'] == 'city') & (df['response_code'] != 1),
 }
 
 # discover all subjects that have at least one gradCPT physio + events pair

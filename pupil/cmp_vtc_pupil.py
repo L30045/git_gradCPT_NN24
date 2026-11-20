@@ -181,8 +181,8 @@ for subj in sorted(subject_list):
         events_df_s = pd.read_csv(event_file, sep='\t')
         mnt_correct_idx_s   = (events_df_s['trial_type']=='mnt') & (events_df_s['response_code']==0)
         mnt_incorrect_idx_s = (events_df_s['trial_type']=='mnt') & (events_df_s['response_code']!=0)
-        city_correct_idx_s  = (events_df_s['trial_type']=='city') & (events_df_s['response_code']!=0)
-        city_incorrect_idx_s= (events_df_s['trial_type']=='city') & (events_df_s['response_code']==0)
+        city_correct_idx_s  = (events_df_s['trial_type']=='city') & (events_df_s['response_code']== 1)
+        city_incorrect_idx_s= (events_df_s['trial_type']=='city') & (events_df_s['response_code']!= 1)
         vtc_s = smoothing_VTC_gaussian_array(events_df_s['VTC'].values, L=20)
          # RT-locked epoch for mnt_incorrect: shift onset by reaction_time
         events_df_rt_mnt = events_df_s[mnt_incorrect_idx_s].copy()
@@ -1526,13 +1526,13 @@ _basis, _t_hrf = _build_gaussian_basis(f_downsample,
 _stim_conds = {
     'mnt_correct':    (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] == 0),
     'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
-    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
-    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 1),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 1),
 }
 _resp_conds = {
     'mnt_incorrect':  (_events_df['trial_type'] == 'mnt') & (_events_df['response_code'] != 0),
-    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 0),
-    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 0),
+    'city_correct':   (_events_df['trial_type'] == 'city') & (_events_df['response_code'] == 1),
+    'city_incorrect': (_events_df['trial_type'] == 'city') & (_events_df['response_code'] != 1),
 }
 _X_blocks = []
 for _idx in _stim_conds.values():

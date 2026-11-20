@@ -143,7 +143,7 @@ for run_id in runs:
 
     all_onsets = events_df['onset'].values
     soa = np.median(np.diff(all_onsets))
-    city_correct = ((events_df['trial_type'] == 'city') & (events_df['response_code'] != 0)).values
+    city_correct = ((events_df['trial_type'] == 'city') & (events_df['response_code'] == 1)).values
     ep, valid = epoch(all_onsets[city_correct], t_neon, pupil_hp, sfreq, baseline_length, epoch_length)
     coeffs, grid, folded = cycle_coeffs(all_onsets, soa, t_neon, pupil_hp)
 

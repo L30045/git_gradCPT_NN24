@@ -205,7 +205,7 @@ for subj in subject_list:
         pupil_d = np.asarray(pupil_d, dtype=float)
         sfreq = np.round(np.median(1 / np.diff(t_neon)))
 
-        city_correct = ((events_df['trial_type'] == 'city') & (events_df['response_code'] != 0)).values
+        city_correct = ((events_df['trial_type'] == 'city') & (events_df['response_code'] == 1)).values
         if covariate == 'vtc':
             cov = smoothing_VTC_gaussian_array(events_df['VTC'].values, L=20)
         else:
