@@ -62,6 +62,20 @@ lives in [../pupil/](../pupil/).
 
 ## 2. Conventions
 
+### Folder layout
+| Folder | Contents |
+|---|---|
+| (top level) | shared modules (`model.py`, `params_setting.py`), `summary_*.ipynb` write-ups, data checks, reference copies of the lab's GLM code |
+| [visualization/](visualization/) | `vis_*` plotting scripts |
+| [model training/](model%20training/) | scripts that fit models and save betas/stats: `run_model_*`, `build_dm_*`, and the early `model_*` / one-off GLM fits |
+| [comparison/](comparison/) | `cmp_*` scripts that compare models, designs or pipelines |
+| [sanity check/](sanity%20check/) | algorithm and model checks: `check_iRRR`, `check_yhat_*`, `ar-irls_test`, the RLM F-test proof, the flat-HRF diagnostic |
+| [Bayesian model/](Bayesian%20model/) | joint HRF + AR(P) model (PyMC) |
+| [data simulation/](data%20simulation/) | simulated mnt-correct HRFs for validating the models |
+| [archive/](archive/) | retired notebooks and scripts (`summary_Hp_fixAR-IRLS_iRRR_AR`, `run_stat_test`, `xSubj_shared_HRF_analysis*`) |
+
+Scripts in the subfolders add the top-level folder to `sys.path` (`modeling_path`), so they can be run from anywhere.
+
 ### Shared modules
 | File | Role |
 |---|---|
@@ -81,7 +95,7 @@ lives in [../pupil/](../pupil/).
 - Pipeline: per run, highpass (0.02 Hz, 4th-order Butterworth, zero-phase), then truncate to
   [first onset, last onset + 15 s], then OLS Legendre drift, then OLS GSR. Runs are concatenated
   as gradcpt1, 2, 3.
-- [run_model_cont_EEG_fNIRS.py](run_model_cont_EEG_fNIRS.py) saves it once per subject as
+- [run_model_cont_EEG_fNIRS.py](model%20training/run_model_cont_EEG_fNIRS.py) saves it once per subject as
   `Y_all/<subject>_parcel_Y_all_truncated_to_trials_<Hp|noHp>.pkl.gz`.
 - All `cont_EEG_cz_3-stage*` models and the network-based scripts reuse it.
 
@@ -122,104 +136,104 @@ results (they never refit) and contain the full write-ups.
 - [check_available_data.py](check_available_data.py): lists the subjects with fNIRS, pupil, and
   EEG, and the epoch count of each.
 - [check_image_recon.py](check_image_recon.py): inspects the image-reconstruction outputs.
-- [vis_parcel_cluster.py](vis_parcel_cluster.py): hierarchical clustering of parcel centroids by
+- [vis_parcel_cluster.py](visualization/vis_parcel_cluster.py): hierarchical clustering of parcel centroids by
   spatial distance.
 
 ### Stage 1: Event-based EEG-informed GLM (channel space)
-- [model_pilot.py](model_pilot.py): first look at the data. Includes the mnt-correct vs
+- [model_pilot.py](model%20training/model_pilot.py): first look at the data. Includes the mnt-correct vs
   mnt-incorrect ERP comparison (mean ± 2 SEM).
-- [model_EEG_inform_single_subject.py](model_EEG_inform_single_subject.py) and
-  [run_model_EEG_inform.py](run_model_EEG_inform.py): fit four design matrices per subject:
+- [model_EEG_inform_single_subject.py](model%20training/model_EEG_inform_single_subject.py) and
+  [run_model_EEG_inform.py](model%20training/run_model_EEG_inform.py): fit four design matrices per subject:
   - `full`: HRF + EEG-modulated HRF
   - `onlyStim`: HRF only
   - `onlyEEG`: EEG-modulated HRF + basis
   - `basis`: drift/short-separation regressors only
 
   The EEG modulators are the single-trial ERP area and alpha power at Cz.
-- [run_stat_test.py](run_stat_test.py): F-tests (full vs stim, full vs basis) and contrast t-tests.
-  [vis_hrf.py](vis_hrf.py) plots the HRFs of significant channels.
-- [run_model_network_based.py](run_model_network_based.py) and
-  [vis_hrf_network.py](vis_hrf_network.py): the same models with network-averaged signals.
+- [run_stat_test.py](archive/run_stat_test.py): F-tests (full vs stim, full vs basis) and contrast t-tests.
+  [vis_hrf.py](visualization/vis_hrf.py) plots the HRFs of significant channels.
+- [run_model_network_based.py](model%20training/run_model_network_based.py) and
+  [vis_hrf_network.py](visualization/vis_hrf_network.py): the same models with network-averaged signals.
 - Sanity checks on the fitting itself:
-  - [cmp_model_hrf.py](cmp_model_hrf.py) and
-    [cmp_model_MSE_EV_single_subj_single_channel.py](cmp_model_MSE_EV_single_subj_single_channel.py):
+  - [cmp_model_hrf.py](comparison/cmp_model_hrf.py) and
+    [cmp_model_MSE_EV_single_subj_single_channel.py](comparison/cmp_model_MSE_EV_single_subj_single_channel.py):
     model fit (MSE, explained variance) per model type.
-  - [manual_fit_model.py](manual_fit_model.py): a hand-built fit.
-  - [ar-irls_test.py](ar-irls_test.py): AR prewhitening with `lfilter`.
-  - [proof_RLM_RSS_full_smaller_than_reduced.py](proof_RLM_RSS_full_smaller_than_reduced.py): shows
+  - [manual_fit_model.py](model%20training/manual_fit_model.py): a hand-built fit.
+  - [ar-irls_test.py](sanity%20check/ar-irls_test.py): AR prewhitening with `lfilter`.
+  - [proof_RLM_RSS_full_smaller_than_reduced.py](sanity%20check/proof_RLM_RSS_full_smaller_than_reduced.py): shows
     that a robust (IRLS) fit can give a full model with a larger weighted RSS than the reduced model,
     which breaks the usual F-test.
-  - [check_yhat_AR-IRLS_OLS.py](check_yhat_AR-IRLS_OLS.py): AR-IRLS vs OLS predictions on one channel.
+  - [check_yhat_AR-IRLS_OLS.py](sanity%20check/check_yhat_AR-IRLS_OLS.py): AR-IRLS vs OLS predictions on one channel.
 
 ### Stage 2: Image space (parcels)
 - [CORRECT_CODE_runGLM_on_image.py](CORRECT_CODE_runGLM_on_image.py) and
   [hrf_estimate_Laura_copy.py](hrf_estimate_Laura_copy.py): reference copies of the lab's
   image-space HRF GLM.
-- [run_model_EEG_inform_parcel_based.py](run_model_EEG_inform_parcel_based.py): the Stage 1 models
+- [run_model_EEG_inform_parcel_based.py](model%20training/run_model_EEG_inform_parcel_based.py): the Stage 1 models
   on parcels, with three-stage regression (drift → GSR → AR-IRLS).
-- [check_yhat_AR-IRLS_image_space.py](check_yhat_AR-IRLS_image_space.py): compares Ŷ from the
+- [check_yhat_AR-IRLS_image_space.py](sanity%20check/check_yhat_AR-IRLS_image_space.py): compares Ŷ from the
   event-based HRF GLM and from the continuous-EEG GLM on the same parcel.
 
 ### Stage 3: Continuous-EEG GLM
-- [model_continuous_EEG_fNIRS.py](model_continuous_EEG_fNIRS.py): first version, with all EEG
+- [model_continuous_EEG_fNIRS.py](model%20training/model_continuous_EEG_fNIRS.py): first version, with all EEG
   channels as delayed regressors.
-- [run_model_cont_EEG_fNIRS.py](run_model_cont_EEG_fNIRS.py): the main pipeline. It uses
+- [run_model_cont_EEG_fNIRS.py](model%20training/run_model_cont_EEG_fNIRS.py): the main pipeline. It uses
   `cont_EEG_cz_3-stage_bspline-test` (Cz, 0–15 s delays, B-splines, drift/GSR by OLS, then AR-IRLS)
   and saves the shared `Y_all`.
 - Variants:
-  - [run_model_cont_EEG_trial_based.py](run_model_cont_EEG_trial_based.py): per-trial EEG epochs.
-  - [run_model_cont_EEG_fNIRS_add_VTC.py](run_model_cont_EEG_fNIRS_add_VTC.py): adds the VTC
+  - [run_model_cont_EEG_trial_based.py](model%20training/run_model_cont_EEG_trial_based.py): per-trial EEG epochs.
+  - [run_model_cont_EEG_fNIRS_add_VTC.py](model%20training/run_model_cont_EEG_fNIRS_add_VTC.py): adds the VTC
     regressor.
-  - [run_model_cont_EEG_fNIRS_rest.py](run_model_cont_EEG_fNIRS_rest.py): resting-state runs.
-  - [run_model_cont_EEG_city_mnt.py](run_model_cont_EEG_city_mnt.py): separate HRFs for EEG within
+  - [run_model_cont_EEG_fNIRS_rest.py](model%20training/run_model_cont_EEG_fNIRS_rest.py): resting-state runs.
+  - [run_model_cont_EEG_city_mnt.py](model%20training/run_model_cont_EEG_city_mnt.py): separate HRFs for EEG within
     city and mnt trials. It now fits mnt-correct and mnt-incorrect with AR-IRLS, fixAR-IRLS, and
     AR-iRRR (Stage 8).
 - Visualization:
-  - [vis_hrf_cont_EEG_cz.py](vis_hrf_cont_EEG_cz.py): HRF maps and near-Cz HRFs, for AR-IRLS or
+  - [vis_hrf_cont_EEG_cz.py](visualization/vis_hrf_cont_EEG_cz.py): HRF maps and near-Cz HRFs, for AR-IRLS or
     fixAR-IRLS.
-  - [vis_hrf_cont_EEG_city_mnt.py](vis_hrf_cont_EEG_city_mnt.py): the same plots for the
+  - [vis_hrf_cont_EEG_city_mnt.py](visualization/vis_hrf_cont_EEG_city_mnt.py): the same plots for the
     city/mnt models.
-  - [vis_fit.py](vis_fit.py): Y vs Ŷ and residual diagnostics.
-  - [vis_EV_on_surface.py](vis_EV_on_surface.py): explained variance on the brain surface.
-  - [vis_hrf_single_parcel_xSubjects.py](vis_hrf_single_parcel_xSubjects.py): one parcel across
+  - [vis_fit.py](visualization/vis_fit.py): Y vs Ŷ and residual diagnostics.
+  - [vis_EV_on_surface.py](visualization/vis_EV_on_surface.py): explained variance on the brain surface.
+  - [vis_hrf_single_parcel_xSubjects.py](visualization/vis_hrf_single_parcel_xSubjects.py): one parcel across
     subjects, event-based vs continuous-EEG.
 
 ### Stage 4: Structure of the EEG HRF across parcels and subjects
 - [single_subj_HRF_analysis.py](single_subj_HRF_analysis.py): SVD or ICA of each subject's
   parcel × delay HRF matrix.
-- [xSubj_shared_HRF_analysis_hungarian_matching.py](xSubj_shared_HRF_analysis_hungarian_matching.py):
+- [xSubj_shared_HRF_analysis_hungarian_matching.py](archive/xSubj_shared_HRF_analysis_hungarian_matching.py):
   matches components across subjects (an earlier approach) and clusters them by HRF shape and
   surface location.
-- [xSubj_shared_HRF_analysis.py](xSubj_shared_HRF_analysis.py): one joint SVD over all subjects'
+- [xSubj_shared_HRF_analysis.py](archive/xSubj_shared_HRF_analysis.py): one joint SVD over all subjects'
   parcels, which gives directly comparable shared HRF shapes. These are compared against a
   DorsAttn vs Default template.
 - The idea of a few shared HRF shapes led to the low-rank model in Stage 5.
 
 ### Stage 5: iRRR and the switch to spectral whitening
-- [check_iRRR.py](check_iRRR.py) and
-  [run_model_cont_EEG_fNIRS_iRRR.py](run_model_cont_EEG_fNIRS_iRRR.py): iRRR on one subject and on
-  all subjects. [run_model_cont_EEG_fNIRS_iRRR_group.py](run_model_cont_EEG_fNIRS_iRRR_group.py)
-  fits a group iRRR. [vis_hrf_cont_EEG_cz_iRRR.py](vis_hrf_cont_EEG_cz_iRRR.py) plots shared
+- [check_iRRR.py](sanity%20check/check_iRRR.py) and
+  [run_model_cont_EEG_fNIRS_iRRR.py](model%20training/run_model_cont_EEG_fNIRS_iRRR.py): iRRR on one subject and on
+  all subjects. [run_model_cont_EEG_fNIRS_iRRR_group.py](model%20training/run_model_cont_EEG_fNIRS_iRRR_group.py)
+  fits a group iRRR. [vis_hrf_cont_EEG_cz_iRRR.py](visualization/vis_hrf_cont_EEG_cz_iRRR.py) plots shared
   components and their weights.
 - **Problem:** applying the AR-IRLS per-parcel AR filter before iRRR removed the low-frequency EEG
   content (commit `33bb9bb`).
 - **Fix:** one *spectral* whitening kernel shared by all parcels and applied to both Y and X. This
   gave two models:
-  - [run_model_cont_EEG_fNIRS_fixAR-IRLS.py](run_model_cont_EEG_fNIRS_fixAR-IRLS.py) (fixAR-IRLS)
-  - [run_model_cont_EEG_fNIRS_AR-iRRR.py](run_model_cont_EEG_fNIRS_AR-iRRR.py) (AR-iRRR, with λ₁
+  - [run_model_cont_EEG_fNIRS_fixAR-IRLS.py](model%20training/run_model_cont_EEG_fNIRS_fixAR-IRLS.py) (fixAR-IRLS)
+  - [run_model_cont_EEG_fNIRS_AR-iRRR.py](model%20training/run_model_cont_EEG_fNIRS_AR-iRRR.py) (AR-iRRR, with λ₁
     chosen by CV)
-- [cmp_model_hrf_r2.py](cmp_model_hrf_r2.py): RMSE and R² of fixAR-IRLS, AR-iRRR, and group iRRR on
+- [cmp_model_hrf_r2.py](comparison/cmp_model_hrf_r2.py): RMSE and R² of fixAR-IRLS, AR-iRRR, and group iRRR on
   the whitened Y, plus an event-based comparison within mnt trials.
-- **Write-up:** [summary_Hp_fixAR-IRLS_iRRR_AR.ipynb](summary_Hp_fixAR-IRLS_iRRR_AR.ipynb). Results:
+- **Write-up:** [archive/summary_Hp_fixAR-IRLS_iRRR_AR.ipynb](archive/summary_Hp_fixAR-IRLS_iRRR_AR.ipynb) (archived 2026-11-23: the unscaled `_noScale` fits no longer exist). Results:
   - Y scaling is required (see the abstract).
   - CV selects rank 0 for 3 of 6 subjects.
   - Where the rank is above 0, held-out PMSE drops by only 0.03–0.15%.
   - Mean in-sample R² is 0.0043 for fixAR-IRLS and 0.0014 for AR-iRRR.
 
 ### Stage 6: Does it generalize? (single subject at a time, 6 subjects)
-- [cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py](cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py):
+- [cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py](comparison/cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py):
   train on gradcpt1 and test on gradcpt2/3. Each run is whitened before truncation.
-- [cmp_fixAR-IRLS_AR-iRRR_single-subj_all-runs.py](cmp_fixAR-IRLS_AR-iRRR_single-subj_all-runs.py):
+- [cmp_fixAR-IRLS_AR-iRRR_single-subj_all-runs.py](comparison/cmp_fixAR-IRLS_AR-iRRR_single-subj_all-runs.py):
   train on all runs (in-sample). Each run is truncated before whitening.
 - Both scripts are run with the Cz EEG design and the mnt-correct Gaussian-kernel design.
 - **Write-up:**
@@ -231,13 +245,13 @@ results (they never refit) and contain the full write-ups.
   - The run-1 HRFs only partly agree with the all-runs HRFs (median r 0.58–0.94 for fixAR-IRLS).
 
 ### Stage 7: AR-IRLS vs fixAR-IRLS vs AR-iRRR, event-based, all subjects
-- [cmp_AR-IRLS_fixAR-IRLS_single-subj.py](cmp_AR-IRLS_fixAR-IRLS_single-subj.py): the two IRLS
+- [cmp_AR-IRLS_fixAR-IRLS_single-subj.py](comparison/cmp_AR-IRLS_fixAR-IRLS_single-subj.py): the two IRLS
   models on one subject.
-- [cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py](cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py): all three models, every
+- [cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py](comparison/cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py): all three models, every
   subject, using Gaussian kernels at mnt-correct onsets.
   - `--train-runs gradcpt1` scores the held-out runs.
   - `--ranks 2 4 6 8` saves one iRRR fit per rank.
-- [cmp_Cedalion-pipe_My-pipe.py](cmp_Cedalion-pipe_My-pipe.py): compares this pipeline against the
+- [cmp_Cedalion-pipe_My-pipe.py](comparison/cmp_Cedalion-pipe_My-pipe.py): compares this pipeline against the
   coworker's Cedalion pipeline (0.01 Hz highpass, three trial types, per-run GSR regressor) on the
   same parcel time series.
 - **Write-up:** [summary_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.ipynb](summary_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.ipynb).
@@ -252,16 +266,16 @@ results (they never refit) and contain the full write-ups.
 ### Stage 8: Network-based fits and the four-way mnt-correct comparison
 Each network has its own whitening kernel, `Y_scale`, and iRRR. The network is the parcel-name
 prefix, for 17 networks.
-- [run_model_cont_EEG_fNIRS_AR-iRRR_network-based.py](run_model_cont_EEG_fNIRS_AR-iRRR_network-based.py):
+- [run_model_cont_EEG_fNIRS_AR-iRRR_network-based.py](model%20training/run_model_cont_EEG_fNIRS_AR-iRRR_network-based.py):
   continuous Cz EEG design. **Write-up:**
   [summary_AR-iRRR_fixAR-IRLS_network-based.ipynb](summary_AR-iRRR_fixAR-IRLS_network-based.ipynb).
   - Median shape r is 0.66 and the RMS ratio is 0.60.
   - 68% of parcels have p < 0.05 in the fixAR-IRLS F-test. This is probably anti-conservative.
-- [run_model_gaussian-kernel_mnt-correct_network-based.py](run_model_gaussian-kernel_mnt-correct_network-based.py)
+- [run_model_gaussian-kernel_mnt-correct_network-based.py](model%20training/run_model_gaussian-kernel_mnt-correct_network-based.py)
   (`GK-net`): Gaussian kernels, per network.
-- [run_model_cont_EEG_mnt-correct_network-based.py](run_model_cont_EEG_mnt-correct_network-based.py)
+- [run_model_cont_EEG_mnt-correct_network-based.py](model%20training/run_model_cont_EEG_mnt-correct_network-based.py)
   (`EEG-net`): Cz EEG within mnt-correct trials, per network.
-- [run_model_cont_EEG_city_mnt.py](run_model_cont_EEG_city_mnt.py) (`city`): Cz EEG within trials,
+- [run_model_cont_EEG_city_mnt.py](model%20training/run_model_cont_EEG_city_mnt.py) (`city`): Cz EEG within trials,
   mnt-correct and mnt-incorrect fit together, whole brain, all three models.
 - **Write-up:**
   [summary_run_model_cont_EEG_city_mnt.ipynb](summary_run_model_cont_EEG_city_mnt.ipynb). It
@@ -275,8 +289,8 @@ prefix, for 17 networks.
 ### Side track: VTC, behavior
 Pupil scripts (`cmp_vtc_pupil.py`, `reproduce_Brink_2016.py`, `vis_pupil_preproc.py`,
 `alpha_pupil_coupling.py`) moved to [../pupil/](../pupil/).
-- [ar-irls_eeg-power_vtc.py](ar-irls_eeg-power_vtc.py): EEG band power vs VTC, fit with AR-IRLS.
-- [find_EEG_ERP_by_GLM.py](find_EEG_ERP_by_GLM.py): ERP by GLM deconvolution of continuous EEG.
+- [ar-irls_eeg-power_vtc.py](model%20training/ar-irls_eeg-power_vtc.py): EEG band power vs VTC, fit with AR-IRLS.
+- [find_EEG_ERP_by_GLM.py](model%20training/find_EEG_ERP_by_GLM.py): ERP by GLM deconvolution of continuous EEG.
 
 ---
 
@@ -288,12 +302,12 @@ Pupil scripts (`cmp_vtc_pupil.py`, `reproduce_Brink_2016.py`, `vis_pupil_preproc
 ### 4a. Summary notebooks (recommended starting point)
 | Figure | Notebook (section) | Saved to |
 |---|---|---|
-| Y_all rebuild steps and PSD (sanity check) | summary_Hp_fixAR-IRLS_iRRR_AR (1f) | `D/HRF_surf/group/cont_EEG_cz_3-stage_model_cmp/summary_Hp/sanity_Y_all_{steps,psd}_*.png` |
-| iRRR λ₁ vs CV PMSE | summary_Hp_fixAR-IRLS_iRRR_AR (2) | `…/summary_Hp/irrr_lam1_vs_PMSE.png` |
-| Example time series Y vs Ŷ | summary_Hp_fixAR-IRLS_iRRR_AR (3) | `…/summary_Hp/ts_example_<s>.png` |
-| R² / RMSE bars, surface maps | summary_Hp_fixAR-IRLS_iRRR_AR (4) | `…/summary_Hp/bar_r2_rmse.png`, `surf_r2_rmse.png` |
-| HRF at 5 parcels nearest Cz | summary_Hp_fixAR-IRLS_iRRR_AR (5) | `…/summary_Hp/hrf_5_parcels_nearest_Cz.png` |
-| iRRR components and weights | summary_Hp_fixAR-IRLS_iRRR_AR (6) | `…/summary_Hp/irrr_components_<tag>.png` |
+| Y_all rebuild steps and PSD (sanity check) | archive/summary_Hp_fixAR-IRLS_iRRR_AR (1f) | `D/HRF_surf/group/cont_EEG_cz_3-stage_model_cmp/summary_Hp/sanity_Y_all_{steps,psd}_*.png` |
+| iRRR λ₁ vs CV PMSE | archive/summary_Hp_fixAR-IRLS_iRRR_AR (2) | `…/summary_Hp/irrr_lam1_vs_PMSE.png` |
+| Example time series Y vs Ŷ | archive/summary_Hp_fixAR-IRLS_iRRR_AR (3) | `…/summary_Hp/ts_example_<s>.png` |
+| R² / RMSE bars, surface maps | archive/summary_Hp_fixAR-IRLS_iRRR_AR (4) | `…/summary_Hp/bar_r2_rmse.png`, `surf_r2_rmse.png` |
+| HRF at 5 parcels nearest Cz | archive/summary_Hp_fixAR-IRLS_iRRR_AR (5) | `…/summary_Hp/hrf_5_parcels_nearest_Cz.png` |
+| iRRR components and weights | archive/summary_Hp_fixAR-IRLS_iRRR_AR (6) | `…/summary_Hp/irrr_components_<tag>.png` |
 | Train/test R² and PMSE | summary_cmp_fixAR-IRLS_AR-iRRR_single-subj (3) | `D/HRF_surf/group/cmp_fixAR-IRLS_AR-iRRR_single-subj/train_test_R2_PMSE.png` |
 | iRRR rank sweep (test) | same (4) | `…/iRRR_rank_sweep.png` |
 | Per-parcel test R² box and surface | same (5) | `…/test_R2_parcel_box.png`, `surf_test_r2.png` |
