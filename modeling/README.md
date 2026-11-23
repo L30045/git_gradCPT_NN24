@@ -318,7 +318,7 @@ Pupil scripts (`cmp_vtc_pupil.py`, `reproduce_Brink_2016.py`, `vis_pupil_preproc
 | HRF shape r between models | summary_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR (3) | `D/HRF_surf/group/mnt-correct_gauss_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR/summary_nb/hrf_corr_box_hist.png` |
 | HRF amplitude, SE | same (4, 5) | `…/summary_nb/hrf_amplitude.png`, `hrf_se.png` |
 | Group HRF (ContA) | same (6) | `…/summary_nb/group_hrf.png` |
-| Network HRF grids (all 17; 12 main; LH/RH; normalized) | same (7) | `…/summary_nb/group_hrf_{all_networks,12_networks}[_LH\|_RH][_norm].png` |
+| Network HRF grids (all 17; 12 main LH/RH; normalized) | same (7) | `…/summary_nb/group_hrf_all_networks[_norm].png`, `group_hrf_12_networks_{LH,RH}[_norm].png`; both hemispheres: see `vis_hrf_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR` below |
 | HRF r vs sensitivity; thresholded r surface | same (8) | `…/summary_nb/hrf_corr_vs_sensitivity.png`, `group_hrf_corr_surf_with_thresh.png` |
 | AR-iRRR components | same (9) | `…/summary_nb/irrr_components.png` |
 | λ₁ / Y_scale per network | summary_AR-iRRR_fixAR-IRLS_network-based (2) | `D/HRF_surf/group/cont_EEG_cz_3-stage_AR-iRRR_vs_fixAR-IRLS-network_Hp/fit_summary.png` |
@@ -327,11 +327,12 @@ Pupil scripts (`cmp_vtc_pupil.py`, `reproduce_Brink_2016.py`, `vis_pupil_preproc
 | Shape/amplitude agreement per network | same (5) | `…/agreement_by_network.png` |
 | F-test fraction significant | same (6) | `…/ftest_frac_sig.png` |
 | `city`: F-test, HRF r, amplitude, group HRF | summary_run_model_cont_EEG_city_mnt (4–7) | `D/HRF_surf/group/<city eeg_reg_type>/summary_nb/{ftest_frac_sig,hrf_corr,hrf_amplitude,group_hrf}.png` |
-| `city`: 12-network grids per trial type; correct vs incorrect | same (8, 9) | `…/summary_nb/group_hrf_12_networks_<tt>.png`, `group_hrf_12_networks_<model>_correct_vs_incorrect.png` |
+| `city`: 12-network grids (mnt-incorrect); correct vs incorrect | same (8, 9) | `…/summary_nb/group_hrf_12_networks_mnt_incorrect.png`, `group_hrf_12_networks_<model>_correct_vs_incorrect.png`; mnt-correct: see `vis_hrf_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR` below |
 | `city`: iRRR components | same (10) | `…/summary_nb/irrr_components.png` |
 | `GK-net`: network grids, per-subject HRF | same (12) | `D/HRF_surf/group/mnt-correct_gauss_3-stage/summary_nb/group_hrf_12_networks[_norm].png`, `subject_hrf_<net>.png` |
 | `EEG-net`: network grids | same (13) | `D/HRF_surf/group/cont_EEG_cz_mnt-correct_pre2post18_3-stage/summary_nb/group_hrf_12_networks[_norm].png` |
-| `GK-cmp`: agreement, network grids | same (14a–b) | `D/HRF_surf/group/mnt-correct_gauss_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR/summary_nb/hrf_corr_amplitude.png`, `group_hrf_12_networks[_norm].png` |
+| `GK-cmp`: agreement | same (14a–b) | `D/HRF_surf/group/mnt-correct_gauss_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR/summary_nb/hrf_corr_amplitude.png`; network grids: see below |
+| AR-IRLS vs fixAR-IRLS vs AR-iRRR mnt-correct HRF, event-based (N = 20) and cont-EEG (`city`, N = 6): most sensitive ContA/DorsAttnA parcel and 12-network grids per subject and across subjects; event-based vs cont-EEG per model | [visualization/vis_hrf_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py](visualization/vis_hrf_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py) | `D/cmp_HRF_AR-IRLS_fixAR-IRLS_AR-iRRR/{event-based mnt-correct,cont-EEG mnt-correct}/{<s>_parcels,<s>_networks,group_parcels,group_networks}.png`, `event-based_vs_cont-EEG_networks_<model>.png` (event-based on the left axis, cont-EEG on the right; nothing normalized), `event-based mnt-correct old vs new/group_networks_<model>.png` (archived pre-hpDesign fit vs current fit) |
 | `GK-cmp` ranks 2/4/6/8: network grids, parcel HRFs, one subject, iRRR basis HRFs, test rank sweep | same (14c–g) | `D/HRF_surf/group/mnt-correct_gauss_cmp_AR-IRLS_fixAR-IRLS_AR-iRRR_rank_sweep/summary_nb/{group_hrf_12_networks_train-<tag>[_norm], parcel_hrf_train-<tag>[_norm], sub-723_parcel_hrf_train-<tag>[_norm], sub-723_irrr_components_train-<tag>_rank<k>, iRRR_rank_sweep_train-gradcpt1}.png` |
 | Four-script HRF r matrix, network grids per model | same (15) | `D/HRF_surf/group/mnt-correct_4-script_cmp/summary_nb/hrf_corr_matrix.png`, `group_hrf_12_networks_<model>_norm.png` |
 
