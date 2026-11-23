@@ -11,6 +11,10 @@
 #   A_i: peak amplitude (uM); s_i: time-scale factor, which sets the slope (rise slope ∝ A_i * s_i,
 #   peak latency = t_peak / s_i); j_i: onset jitter in samples (uniform integer in [-J, J]).
 #   The HRF is placed on the sample grid at (nearest sample to the labeled onset) + j_i.
+# - Amplitude (amp_mean = 'match_real'): matched to the real mnt-correct response of this parcel. A is the
+#   least-squares scale of a canonical HRF (s = 1) fit to the real (mnt-correct − city-correct) epoch mean,
+#   0-18 s. The template is a unit HRF placed at every real mnt-correct onset and passed through the same
+#   highpass, epoching and baseline correction as the data, so A is on the same scale as the injected HRFs.
 # - Saved in the same format as the real inputs (stims list + {'parcel_ts': [...]}, molar), so the
 #   Bayesian script can read the simulated files in place of the real ones. Per-trial ground truth
 #   (A, s, jitter, peak latency, max slope) is saved alongside.
@@ -37,7 +41,9 @@ select_chromo = 'HbO'
 mnt_frac = 0.10        # fraction of city-correct trials relabeled as mnt-correct (per run)
 seed = 0
 # HRF parameters
-amp_mean = 0.2         # mean peak amplitude (uM); parcel HbO std is ~0.29 uM in sub-723
+amp_mean = 'match_real'  # mean peak amplitude (uM), or 'match_real' to fit it to the real mnt-correct response
+                         # (0.2 was the earlier hand-set value, ~5x the real response in sub-723)
+amp_fit_win = (0.0, 18.0)  # lag window (s) of the amplitude fit
 amp_cv = 0.25          # amplitude sd / mean (truncated at > 0)
 scale_log_sd = 0.15    # s ~ LogNormal(0, scale_log_sd); s > 1 = steeper, earlier peak
 jitter_max = 3         # onset jitter, integer samples in [-jitter_max, jitter_max] (~±0.33 s at 9 Hz)
@@ -48,10 +54,6 @@ epoch_win = (-2.0, 18.0)
 n_examples = 4
 is_save = True
 
-sim_name = (f'sim_mnt-correct_{int(mnt_frac*100)}pct-city_canonical_A{amp_mean}_cv{amp_cv}'
-            f'_slogsd{scale_log_sd}_jit{jitter_max}_seed{seed}')
-data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'simulation', sim_name)
-plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, sim_name)
 rng = np.random.default_rng(seed)
 
 # colors (validated categorical slots 1-2)
@@ -75,6 +77,55 @@ with open(ts_file, 'rb') as f:
 raw_runs = image_results['parcel_ts']
 if len(raw_runs) != len(all_stims):
     raise ValueError(f"{len(raw_runs)} parcel runs but {len(all_stims)} stim tables.")
+
+
+#%% amplitude matched to the real mnt-correct response
+def fit_real_mnt_amplitude(stims, runs, win=amp_fit_win):
+    """Least-squares A of a canonical HRF (s = 1) fit to the real (mnt-correct − city-correct) epoch mean of the
+    selected parcel (highpassed, baseline-corrected, trials pooled over runs). The template is the epoch mean of a
+    unit HRF series (one HRF per real mnt-correct onset, overlaps included) given the same processing."""
+    sums = {'mnt': 0.0, 'city': 0.0, 'tmpl': 0.0}
+    n = {'mnt': 0, 'city': 0}
+    for stim, run in zip(stims, runs):
+        t = run.time.values
+        fs = 1 / np.median(np.diff(t))
+        sos = butter(4, l_cutoff, btype='highpass', fs=fs, output='sos')
+        x = sosfiltfilt(sos, run.sel(parcel=select_parcel, chromo=select_chromo)
+                        .pint.to('micromolar').pint.dequantify().values)
+        lags = np.arange(int(round(epoch_win[0] * fs)), int(round(epoch_win[1] * fs)) + 1)
+        on = {'mnt': stim.loc[(stim['trial_type'] == 'mnt') & (stim['response_code'] == 0), 'onset'].values,
+              'city': stim.loc[(stim['trial_type'] == 'city') & (stim['response_code'] == 1), 'onset'].values}
+        i0 = {k: np.array([np.argmin(np.abs(t - o)) for o in v], dtype=int) for k, v in on.items()}
+        unit = np.zeros(len(t))
+        n_hrf = int(np.ceil(hrf_dur * fs))
+        for i in i0['mnt']:
+            seg = np.arange(i, min(i + n_hrf, len(t)))
+            unit[seg] += canonical_hrf((seg - i) / fs)
+        unit = sosfiltfilt(sos, unit)
+        for k, sig in [('mnt', x), ('city', x), ('tmpl', unit)]:
+            idx = i0['city' if k == 'city' else 'mnt'][:, None] + lags[None, :]
+            idx = idx[(idx[:, 0] >= 0) & (idx[:, -1] < len(t))]
+            ep = sig[idx]
+            sums[k] = sums[k] + (ep - ep[:, lags < 0].mean(1, keepdims=True)).sum(0)
+            if k != 'tmpl':
+                n[k] += len(idx)
+    lag_t = lags / fs
+    d = sums['mnt'] / n['mnt'] - sums['city'] / n['city']
+    h = sums['tmpl'] / n['mnt']
+    m = (lag_t >= win[0]) & (lag_t <= win[1])
+    return float(d[m] @ h[m] / (h[m] @ h[m])), n['mnt']
+
+
+if amp_mean == 'match_real':
+    amp_mean, n_real = fit_real_mnt_amplitude(all_stims, raw_runs)
+    if amp_mean <= 0:
+        raise ValueError(f"Fitted real mnt-correct amplitude is {amp_mean:.4f} uM (<= 0); set amp_mean by hand.")
+    print(f"amp_mean matched to the real mnt-correct response ({n_real} trials): {amp_mean:.4f} uM")
+
+sim_name = (f'sim_mnt-correct_{int(mnt_frac*100)}pct-city_canonical_A{amp_mean:.3g}_cv{amp_cv}'
+            f'_slogsd{scale_log_sd}_jit{jitter_max}_seed{seed}')
+data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'simulation', sim_name)
+plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, sim_name)
 
 
 #%% simulate
