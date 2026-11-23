@@ -1,6 +1,6 @@
 #%% Build the Gaussian-kernel design matrix (mnt-correct, -2 to 18 s) with EEG-informed regressors
 # For each subject, builds the event regressors used by run_model_EEG_inform_parcel_based.py and saves them to
-#   <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody.pkl
+#   <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody_<Hp|noHp>.pkl
 #
 # Regressors (20 Gaussian kernels each: centres -2 ... 17 s, 1 s spacing, t_std 1 s):
 #   'HRF mnt-correct-stim XX'  every mnt-correct trial with amplitude 1
@@ -15,6 +15,8 @@
 # <subject>_parcel_Y_all_truncated_to_trials_<Hp|noHp>.pkl.gz). Kernels are built on each run's full fNIRS
 # sample grid (time = sample index * dt, 0 at the run start like the fNIRS run, onsets from the run's nirs
 # events.tsv) and then sampled at the run's Y_all samples, so trials near the window edges are not cut.
+# For the Hp Y_all, the full grid is the true full run and the regressors are highpassed over it with the
+# same filter as Y before sampling (model.highpass_regressors); otherwise the fitted HRF is biased.
 # The DM carries Y_all's 'samples' coordinate so the model script can check the alignment.
 #
 # Woody scaling (as model.get_ERP_area / create_eeg_dm, but divided by the mean instead of the max): within each
@@ -40,6 +42,7 @@ from tqdm import tqdm
 git_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 sys.path.append(os.path.join(git_path, 'preproc_pipe'))
 from params_setting import *
+import model
 import cedalion.models.glm as glm
 from cedalion.models.glm.design_matrix import DesignMatrix
 from extract_EEG_trial_features import get_features_path, load_trial_features, get_trial_modulator
@@ -47,6 +50,9 @@ from extract_EEG_trial_features import get_features_path, load_trial_features, g
 #%% settings
 is_overwrite = True  # rebuild existing DMs
 hp_flag_Y = 'Hp'  # Y_all whose samples define the DM rows (Hp and noHp Y_all share the same windows)
+# For the Hp Y_all the regressors are built on each full run and highpassed with the same filter as Y
+# (Y_ALL_HP_CUTOFF, model.highpass_regressors); the DM is saved per hp_flag (get_gauss_eeg_dm_path).
+is_hp_design = hp_flag_Y == 'Hp'
 run_keys = ['gradcpt1', 'gradcpt2', 'gradcpt3']  # order of the runs in Y_all
 chromos = ['HbO', 'HbR']
 cfg_HRF_basis = {'t_pre': 2*units.s, 't_post': 18*units.s, 't_delta': 1*units.s, 't_std': 1*units.s}
@@ -80,10 +86,17 @@ def get_woody_scale(subject, run_id, ev_df, feat_df):
     return None, None, 0
 
 
-def run_regressors(stim, run_samples, dt):
+def run_regressors(stim, run_samples, dt, n_full=None, hp_fs=None):
     """Gaussian-kernel regressors (time x regressor x chromo) of stim on the full fNIRS run grid
-    (time = sample index * dt), sampled at run_samples."""
-    n_full = run_samples.max() + 1 + int(np.ceil(cfg_HRF_basis['t_post'].magnitude / dt))
+    (time = sample index * dt), sampled at run_samples.
+    n_full: length of the full fNIRS run (samples); None pads past the last Y_all sample instead.
+    hp_fs: if given, highpass the regressors over the full run like the Hp Y_all (needs the true n_full)."""
+    if n_full is None:
+        if hp_fs is not None:
+            raise ValueError("highpassing the regressors needs the true full-run length n_full.")
+        n_full = run_samples.max() + 1 + int(np.ceil(cfg_HRF_basis['t_post'].magnitude / dt))
+    elif run_samples.max() >= n_full:
+        raise ValueError(f"Y_all sample {run_samples.max()} beyond the full run ({n_full} samples).")
     full_run = xr.DataArray(np.zeros((len(chromos), 1, n_full)), dims=('chromo', 'parcel', 'time'),
                             coords={'chromo': chromos, 'parcel': ['dummy'], 'time': np.arange(n_full) * dt,
                                     'samples': ('time', np.arange(n_full))}).pint.quantify('molar')
@@ -91,6 +104,8 @@ def run_regressors(stim, run_samples, dt):
     X = glm.design_matrix.hrf_regressors(full_run, stim, gauss_kernels).common.fillna(0)
     if hasattr(X.data, 'magnitude'):
         X = X.pint.dequantify()
+    if hp_fs is not None:
+        X = model.highpass_regressors(X, Y_ALL_HP_CUTOFF, hp_fs)
     return X.isel(time=run_samples).transpose('time', 'regressor', 'chromo').drop_vars('samples', errors='ignore')
 
 
@@ -115,6 +130,9 @@ def build_subject(subject, data_save_path):
     if feat_df is None:
         print(f"{subject}: EEG trial features not found, building onlyStim only.")
 
+    if is_hp_design:
+        run_len, fs_full = model.get_image_run_lengths(subject, run_keys, *get_image_space_paths(subject),
+                                                       project_path)
     X_stim_runs, X_eeg_runs, trial_info = [], [], {}
     for run_key, seg in zip(run_keys, seg_slices):
         run_id = int(run_key[-1])
@@ -126,7 +144,8 @@ def build_subject(subject, data_save_path):
 
         stim = pd.DataFrame({'onset': mnt['onset'].values, 'duration': mnt['duration'].values,
                              'value': 1.0, 'trial_type': 'mnt-correct-stim'})
-        X_stim = run_regressors(stim, run_samples, dt)
+        full_kw = dict(n_full=run_len[run_key], hp_fs=fs_full) if is_hp_design else {}
+        X_stim = run_regressors(stim, run_samples, dt, **full_kw)
         X_stim_runs.append(X_stim.assign_coords(time=t_all[seg]))
 
         if feat_df is not None:
@@ -136,7 +155,7 @@ def build_subject(subject, data_save_path):
                 X_eeg = xr.zeros_like(X_stim)
             else:
                 stim_eeg = stim.assign(value=scale, trial_type='mnt-correct-eeg')
-                X_eeg = run_regressors(stim_eeg, run_samples, dt)
+                X_eeg = run_regressors(stim_eeg, run_samples, dt, **full_kw)
             X_eeg = X_eeg.assign_coords(regressor=[r.replace('-stim', '-eeg') for r in X_stim.regressor.values])
             X_eeg_runs.append(X_eeg.assign_coords(time=t_all[seg]))
             info.update(channel=ch, n_clean=n_ok, scale=scale)
@@ -158,7 +177,8 @@ def build_subject(subject, data_save_path):
     return dict(dm=dms,
                 cfg_HRF_basis={k: float(v.to(units.s).magnitude) for k, v in cfg_HRF_basis.items()},
                 eeg_amp_feature=EEG_AMP_FEATURE, eeg_amp_chs=EEG_AMP_CHS, trial_info=trial_info,
-                Y_all_path=Y_all_path, hp_flag=hp_flag_Y)
+                Y_all_path=Y_all_path, hp_flag=hp_flag_Y, hp_design=is_hp_design,
+                l_cutoff=Y_ALL_HP_CUTOFF if is_hp_design else None)
 
 
 #%% main
@@ -170,9 +190,9 @@ if __name__ == '__main__':
     print(f"{len(subjects)} subjects with a shared Y_all (not in excluded_subj): {subjects}")
     for subject in tqdm(subjects):
         data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject)
-        save_path = get_gauss_eeg_dm_path(data_save_path)
+        save_path = get_gauss_eeg_dm_path(data_save_path, hp_flag_Y)
         if os.path.exists(save_path) and not is_overwrite:
-            print(f"{subject}: {GAUSS_EEG_DM_FNAME} exists, skipping.")
+            print(f"{subject}: {os.path.basename(save_path)} exists, skipping.")
             continue
         print(f"Building DM for {subject}")
         out = build_subject(subject, data_save_path)

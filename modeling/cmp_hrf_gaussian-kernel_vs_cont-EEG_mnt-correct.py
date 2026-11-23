@@ -126,7 +126,7 @@ for mt in ['onlyStim', 'onlyEEG']:
     ])
     gauss[mt] = dict(betas_dict=ns['betas_dict'], stats=ns['stats_dict'])
 Y_shared = ns['Y_all']
-with open(get_gauss_eeg_dm_path(os.path.join(project_path, 'derivatives', 'eeg', subject)), 'rb') as f:
+with open(get_gauss_eeg_dm_path(os.path.join(project_path, 'derivatives', 'eeg', subject), 'Hp'), 'rb') as f:
     dm_saved = pickle.load(f)
 mean_scale = np.concatenate([v['scale'] for v in dm_saved['trial_info'].values()]).mean()
 print(f'mean EEG scale over mnt-correct trials: {mean_scale:.3f} ({dm_saved["eeg_amp_feature"]})')

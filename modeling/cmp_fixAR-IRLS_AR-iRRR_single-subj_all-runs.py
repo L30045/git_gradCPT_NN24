@@ -2,7 +2,7 @@
 # Compare fixAR-IRLS and AR-iRRR on one subject, trained on ALL runs (gradcpt1/2/3), so every metric
 # is in-sample. Same as cmp_fixAR-IRLS_AR-iRRR_single-subj_single-run.py, except that the models are
 # fit on all runs and every run is truncated to the trial window BEFORE it is spectrally whitened.
-# Per run: highpass -> crop to the span with EEG -> OLS drift -> OLS GSR -> truncate -> whiten.
+# Per run: highpass (Y, and the event regressors on the full run) -> crop to the span with EEG -> OLS drift -> OLS GSR -> truncate -> whiten.
 # One whitening kernel is estimated from the truncated residuals of all runs (no lag crosses a run
 # boundary) and applied to each run separately; Y_scale is the std of all whitened runs.
 # The comparison is run twice on the same Y: (1) delayed Cz EEG regressors (B-spline basis), and
@@ -160,6 +160,9 @@ def preprocess_run(run_key):
     ).transpose(*fnirs_run.dims).pint.quantify(fnirs_units)
     fnirs_run = fnirs_run.assign_coords({'time': all_runs[run_idx].time})
 
+    fnirs_full = fnirs_run  # highpassed full run, for the event regressors
+    fnirs_full.time.attrs['units'] = units.s
+
     # crop to the span where EEG exists, including len_delay of EEG before the first fNIRS sample
     t_f = fnirs_run.time.values
     span_start = max(t_f[0], t_offset + len_delay)
@@ -172,8 +175,13 @@ def preprocess_run(run_key):
     stim = all_stims[run_idx]
     stim = stim[(stim['trial_type'] == 'mnt') & (stim['response_code'] == 0)].copy()
     stim['trial_type'] = 'mnt-correct'
-    stim_dm = glm.design_matrix.hrf_regressors(fnirs_run, stim, gauss_kernels)
-    X_stim = stim_dm.common.sel(chromo=select_chromo).transpose('time', 'regressor')
+    # built on the full run and highpassed like Y (model.highpass_regressors), then cut to the span
+    stim_dm = glm.design_matrix.hrf_regressors(fnirs_full, stim, gauss_kernels)
+    X_stim = model.highpass_regressors(stim_dm.common.fillna(0), l_cutoff, fnirs_sfreq)
+    X_stim = X_stim.sel(time=slice(span_start, span_stop))
+    if X_stim.sizes['time'] != len(t_span):
+        raise ValueError(f"{run_key}: event regressors ({X_stim.sizes['time']}) and span ({len(t_span)}) differ.")
+    X_stim = X_stim.sel(chromo=select_chromo).transpose('time', 'regressor')
     stim_names = X_stim.regressor.values
     X_stim = X_stim.values
 

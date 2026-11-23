@@ -2,7 +2,7 @@
 # Compare the mnt-correct HRF of Cedalion AR-IRLS and fixAR-IRLS on one subject, trained on all runs.
 # Both models share the same Y and the same event-based design matrix (consecutive Gaussian kernels
 # locked to the mnt-correct onsets, same as run_model_EEG_inform_parcel_based.py).
-# Per run: highpass -> truncate to the trial window -> OLS drift -> OLS GSR. The runs are then
+# Per run: highpass (Y and the event regressors) -> truncate to the trial window -> OLS drift -> OLS GSR. The runs are then
 # concatenated and fit by
 #   (1) Cedalion AR-IRLS: cedalion.models.glm.fit(noise_model='ar_irls') on the concatenated runs.
 #   (2) fixAR-IRLS: one spectral-whitening kernel estimated on the concatenated residuals and applied to
@@ -145,6 +145,8 @@ def preprocess_run(run_key):
     stim = stim[(stim['trial_type'] == 'mnt') & (stim['response_code'] == 0)].copy()
     stim['trial_type'] = 'mnt-correct'
     X_stim = glm.design_matrix.hrf_regressors(fnirs_run, stim, gauss_kernels).common.fillna(0)
+    # same zero-phase highpass as Y, on the full run before truncation (model.highpass_regressors)
+    X_stim = model.highpass_regressors(X_stim, l_cutoff, fnirs_sfreq)
 
     # truncate Y and the DM to the trial window, and reset time to start at 0
     t_f = fnirs_run.time.values

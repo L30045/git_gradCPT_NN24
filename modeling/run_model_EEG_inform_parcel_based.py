@@ -36,7 +36,8 @@ l_cutoff = 0.02 # highpass cutoff (Hz)
 
 #%% design matrix
 # Built by build_dm_gaussian-kernel_mnt-correct_EEG-informed.py and saved to
-# <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody.pkl (get_gauss_eeg_dm_path):
+# <data_save_path>/dm/gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody_<Hp|noHp>.pkl
+# (get_gauss_eeg_dm_path; for Hp the regressors are highpassed like the Hp Y_all):
 # 20 Gaussian kernels (-2 to 18 s) for mnt-correct trials, 'HRF mnt-correct-stim XX' (unmodulated) and
 # 'HRF mnt-correct-eeg XX' (scaled by the single-trial Cz Woody P3 peak amplitude), on the rows of the
 # shared Y_all. Keys: 'full' (eeg then stim), 'onlyStim', 'onlyEEG'. The kernel settings (cfg_HRF_basis)
@@ -264,7 +265,7 @@ for subj_id in tqdm(subj_id_array):
         print(f"{subject}: betas already exist, skipping.")
         continue
 
-    dm_path = get_gauss_eeg_dm_path(data_save_path)
+    dm_path = get_gauss_eeg_dm_path(data_save_path, hp_flag)
     if not os.path.exists(dm_path):
         print(f"{subject}: {os.path.basename(dm_path)} not found (run build_dm_gaussian-kernel_mnt-correct_EEG-informed.py), skipping.")
         continue
@@ -276,6 +277,9 @@ for subj_id in tqdm(subj_id_array):
         continue
     if not DO_3STAGE_REGRESSION:
         raise ValueError("the saved DM has no drift / GSR columns; set DO_3STAGE_REGRESSION = True")
+    if bool(dm_saved.get('hp_design', False)) != is_hp_fNIRS:
+        raise ValueError(f"{subject}: DM hp_design={dm_saved.get('hp_design')} does not match "
+                         f"is_hp_fNIRS={is_hp_fNIRS}; rebuild the DM.")
     dm_all = dm_saved['dm'][dm_key]
     cfg_HRF_basis = {k: v * units.s for k, v in dm_saved['cfg_HRF_basis'].items()}
     del dm_saved

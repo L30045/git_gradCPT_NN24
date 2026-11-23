@@ -5,7 +5,8 @@
 # design matrix is event-based instead of the delayed continuous EEG: consecutive Gaussian kernels
 # locked to the mnt-correct onsets (same kernels as cmp_AR-IRLS_fixAR-IRLS_AR-iRRR.py).
 # The regressors are built on each full fNIRS run (so trials near the window edges keep their whole
-# kernels) and then sampled at the Y_all samples of that run.
+# kernels) and then sampled at the Y_all samples of that run. For the Hp Y_all they are first highpassed
+# over the full run with the same filter as Y (model.highpass_regressors); otherwise the HRF is biased.
 # The parcels are split by functional network (parcel name before the first '_') and each network is fit
 # separately:
 #   - one spectral-whitening (AR) kernel per network, estimated from the OLS residuals of that network's
@@ -85,22 +86,32 @@ def get_irrr_weight(X, n_parcel):
     X_c = X - X.mean(0, keepdims=True)
     return [np.max(svdvals(X_c)) * (np.sqrt(n_parcel) + np.sqrt(matrix_rank(X_c))) / X.shape[0]]
 
-def get_mnt_correct_regressors(subject, run_key, run_samples, dt):
+def get_mnt_correct_regressors(subject, run_key, run_samples, dt, n_full=None, hp_fs=None):
     """Gaussian-kernel regressors (time x regressor x chromo) of the mnt-correct trials of one run,
     built on the full fNIRS run (time = sample index * dt, starting at 0 like the fNIRS run) and sampled
-    at run_samples. Onsets are the fNIRS-time onsets in the run's nirs events.tsv."""
+    at run_samples. Onsets are the fNIRS-time onsets in the run's nirs events.tsv.
+    n_full: length of the full fNIRS run (samples); None pads past the last Y_all sample instead.
+    hp_fs: if given, the regressors are highpassed over the full run like the Hp Y_all (Y_ALL_HP_CUTOFF,
+    sampling rate hp_fs) before sampling; this needs the true n_full."""
     ev_df = pd.read_csv(os.path.join(project_path, subject, 'nirs',
                                      f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv"), sep='\t')
     stim = ev_df[(ev_df['trial_type'] == 'mnt') & (ev_df['response_code'] == 0)].copy()
     stim['trial_type'] = 'mnt-correct'
-    # full-run time grid, padded past the last Y_all sample so no kernel is cut at the window end
-    n_full = run_samples.max() + 1 + int(np.ceil(cfg_HRF_basis['t_post'].magnitude / dt))
+    if n_full is None:
+        # full-run time grid, padded past the last Y_all sample so no kernel is cut at the window end
+        if hp_fs is not None:
+            raise ValueError("highpassing the regressors needs the true full-run length n_full.")
+        n_full = run_samples.max() + 1 + int(np.ceil(cfg_HRF_basis['t_post'].magnitude / dt))
+    elif run_samples.max() >= n_full:
+        raise ValueError(f"{subject} {run_key}: Y_all sample {run_samples.max()} beyond the run ({n_full}).")
     full_run = xr.DataArray(np.zeros((1, 1, n_full)), dims=('chromo', 'parcel', 'time'),
                             coords={'chromo': [select_chromo], 'parcel': ['dummy'],
                                     'time': np.arange(n_full) * dt, 'samples': ('time', np.arange(n_full))}
                             ).pint.quantify('molar')
     full_run.time.attrs['units'] = units.s
     X_run = glm.design_matrix.hrf_regressors(full_run, stim, gauss_kernels).common.fillna(0)
+    if hp_fs is not None:
+        X_run = model.highpass_regressors(X_run, Y_ALL_HP_CUTOFF, hp_fs)
     return X_run.isel(time=run_samples).transpose('time', 'regressor', 'chromo'), full_run, len(stim)
 
 #%% main
@@ -145,9 +156,15 @@ for subj_id in subj_id_array:
         continue
 
     #%% design matrix: mnt-correct Gaussian kernels on each run's Y_all samples
+    # Hp Y_all: build the regressors on each full run and highpass them like Y (model.highpass_regressors)
+    if is_hp_fNIRS:
+        run_len, fs_full = model.get_image_run_lengths(subject, run_keys, *get_image_space_paths(subject),
+                                                       project_path)
     X_runs = []
     for run_key, seg in zip(run_keys, seg_slices):
-        X_run, full_run, n_trial = get_mnt_correct_regressors(subject, run_key, samples[seg], dt)
+        X_run, full_run, n_trial = get_mnt_correct_regressors(
+            subject, run_key, samples[seg], dt,
+            n_full=run_len[run_key] if is_hp_fNIRS else None, hp_fs=fs_full if is_hp_fNIRS else None)
         X_runs.append(X_run.assign_coords(time=Y_da.time.values[seg]))
         print(f"{run_key}: {seg.stop - seg.start} samples, {n_trial} mnt-correct trials")
     X_all = xr.concat(X_runs, dim='time').drop_vars('samples', errors='ignore')

@@ -248,6 +248,8 @@ def run_my_pipe():
         stim = stim[(stim['trial_type'] == 'mnt') & (stim['response_code'] == 0)].copy()
         stim['trial_type'] = 'mnt-correct'
         X_stim = glm.design_matrix.hrf_regressors(fnirs_run, stim, gauss_kernels).common.fillna(0)
+        # same zero-phase highpass as Y, on the full run before truncation (model.highpass_regressors)
+        X_stim = model.highpass_regressors(X_stim, l_cutoff, fnirs_sfreq)
 
         t_f = fnirs_run.time.values
         keep = np.where((t_f >= nirs_onsets[0]) & (t_f <= nirs_onsets[-1] + len_delay))[0]

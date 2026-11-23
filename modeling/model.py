@@ -161,6 +161,57 @@ def _global_mean_regressor(ts, weights=None) -> DesignMatrix:
 
     return DesignMatrix(common=regressor, channel_wise=[])
 
+
+def highpass_regressors(X, l_cutoff, fs, order=4):
+    """Highpass design-matrix columns with the filter the pipelines apply to the fNIRS runs: Butterworth
+    of the given order at l_cutoff (Hz), zero-phase (sosfiltfilt), along the 'time' dim.
+
+    The zero-phase highpass changes every response in Y (it lowers the peak and adds negative lobes before
+    and after it), so the event regressors must get the same filter or the fitted HRF is biased (about -30%
+    at the peak and a dip before onset in the sub-723 simulation; data simulation/cmp_HRF_simulation.py).
+    Apply it to regressors built on the FULL run, before truncation, exactly like Y.
+
+    X: DataArray with a 'time' dim (e.g. DesignMatrix.common), unitless or pint-quantified.
+    Returns a DataArray like X (units dropped)."""
+    if hasattr(X.data, 'magnitude'):
+        X = X.pint.dequantify()
+    sos = scipy.signal.butter(order, l_cutoff, btype='highpass', fs=fs, output='sos')
+    return X.copy(data=scipy.signal.sosfiltfilt(sos, np.asarray(X.values), axis=X.dims.index('time')))
+
+
+def match_run_keys_to_image_runs(subject, run_keys, all_stims, project_path):
+    """run_key ('gradcpt1', ...) -> index into the image-space run list, by matching the first onset and
+    the first 3 reaction times of the run's nirs events.tsv (as run_model_cont_EEG_fNIRS.py does)."""
+    out = {}
+    for run_key in run_keys:
+        ev = pd.read_csv(os.path.join(project_path, subject, 'nirs',
+                                      f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv"), sep='\t')
+        for r_i, stim in enumerate(all_stims):
+            if len(stim) > 0 and np.isclose(stim['onset'].values[0], ev['onset'].values[0], atol=0.01) \
+                    and np.allclose(stim['reaction_time'].values[:3], ev['reaction_time'].values[:3],
+                                    atol=0.01, equal_nan=True):
+                out[run_key] = r_i
+                break
+        else:
+            raise ValueError(f"{subject}: no image-space run matches {run_key}.")
+    return out
+
+
+def get_image_run_lengths(subject, run_keys, stim_path, ts_path, project_path):
+    """Full length (samples) of each image-space run and the fNIRS sampling rate, for designs built on the
+    time base of the shared Y_all (whose 'samples' coordinate indexes the full run). The rate is
+    1 / mean(diff(time)) of the first image run, as in run_model_cont_EEG_fNIRS.py.
+    stim_path: <subject>_preprocessed_results_<noise>_v26.pkl (gzip); ts_path: image-space parcel_ts pickle.
+    Returns ({run_key: n_samples}, fs)."""
+    import gzip
+    with gzip.open(stim_path, 'rb') as f:
+        all_stims = pickle.load(f)['stims']
+    with open(ts_path, 'rb') as f:
+        runs = pickle.load(f)['parcel_ts']
+    fs = 1 / np.diff(runs[0].time.values).mean()
+    idx = match_run_keys_to_image_runs(subject, run_keys, all_stims, project_path)
+    return {k: runs[i].sizes['time'] for k, i in idx.items()}, fs
+
 #TODO: complete function get_cont_EEG_regressor
 def get_cont_EEG_regressor(runs, sfreq, delay, name_prefix='', z_score=False) -> DesignMatrix:
     """

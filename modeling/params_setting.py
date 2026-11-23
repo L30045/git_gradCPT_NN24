@@ -50,11 +50,23 @@ def get_dm_all_path(prefix):
 def get_dm_dict_path(subj_dir, fname='dm_dict.pkl'):
     return os.path.join(subj_dir, 'dm', fname)
 
-GAUSS_EEG_DM_FNAME = 'gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody.pkl'
-def get_gauss_eeg_dm_path(subj_dir):
+GAUSS_EEG_DM_FNAME = 'gaussian-kernel_mnt-correct_EEG-informed_Cz-P3-ptp-Woody_{hp_flag}.pkl'
+def get_gauss_eeg_dm_path(subj_dir, hp_flag):
     """Gaussian-kernel (-2 to 18 s) mnt-correct DM with Woody-modulated EEG regressors, built by
-    build_dm_gaussian-kernel_mnt-correct_EEG-informed.py on the shared Y_all time base."""
-    return os.path.join(subj_dir, 'dm', GAUSS_EEG_DM_FNAME)
+    build_dm_gaussian-kernel_mnt-correct_EEG-informed.py on the shared Y_all time base. One file per
+    hp_flag ('Hp' / 'noHp'): for 'Hp' the regressors are highpassed like the Hp Y_all."""
+    return os.path.join(subj_dir, 'dm', GAUSS_EEG_DM_FNAME.format(hp_flag=hp_flag))
+
+# highpass of the shared Hp Y_all (run_model_cont_EEG_fNIRS.py: 4th-order Butterworth, zero-phase, per full
+# run). Designs fit to the Hp Y_all must get the same filter (model.highpass_regressors).
+Y_ALL_HP_CUTOFF = 0.02
+
+def get_image_space_paths(subject):
+    """(stim_path, parcel_ts_path) of a subject's image-space inputs in pipeline_reorder/processed_data."""
+    der_dir = os.path.join(root_dir, 'derivatives', 'cedalion', 'pipeline_reorder', 'processed_data', subject)
+    return (os.path.join(der_dir, f'{subject}_preprocessed_results_{NOISE_MODEL}_v26.pkl'),
+            os.path.join(der_dir, f'{subject}_task-gradCPT_adot-{ADOT_FLAG}_spatialdim-{spatial_dim}'
+                                  f'_IR_ts_{NOISE_MODEL}{flag}_v26.pkl'))
 
 def get_scale_tag(is_scale_Y):
     """Model-name tag for the Y scaling option of the spectrally whitened fits (iRRR_AR, fixAR-IRLS).
