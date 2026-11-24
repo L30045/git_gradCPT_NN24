@@ -35,7 +35,7 @@ import cedalion.models.glm as glm
 subject = 'sub-723'
 select_parcel = 'DorsAttnB_PostC_2_RH'
 select_chromo = 'HbO'
-sim_name = 'sim_mnt-correct_10pct-city_canonical_A0.0158_cv0.25_slogsd0.15_jit3_seed0'
+sim_name = 'sim_mnt-correct_10pct-city_dgfit-end15_A0.0275_cv0.25_slogsd0.15_jit3_seed0'
 run_keys = ['gradcpt1']
 is_hp_fNIRS = True
 l_cutoff = 0.02          # highpass (Hz) of the Bayesian run
