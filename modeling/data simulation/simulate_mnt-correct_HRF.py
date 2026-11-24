@@ -32,6 +32,8 @@
 # - Per-trial SNR (saved in the ground truth): snr = A_i / SD of the background in the window 0-18 s after the
 #   labeled onset, where the background is the (shrunk) signal without any injected HRF, highpassed at l_cutoff
 #   like the analysis; snr_db = 20 log10(snr).
+# - SNR levels: amp_mult (env SIM_AMP_MULT) scales every injected amplitude; with the same seed the trials, jitter
+#   and time scales are identical, so x2 raises every trial's SNR by exactly 6 dB.
 # - Saved in the same format as the real inputs (stims list + {'parcel_ts': [...]}, molar), so the
 #   Bayesian script can read the simulated files in place of the real ones. Per-trial ground truth
 #   (A, s, jitter, peak latency, max slope) is saved alongside.
@@ -61,6 +63,8 @@ seed = 0
 amp_mean = 'match_real'  # mean peak amplitude (uM), or 'match_real' to fit it to the real mnt-correct response
                          # (0.2 was the earlier hand-set value, ~5x the real response in sub-723)
 amp_fit_win = (0.0, 18.0)  # lag window (s) of the amplitude (and shape) fit
+amp_mult = float(os.environ.get('SIM_AMP_MULT', 1.0))  # factor on the matched amplitude, to set the SNR
+                         # (x2 = +6 dB); trials, jitter and time scales are the same for every factor (same seed)
 hrf_shape = 'fit_real'   # 'fit_real': fit a1, a2, ratio of the double gamma to the real response; 'canonical': SPM
 shape_bounds = {'a1': (3.0, 12.0), 'a2': (8.0, 30.0), 'ratio': (0.0, 1.5)}   # search range of the shape fit
 hrf_t_end = 15.0       # HRF forced back to 0 at this lag (s); None = no taper
@@ -192,6 +196,10 @@ if amp_mean == 'match_real':
           f"R2 of the fit (0-18 s) = {amp_fit['r2']:.2f}")
 else:
     hrf_params, amp_fit = dict(CANONICAL), None
+amp_real = amp_mean            # amplitude matched to the real response (or set by hand)
+amp_mean = amp_mult * amp_real
+if amp_mult != 1:
+    print(f"amplitude x {amp_mult:g}: A = {amp_mean:.4f} uM")
 t_peak, max_slope, undershoot = hrf_props(**hrf_params, t_end=hrf_t_end, taper=hrf_taper)
 print(f"HRF shape: peak at {t_peak:.1f} s, undershoot {undershoot:.2f} x peak"
       + (f", back to 0 at {hrf_t_end:g} s" if hrf_t_end is not None else ''))
@@ -257,7 +265,7 @@ for r_i, (stim, run) in enumerate(zip(all_stims, raw_runs)):
         w_snr = (t >= onset + snr_win[0]) & (t <= onset + snr_win[1])
         noise_sd = float(bg_hp[w_snr].std(ddof=1))
         truth_rows.append(dict(run_idx=r_i, stim_idx=idx, onset=onset, onset_true=t[i0],
-                               amp_uM=amp[k], time_scale=s[k], jitter_samples=jit[k],
+                               amp_uM=amp[k], amp_mult=amp_mult, amp_real_uM=amp_real, time_scale=s[k], jitter_samples=jit[k],
                                peak_latency_s=t_peak / s[k], max_slope_uM_per_s=amp[k] * s[k] * max_slope,
                                hrf_a1=hrf_params['a1'], hrf_a2=hrf_params['a2'], hrf_ratio=hrf_params['ratio'],
                                hrf_t_end=np.nan if hrf_t_end is None else hrf_t_end, hrf_taper=hrf_taper,
@@ -360,10 +368,10 @@ if amp_fit is not None:
     fig, ax = plt.subplots(figsize=(8, 4.5), constrained_layout=True)
     ax.plot(amp_fit['lag_t'], amp_fit['real'], color='#7b3fb5', lw=1.5, label='real mnt-correct − city-correct (epoch mean)')
     ax.plot(amp_fit['lag_t'], amp_fit['fit'], color=c_mnt, lw=2.2,
-            label=f'fit: A·g after the same processing (A = {amp_mean:.4f} µM, R² = {amp_fit["r2"]:.2f})')
+            label=f'fit: A·g after the same processing (A = {amp_real:.4f} µM, R² = {amp_fit["r2"]:.2f})')
     t_g = np.linspace(0, epoch_win[1], 500)
-    ax.plot(t_g, amp_mean * double_gamma_hrf(t_g, **hrf_params, t_end=hrf_t_end, taper=hrf_taper), color=c_true, ls='--', lw=1.5,
-            label=f'injected HRF A·g (a1 = {hrf_params["a1"]:.1f}, a2 = {hrf_params["a2"]:.1f}, ratio = {hrf_params["ratio"]:.2f})')
+    ax.plot(t_g, amp_real * double_gamma_hrf(t_g, **hrf_params, t_end=hrf_t_end, taper=hrf_taper), color=c_true, ls='--', lw=1.5,
+            label=f'matched HRF A·g (a1 = {hrf_params["a1"]:.1f}, a2 = {hrf_params["a2"]:.1f}, ratio = {hrf_params["ratio"]:.2f})')
     ax.axvspan(*amp_fit_win, color='#eeeeee', zorder=-1, lw=0)
     ax.set(xlabel='Lag from mnt-correct onset (s)', ylabel=f'{select_chromo} (µM)',
            title=f'{subject} {select_parcel}: HRF matched to the real response ({hrf_shape})')
