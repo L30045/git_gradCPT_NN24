@@ -1,0 +1,79 @@
+Plan: hierarchical Bayesian group HRF (carry subject posterior uncertainty to the group level)
+==============================================================================================
+Written 2026-11-24. Status: plan only, not implemented.
+
+Context
+-------
+- run_Bayes_image-space_gaussian-kernel_mnt-correct.py fits one subject at a time (one parcel, chosen runs)
+  and saves the posterior to derivatives/eeg/<subject>/bayes/<subject>_<model_name>_<parcel>_idata.nc.
+- group_Bayes_image-space_gaussian-kernel_mnt-correct.py averages the subjects' posterior-mean HRFs and gives a
+  t-based 95% CI across subjects. Only each subject's mean is used, so within-subject posterior uncertainty is
+  lost, and every subject gets equal weight however noisy its fit is.
+- Goal: a group HRF whose uncertainty combines between-subject spread and each subject's own posterior width.
+
+
+1. Current model (subject s, fit separately)
+--------------------------------------------
+  y_s = X_s h_s + N_s b_s + e_s
+  e_{s,t} = sum_k phi_{s,k} e_{s,t-k} + eps_{s,t},   eps_{s,t} ~ StudentT(nu_s, 0, sigma_s)
+  h_s ~ N(0, tau_s^2 I)          ridge prior: each subject is shrunk toward 0 independently
+  HRF_s = B h_s                  B = 20 Gaussian kernels, -2 to 18 s
+
+
+2. Hierarchical model (all subjects in one fit)
+-----------------------------------------------
+Replace the per-subject ridge prior with a group-level prior on h_s:
+
+  y_s = X_s h_s + N_s b_s + e_s                 likelihood and AR(P_s) noise unchanged, per subject
+  h_s = mu + delta_s                            subject HRF = group HRF + subject deviation
+  delta_s = tau (elementwise *) z_s,  z_s ~ N(0, I)    non-centered parameterization (avoids the funnel)
+  mu  ~ N(0, sigma_mu^2 I)                      group kernel weights
+  tau ~ HalfNormal(s_tau)                       between-subject SD: one per kernel, or one shared
+
+Outputs
+  - group HRF = B mu. Its posterior band includes both between-subject spread and each subject's noise.
+    Subjects with wide posteriors get less weight automatically.
+  - subject HRF = B h_s, shrunk toward the group by an amount set by the data (through tau), not by a fixed ridge.
+
+Points to get right
+  - Common units. run_Bayes standardizes y per subject (y_scale_s). If h_s stays in standardized units, mu mixes
+    different scales. Either fit  y_s / y_scale_s = X_s (h_s / y_scale_s) + ...  so h_s and mu are in uM, or
+    model y in uM directly.
+  - Between-subject covariance. With ~20 subjects a full 20 x 20 covariance (LKJ) is too much. Use a diagonal
+    tau, or one shared tau plus a smoothness prior on delta_s (second-difference penalty or a GP over lag) so that
+    subject deviations stay HRF-shaped.
+  - Optional pooling of noise parameters, e.g. nu_s from a shared prior and log sigma_s ~ N(m_sigma, s_sigma).
+    Keep phi_s (AR), drift and GSR per subject.
+  - Choose s_tau and sigma_mu from the expected amplitude (real mnt-correct peak in sub-723 DorsAttnB_PostC_2_RH
+    is ~0.016 uM; see data simulation/simulate_mnt-correct_HRF.py, amp_mean = 'match_real').
+
+Cost
+  One PyMC model over all subjects' runs: about 20 x ~4000 samples, each subject with its own AR(P_s).
+  NUTS should handle it, but it is much slower than a single-subject fit.
+
+
+3. Cheaper two-stage approximation (reuses the saved per-subject fits)
+---------------------------------------------------------------------
+Summarize each subject's posterior of the 20 kernel weights by its mean m_s and covariance C_s, then fit a small
+random-effects (meta-analysis) model:
+
+  m_s ~ N(mu + delta_s, C_s),   delta_s ~ N(0, diag(tau^2)),   mu ~ N(0, sigma_mu^2 I)
+
+- Runs in seconds and propagates each subject's uncertainty through C_s.
+- Prior double-counting: stage-1 fits used the ridge prior h_s ~ N(0, tau_s^2 I), so m_s is already shrunk toward
+  0. Using it as is counts that prior twice. Either
+    (a) refit stage 1 with is_ridge=False (flat N(0, 10) prior, already supported by run_Bayes), or
+    (b) divide the prior out, using the likelihood precision  C_s^-1 - (1/tau_s^2) I  and the matching mean.
+- Ignores the non-Gaussian tails of the posterior and any correlation between h and the AR parameters; usually
+  fine for the group mean.
+- Units: as above, convert m_s and C_s to uM (multiply by y_scale_s and y_scale_s^2) before stage 2.
+
+
+4. Recommended order
+--------------------
+  1. Refit the subjects with run_Bayes, is_ridge=False (BAYES_SUBJECT loop), same parcel/runs/model settings.
+  2. Implement the two-stage model in group_Bayes (or a new script). Check tau: large = subjects really differ,
+     small = they share one HRF. Compare B mu and its band with the current mean +/- t-CI.
+  3. If subject HRFs need proper shrinkage, or the noise parameters should be pooled, implement the joint model
+     (new script, e.g. hier_Bayes_image-space_gaussian-kernel_mnt-correct.py). Validate it first on the simulated
+     data (data simulation/), where the true HRF is known.

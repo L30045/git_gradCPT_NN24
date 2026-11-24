@@ -41,7 +41,7 @@ import cedalion.io
 import cedalion.models.glm as glm
 
 #%% settings
-subject = 'sub-723'
+subject = os.environ.get('BAYES_SUBJECT', 'sub-723')   # override from the shell for batch runs
 select_parcel = 'DorsAttnB_PostC_2_RH'
 # select_parcel = 'SomMotA_25_LH'
 select_chromo = 'HbO'
@@ -83,11 +83,11 @@ model_name = (f'Bayes-HRF-AR_mnt-correct_gauss_1-stage_{"-".join(run_keys)}_{hp_
               f'{ridge_flag}{design_flag}')
 if sim_name is None:
     data_save_path = os.path.join(project_path, 'derivatives', 'eeg', subject, 'bayes')
-    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, model_name)
+    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'run_Bayes_image-space_gaussian-kernel_mnt-correct', subject, model_name)
 else:
     sim_dir = os.path.join(project_path, 'derivatives', 'eeg', subject, 'simulation', sim_name)
     data_save_path = os.path.join(sim_dir, 'bayes')
-    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, sim_name, model_name)
+    plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'run_Bayes_image-space_gaussian-kernel_mnt-correct', 'simulated data', subject, sim_name, model_name)
 
 gauss_kernels = glm.GaussianKernels(cfg_HRF_basis['t_pre'], cfg_HRF_basis['t_post'],
                                     cfg_HRF_basis['t_delta'], cfg_HRF_basis['t_std'])

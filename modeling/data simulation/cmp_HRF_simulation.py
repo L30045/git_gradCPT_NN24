@@ -60,7 +60,7 @@ def bayes_idata_path(is_ridge, is_hp_design):
 
 model_name = model_base + ('_hpDesign' if is_hp_design and is_hp_fNIRS else '')
 idata_path = bayes_idata_path(True, is_hp_design)
-plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'HRF_surf', subject, sim_name, model_name)
+plot_dir = os.path.join(project_path, 'derivatives', 'eeg', 'run_Bayes_image-space_gaussian-kernel_mnt-correct', 'simulated data', subject, sim_name, model_name)
 
 c_est, c_true = '#2a78d6', '#eb6834'   # validated categorical slots 1-2 (Bayes + ridge, truth)
 
