@@ -58,6 +58,8 @@ is_smooth_penalty = False  # If True, penalize the 2nd differences of the kernel
 is_ridge = True      # If True, h ~ N(0, tau_h) with tau_h learned; False: h ~ N(0, h_flat_sd), no learned shrinkage
 h_flat_sd = 10.0     # prior sd of h when not is_ridge (y is standardized, so this is effectively flat)
 USE_GPU = False      # True: JAX/numpyro NUTS on the GPU (stops if JAX sees no GPU); False: PyMC NUTS on CPU
+# NUTS target acceptance; raise it (e.g. 0.95) for subjects with many divergences. Override from the shell.
+target_accept = float(os.environ.get('BAYES_TARGET_ACCEPT', 0.9))
 # Simulated data: a folder name under derivatives/eeg/<subject>/simulation/ written by
 # data simulation/simulate_mnt-correct_HRF.py. Its stims hold the simulated mnt-correct trials
 # ('mnt', response_code 0; the real mnt trials are 'mnt-orig') and its parcel_ts the real data plus
@@ -408,11 +410,11 @@ t_begin = time.time()
 with bayes_model:
     if USE_GPU:
         # the model is compiled to JAX; the 4 chains are vmapped on the one GPU
-        idata = pm.sample(draws=500, tune=500, chains=4, target_accept=0.9,
+        idata = pm.sample(draws=500, tune=500, chains=4, target_accept=target_accept,
                           nuts_sampler="numpyro", nuts_sampler_kwargs={"chain_method": "vectorized"},
                           random_seed=1, progressbar=False)
     else:
-        idata = pm.sample(draws=500, tune=500, chains=4, cores=4, target_accept=0.9,
+        idata = pm.sample(draws=500, tune=500, chains=4, cores=4, target_accept=target_accept,
                           nuts_sampler="pymc", random_seed=1, progressbar=False)
 print(f"sampling time {time.time() - t_begin:.0f} s")
 
@@ -499,7 +501,8 @@ if is_save:
             const['y_inj'] = ('time', np.concatenate(inj_runs))   # uM, highpassed and truncated like y
         idata.add_groups(constant_data=xr.Dataset(const, attrs={'subject': subject, 'parcel': select_parcel, 'chromo': select_chromo,
                   'run_keys': ','.join(run_keys), 'sim_name': sim_name or '', 'unit': 'micromolar',
-                  'hp_design': int(is_hp_design), 'l_cutoff': l_cutoff if is_hp_fNIRS else 0.0}))
+                  'hp_design': int(is_hp_design), 'l_cutoff': l_cutoff if is_hp_fNIRS else 0.0,
+                  'ar_order': P, 'target_accept': target_accept}))
     idata_path = os.path.join(data_save_path, f'{subject}_{model_name}_{select_parcel}_idata.nc')
     try:
         idata.to_netcdf(idata_path)          # needs netCDF4 or h5netcdf
