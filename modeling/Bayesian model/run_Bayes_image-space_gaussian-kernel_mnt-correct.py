@@ -52,10 +52,11 @@ l_cutoff = 0.02      # highpass cutoff (Hz)
 # If True (and is_hp_fNIRS), the event regressors are built on the full run, highpassed with the same filter
 # as y, then truncated. Without it the zero-phase highpass shrinks the HRF (~30% in the sub-723 simulation)
 # and adds a dip before onset, since y carries the filter's lobes and the design does not.
-is_hp_design = True
+is_hp_design = os.environ.get('BAYES_HP_DESIGN', '1') == '1'   # override from the shell: 0/1
 is_save = True       # If True, save the posterior (netCDF) and figures
 is_smooth_penalty = False  # If True, penalize the 2nd differences of the kernel weights h (scale learned)
-is_ridge = True      # If True, h ~ N(0, tau_h) with tau_h learned; False: h ~ N(0, h_flat_sd), no learned shrinkage
+# If True, h ~ N(0, tau_h) with tau_h learned; False: h ~ N(0, h_flat_sd), no learned shrinkage
+is_ridge = os.environ.get('BAYES_RIDGE', '1') == '1'   # override from the shell: 0/1
 h_flat_sd = 10.0     # prior sd of h when not is_ridge (y is standardized, so this is effectively flat)
 USE_GPU = False      # True: JAX/numpyro NUTS on the GPU (stops if JAX sees no GPU); False: PyMC NUTS on CPU
 # NUTS target acceptance; raise it (e.g. 0.95) for subjects with many divergences. Override from the shell.
@@ -64,7 +65,7 @@ target_accept = float(os.environ.get('BAYES_TARGET_ACCEPT', 0.9))
 # data simulation/simulate_mnt-correct_HRF.py. Its stims hold the simulated mnt-correct trials
 # ('mnt', response_code 0; the real mnt trials are 'mnt-orig') and its parcel_ts the real data plus
 # the injected HRFs. None fits the real data.
-sim_name = None
+sim_name = os.environ.get('BAYES_SIM_NAME') or None   # override from the shell
 # sim_name = 'sim_mnt-correct_10pct-city_canonical_A0.2_cv0.25_slogsd0.15_jit3_seed0'
 # AR order in samples: BIC on the OLS residuals with Cedalion's bic_arfit (orders 0..pmax, stops at the first
 # BIC increase), the same selection as Cedalion AR-IRLS. The earlier rule (start at 10, add lags while the
