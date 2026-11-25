@@ -11,3 +11,7 @@ modeling/.nfs0000000a5c766fe500000004
 # Python bytecode
 __pycache__/
 *.pyc
+modeling/data simulation/pysnirf2.log
+modeling/pysnirf2.log
+modeling/Bayesian model/pysnirf2.log
+modeling/sanity check/pysnirf2.log
