@@ -7,3 +7,7 @@ modeling/.nfs0000000a5c766fe500000004
 # presentations and documents
 *.pptx
 *.pdf
+
+# Python bytecode
+__pycache__/
+*.pyc
