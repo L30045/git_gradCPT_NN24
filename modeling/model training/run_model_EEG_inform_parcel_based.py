@@ -159,18 +159,14 @@ def preprocess_fnirs(subject):
     if select_chromo is not None:
         all_runs = [x.sel(chromo=[select_chromo]) for x in all_runs]
 
-    # match each fNIRS run (all_runs order) to gradcpt1/2/3 via the first stim onset in events.tsv
+    # match each fNIRS run (all_runs order) to gradcpt1/2/3 via events.tsv
     nirs_ev_dfs = dict()
     for run_key in ['gradcpt1', 'gradcpt2', 'gradcpt3']:
         run_num = f"{run_key[-1]:0>2}"
         nirs_ev_dfs[run_key] = pd.read_csv(os.path.join(project_path, subject, 'nirs',
                                                         f"{subject}_task-gradCPT_run-{run_num}_events.tsv"), sep='\t')
-    run_key_to_run_idx = dict()
-    for run_key, nirs_df in nirs_ev_dfs.items():
-        for r_i, stim in enumerate(all_stims):
-            if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_df['onset'].values[0], atol=0.01):
-                run_key_to_run_idx[run_key] = r_i
-                break
+    # first onset + first 3 reaction times (the first onset alone is ambiguous in sub-656/668/670)
+    run_key_to_run_idx = model.match_run_keys_to_image_runs(subject, list(nirs_ev_dfs), all_stims, project_path)
 
     # EEG <-> fNIRS clock offset per run (nirs_time = eeg_time + t_offset) and the EEG time span, from the
     # same preprocessed .fif / events.tsv the cont EEG pipeline loads (utils.eeg_preproc_subj_level)

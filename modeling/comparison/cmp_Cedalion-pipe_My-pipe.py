@@ -207,15 +207,14 @@ def run_my_pipe():
         run.time.attrs['units'] = units.s
     fnirs_sfreq = 1 / np.diff(all_runs[0].time.values).mean()
 
-    # match each run key (gradcpt1/2/3) to its fNIRS run via the first event onset
+    # match each run key (gradcpt1/2/3) to its fNIRS run via the first onset and first 3 reaction times
     run_info = dict()
     for run_key in run_keys:
         run_num = f"{run_key[-1]:0>2}"
         nirs_ev_df = pd.read_csv(os.path.join(project_path, subject, 'nirs',
                                               f"{subject}_task-gradCPT_run-{run_num}_events.tsv"), sep='\t')
         nirs_onsets = nirs_ev_df['onset'].values
-        run_idx = next(r_i for r_i, stim in enumerate(all_stims)
-                       if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_onsets[0], atol=0.01))
+        run_idx = model.match_run_keys_to_image_runs(subject, [run_key], all_stims, project_path)[run_key]
         run_info[run_key] = (run_idx, nirs_onsets)
 
     # keep parcels that are finite in every run

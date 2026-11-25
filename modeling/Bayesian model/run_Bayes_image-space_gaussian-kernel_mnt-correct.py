@@ -22,6 +22,7 @@ import sys
 import gzip
 import pickle
 import time
+import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -29,7 +30,6 @@ import matplotlib.pyplot as plt
 import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
-import statsmodels.api as sm
 from scipy.signal import butter, sosfiltfilt
 modeling_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 git_path = os.path.join(modeling_path, os.pardir)
@@ -39,6 +39,7 @@ import model
 from params_setting import *
 import cedalion.io
 import cedalion.models.glm as glm
+from cedalion.math.ar_model import bic_arfit
 
 #%% settings
 subject = os.environ.get('BAYES_SUBJECT', 'sub-723')   # override from the shell for batch runs
@@ -63,11 +64,11 @@ USE_GPU = False      # True: JAX/numpyro NUTS on the GPU (stops if JAX sees no G
 # the injected HRFs. None fits the real data.
 sim_name = None
 # sim_name = 'sim_mnt-correct_10pct-city_canonical_A0.2_cv0.25_slogsd0.15_jit3_seed0'
-# AR order in samples: start at p_start and add one lag while the last lag of an AR(P) fit to the OLS
-# residuals is significant (p < p_alpha), up to pmax
-p_start = 10
+# AR order in samples: BIC on the OLS residuals with Cedalion's bic_arfit (orders 0..pmax, stops at the first
+# BIC increase), the same selection as Cedalion AR-IRLS. The earlier rule (start at 10, add lags while the
+# last lag is significant) forced P >= 10; across 410 parcels x 62 runs the BIC order has median 6
+# (sanity check/check_AR_structure_parcels.py).
 pmax = 30
-p_alpha = 0.05
 plot_event_idx = 2   # third mnt-correct event (0-based, across concatenated runs)
 plot_win = (-2.0, 18.0)  # seconds around the event onset
 # event-based design: 20 consecutive Gaussian kernels (-2 to 18 s) for mnt-correct trials
@@ -121,18 +122,14 @@ def lag_index(run_starts, T, P):
     return t_idx, t_idx[:, None] - np.arange(1, P + 1)[None, :]
 
 
-def select_ar_order(e, run_starts, p_start, pmax, alpha):
-    """Smallest P >= p_start whose last AR lag is not significant (conditional OLS t-test), capped at pmax.
-    Each AR(P) is fit on e[t] ~ e[t-1..t-P] within runs; returns P and the last-lag p-value per P."""
-    pvals = {}
-    P = p_start
-    while True:
-        t_idx, lag_idx = lag_index(run_starts, len(e), P)
-        pvals[P] = sm.OLS(e[t_idx], e[lag_idx]).fit().pvalues[-1]
-        print(f"AR({P}): last-lag p = {pvals[P]:.3g}")
-        if pvals[P] >= alpha or P == pmax:
-            return P, pvals
-        P += 1
+def select_ar_order(e, pmax):
+    """AR order of e by Cedalion's bic_arfit (as in AR-IRLS). With several runs, e is the concatenated series
+    (as in Cedalion), so only the first P samples after each run boundary see the previous run.
+    Returns P and whether pmax was reached before BIC stopped improving."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        fit = bic_arfit(pd.Series(e), pmax=pmax)
+    return len(fit.params) - 1, any('pmax was reached' in str(x.message) for x in w)   # params[0]: intercept
 
 
 def build_model(x, X_ev, N, B, P, run_starts, is_smooth_penalty=True, is_ridge=True, h_flat_sd=10.0,
@@ -282,17 +279,9 @@ raw_runs = image_results['parcel_ts']
 if len(raw_runs) != len(all_stims):
     raise ValueError(f"{len(raw_runs)} parcel runs but {len(all_stims)} stim tables.")
 
-# match each run key to its image-space run via the first onset in the run's nirs events.tsv
-run_key_to_run_idx = dict()
-for run_key in run_keys:
-    nirs_ev_df = pd.read_csv(os.path.join(project_path, subject, 'nirs',
-                                          f"{subject}_task-gradCPT_run-{run_key[-1]:0>2}_events.tsv"), sep='\t')
-    for r_i, stim in enumerate(all_stims):
-        if len(stim) > 0 and np.isclose(stim['onset'].values[0], nirs_ev_df['onset'].values[0], atol=0.01):
-            run_key_to_run_idx[run_key] = r_i
-            break
-    else:
-        raise ValueError(f"{subject}: no image-space run matches {run_key}.")
+# match each run key to its image-space run via the first onset and the first 3 reaction times in the run's
+# nirs events.tsv (the first onset alone is ambiguous in sub-656/668/670: two runs start < 0.01 s apart)
+run_key_to_run_idx = model.match_run_keys_to_image_runs(subject, run_keys, all_stims, project_path)
 
 # per run: highpass, truncate to the event window, mnt-correct Gaussian-kernel regressors
 all_runs = []
@@ -404,9 +393,11 @@ y_s = (y - y_mean) / scale
 # AR order from the OLS residuals of the full design (events + nuisance)
 X_full = np.column_stack([X_ev, N])
 e_ols = y_s - X_full @ np.linalg.lstsq(X_full, y_s, rcond=None)[0]
-P, ar_pvals = select_ar_order(e_ols, run_starts, p_start, pmax, p_alpha)
-if P == pmax and ar_pvals[P] < p_alpha:
-    print(f"warning: last lag still significant at pmax = {pmax}")
+P, ar_reached_pmax = select_ar_order(e_ols, pmax)
+if ar_reached_pmax:
+    print(f"warning: BIC still decreasing at pmax = {pmax}")
+if P == 0:
+    raise ValueError("BIC selected AR(0); the model needs P >= 1.")
 print(f"{subject} {select_parcel}: T = {T}, fs = {fs:.2f} Hz, L = {B.shape[1]}, M = {N.shape[1]}, P = {P}")
 
 bayes_model = build_model(y_s, X_ev, N, B, P, run_starts, is_smooth_penalty=is_smooth_penalty,
